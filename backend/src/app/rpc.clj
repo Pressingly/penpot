@@ -19,6 +19,7 @@
    [app.db :as db]
    [app.http :as-alias http]
    [app.http.access-token :as actoken]
+   [app.http.auth-request :as auth-request]
    [app.http.client :as-alias http.client]
    [app.http.middleware :as mw]
    [app.http.security :as sec]
@@ -379,7 +380,8 @@
        {:middleware [[mw/cors]
                      [sec/client-header-check]
                      [session/authz cfg]
-                     [actoken/authz cfg]]
+                     [actoken/authz cfg]
+                     [auth-request/authz cfg]]
         :handler (make-rpc-handler methods)}]
 
       (doc/routes :methods methods
@@ -397,5 +399,6 @@
       {:middleware [[mw/cors]
                     [sec/client-header-check]
                     [session/authz cfg]
-                    [actoken/authz cfg]]
+                    [actoken/authz cfg]
+                    [auth-request/authz cfg]]
        :handler (make-rpc-handler methods)}]]))
