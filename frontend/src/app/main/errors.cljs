@@ -218,9 +218,16 @@
 
     (if show-error?
       (st/async-emit! (rt/assign-exception error))
-      (do
-        (st/emit! (da/logout))
-        (ts/schedule 500 #(st/emit! (ntf/warn message)))))))
+      ;; mPass SSO: when running behind oauth2-proxy, an :authentication
+      ;; error on the landing path means we have a valid Cognito session
+      ;; but no penpot session yet — kick the backend proxy-login handshake
+      ;; to create the session, instead of running the logout chain (which
+      ;; would clear the oauth2-proxy cookie and bounce back to Cognito).
+      (if (some? cf/mpass-signout-url)
+        (set! (.-location js/window) "/api/auth/proxy-login")
+        (do
+          (st/emit! (da/logout))
+          (ts/schedule 500 #(st/emit! (ntf/warn message))))))))
 
 ;; Error that happens on an active business model validation does not
 ;; passes an validation (example: profile can't leave a team). From
