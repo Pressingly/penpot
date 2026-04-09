@@ -19,6 +19,7 @@
    [app.http.errors :as errors]
    [app.http.management :as mgmt]
    [app.http.middleware :as mw]
+   [app.http.proxy-auth :as-alias proxy-auth]
    [app.http.security :as sec]
    [app.http.session :as session]
    [app.http.websocket :as-alias ws]
@@ -153,6 +154,7 @@
    [::mtx/routes schema:routes]
    [::awsns/routes schema:routes]
    [::mgmt/routes schema:routes]
+   [::proxy-auth/routes schema:routes]
    ::session/manager
    ::setup/props
    ::db/pool])
@@ -187,4 +189,5 @@
 
      (::ws/routes cfg)
      (::oidc/routes cfg)
+     (::proxy-auth/routes cfg)
      (::rpc/routes cfg)]]))

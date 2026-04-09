@@ -277,18 +277,24 @@
    {::db/pool            (ig/ref ::db/pool)
     ::setup/props        (ig/ref ::setup/props)}
 
-   :app.http/router
+   :app.http.proxy-auth/routes
    {::session/manager    (ig/ref ::session/manager)
-    ::db/pool            (ig/ref ::db/pool)
-    ::rpc/routes         (ig/ref ::rpc/routes)
     ::setup/props        (ig/ref ::setup/props)
-    ::mtx/routes         (ig/ref ::mtx/routes)
-    ::oidc/routes        (ig/ref ::oidc/routes)
-    ::mgmt/routes        (ig/ref ::mgmt/routes)
-    ::http.debug/routes  (ig/ref ::http.debug/routes)
-    ::http.assets/routes (ig/ref ::http.assets/routes)
-    ::http.ws/routes     (ig/ref ::http.ws/routes)
-    ::http.awsns/routes  (ig/ref ::http.awsns/routes)}
+    ::db/pool            (ig/ref ::db/pool)}
+
+   :app.http/router
+   {::session/manager      (ig/ref ::session/manager)
+    ::db/pool              (ig/ref ::db/pool)
+    ::rpc/routes           (ig/ref ::rpc/routes)
+    ::setup/props          (ig/ref ::setup/props)
+    ::mtx/routes           (ig/ref ::mtx/routes)
+    ::oidc/routes          (ig/ref ::oidc/routes)
+    ::mgmt/routes          (ig/ref ::mgmt/routes)
+    :app.http.proxy-auth/routes (ig/ref :app.http.proxy-auth/routes)
+    ::http.debug/routes    (ig/ref ::http.debug/routes)
+    ::http.assets/routes   (ig/ref ::http.assets/routes)
+    ::http.ws/routes       (ig/ref ::http.ws/routes)
+    ::http.awsns/routes    (ig/ref ::http.awsns/routes)}
 
    ::http.debug/routes
    {::db/pool         (ig/ref ::db/pool)
