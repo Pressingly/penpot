@@ -34,25 +34,8 @@ update_mpass_signout_url() {
   fi
 }
 
-update_smb_name() {
-  # Required when AUTH_TYPE=SSO. Portal hostname prefix for the SPA
-  # logout redirect (<prefix>-<app>.<domain> → <prefix>.<domain>).
-  # Same env name across every devstack app — see sso-rules RULES.md
-  # §1 Logout. No default — startup fails loudly if unset under SSO.
-  if [ -n "$SMB_NAME" ]; then
-    echo "$(sed \
-      -e "s|^//var penpotSmbName = .*;|var penpotSmbName = \"$SMB_NAME\";|g" \
-      "$1")" > "$1"
-  elif [ "$AUTH_TYPE" = "SSO" ]; then
-    echo "ERROR: SMB_NAME env is required when AUTH_TYPE=SSO." >&2
-    echo "       Set it to the portal hostname prefix (e.g. 'moneta')." >&2
-    exit 1
-  fi
-}
-
 update_flags /var/www/app/js/config.js
 update_mpass_signout_url /var/www/app/js/config.js
-update_smb_name /var/www/app/js/config.js
 
 #########################################
 ## Nginx Config
