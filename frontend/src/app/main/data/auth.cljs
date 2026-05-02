@@ -264,12 +264,8 @@
             ;; silently re-auth. SMB_NAME is required under SSO — see sso-rules RULES.md.
             host          (.-host js/location)
             protocol      (.-protocol js/location)
-<<<<<<< HEAD
-            portal-host   (.replace host #"^[^.]*\." "moneta.")
-=======
             smb-name      (.trim ^js cf/smb-name)
             portal-host   (.replace host #"^[^.]*\." (str smb-name "."))
->>>>>>> 770377bc5 (fix(logout): drive portal-host prefix from required SMB_NAME env)
             portal-uri    (str protocol "//" portal-host)
             logged-out-ev (logged-out {:redirect-uri portal-uri})]
         (->> (rx/interval 500)
