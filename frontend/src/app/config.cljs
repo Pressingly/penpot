@@ -158,6 +158,7 @@
 ;; penpot /auth/login screen so the oauth2-proxy cookie and Cognito
 ;; session are also cleared. Nil on non-SSO deployments.
 (def mpass-signout-url    (obj/get global "penpotMpassSignoutUrl"))
+(def smb-dashboard-url    (obj/get global "penpotSmbDashboardUrl"))
 (def flex-help-uri        (obj/get global "penpotGridHelpURI" "https://help.penpot.app/user-guide/flexible-layouts/"))
 (def grid-help-uri        (obj/get global "penpotGridHelpURI" "https://help.penpot.app/user-guide/flexible-layouts/"))
 (def plugins-list-uri     (obj/get global "penpotPluginsListUri" "https://penpot.app/penpothub/plugins"))
