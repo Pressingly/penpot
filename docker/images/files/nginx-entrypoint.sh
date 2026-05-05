@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-if [ -z "$SMB_DASHBOARD_URL" ]; then
-  echo "ERROR: SMB_DASHBOARD_URL is required but not set." >&2
+if [ -z "$SIGNOUT_URL" ]; then
+  echo "ERROR: SIGNOUT_URL is required but not set." >&2
   exit 1
 fi
 
@@ -26,32 +26,15 @@ update_flags() {
   fi
 }
 
-update_mpass_signout_url() {
-  # Injected by foss-server-bundle-devstack for mPass SSO full-3-layer
-  # logout. When MPASS_SIGNOUT_URL is set, the frontend logout button
-  # redirects there instead of /auth/login — clearing the oauth2-proxy
-  # cookie and the Cognito session in addition to the penpot session.
-  if [ -n "$MPASS_SIGNOUT_URL" ]; then
-    # `|` as sed delimiter because the URL contains `/` and `&`.
-    echo "$(sed \
-      -e "s|^//var penpotMpassSignoutUrl = .*;|var penpotMpassSignoutUrl = \"$MPASS_SIGNOUT_URL\";|g" \
-      "$1")" > "$1"
-  fi
-}
-
-update_smb_dashboard_url() {
-  # When SMB_DASHBOARD_URL is set, the frontend logout button redirects there
-  # (e.g. the SMB portal) instead of calculating a host-rewrite at runtime.
-  if [ -n "$SMB_DASHBOARD_URL" ]; then
-    echo "$(sed \
-      -e "s|^//var penpotSmbDashboardUrl = .*;|var penpotSmbDashboardUrl = \"$SMB_DASHBOARD_URL\";|g" \
-      "$1")" > "$1"
-  fi
+update_signout_url() {
+  # `|` as sed delimiter because the URL contains `/` and `&`.
+  echo "$(sed \
+    -e "s|^//var penpotSignoutUrl = .*;|var penpotSignoutUrl = \"$SIGNOUT_URL\";|g" \
+    "$1")" > "$1"
 }
 
 update_flags /var/www/app/js/config.js
-update_mpass_signout_url /var/www/app/js/config.js
-update_smb_dashboard_url /var/www/app/js/config.js
+update_signout_url /var/www/app/js/config.js
 
 #########################################
 ## Nginx Config

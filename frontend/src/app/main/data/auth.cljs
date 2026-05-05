@@ -259,7 +259,7 @@
     ptk/WatchEvent
     (watch [_ state _]
       (let [profile-id    (:profile-id state)
-            portal-uri    cf/smb-dashboard-url
+            portal-uri    cf/signout-url
             logged-out-ev (logged-out {:redirect-uri portal-uri})]
         (->> (rx/interval 500)
              (rx/take 1)
