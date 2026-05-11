@@ -153,6 +153,14 @@
         section (get data :name)
         team    (mf/deref refs/team)
 
+        ;; Dashboard / workspace pass ?team-id=… while `initialize-team`
+        ;; applies it asynchronously. On the first render `refs/team` can still
+        ;; be the personal default team, spuriously satisfying (:is-default team).
+        ;; Until state catches up, skip forcing team onboarding.
+        route-team-id       (some-> (:query params) :team-id uuid/parse*)
+        current-team-id     (:current-team-id (mf/deref st/state))
+        team-route-synced?  (or (nil? route-team-id)
+                                (= route-team-id current-team-id))
 
         show-question-modal?
         (and (contains? cf/flags :onboarding)
@@ -163,7 +171,8 @@
         (and (contains? cf/flags :onboarding)
              (not (:onboarding-viewed props))
              (not (contains? props :onboarding-team-id))
-             (:is-default team))
+             (:is-default team)
+             team-route-synced?)
 
         show-release-modal?
         (and (contains? cf/flags :onboarding)

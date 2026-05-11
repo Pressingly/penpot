@@ -238,3 +238,24 @@
         (t/is (some? profile))
         (t/is (true? (:is-active profile)))
         (t/is (= (::session/profile-id @captured) (:id profile)))))))
+
+(t/deftest x-auth-request-auto-register-joins-first-shared-team
+  (binding [cf/flags (conj cf/flags :x-auth-request-auto-register)]
+    (let [owner    (th/create-profile* 1 {:is-active true})
+          ;; Oldest shared (non-default) team is picked for auto-join.
+          _        (th/create-team* 1 {:profile-id (:id owner)})
+          email    "xauth-autojoin@example.com"
+          captured (volatile! nil)
+          cfg      (make-xauth-cfg)
+          handler  (#'app.http.auth-request/wrap-authz
+                    (fn [req] (vreset! captured req) {::yres/status 200})
+                    cfg)
+          _        (handler (->DummyRequest {"x-auth-request-email" email
+                                             "x-auth-request-user"  "Shared Team Join"} {}))
+          profile  (db/tx-run! cfg
+                               (fn [{:keys [::db/conn]}]
+                                 (profile/get-profile-by-email conn email)))
+          rels     (db/query th/*pool* :team-profile-rel {:profile-id (:id profile)})]
+      (t/is (uuid? (:id profile)))
+      (t/is (some #(not= (:team-id %) (:default-team-id profile)) rels)
+            "profile should have a membership on a non-default (shared) team"))))

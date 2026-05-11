@@ -15,7 +15,8 @@
 
   Optional: enable-x-auth-request-auto-register (parsed as :x-auth-request-auto-register)
   automatically creates a Penpot profile (with a default team) for email addresses
-  that are not yet registered."
+  that are not yet registered. After resolving a profile (new or existing), users
+  with no membership in any non-default team are added to the oldest shared team."
   (:require
    [app.common.logging :as l]
    [app.config :as cf]
@@ -50,6 +51,39 @@
              :domain domain)
       (str (first (str/split email-claim #"@")) "@" domain))))
 
+(defn- auto-join-team!
+  "Add the profile to the first non-default shared team if they are not
+  already a member of any non-default team. Idempotent: uses ON CONFLICT DO NOTHING.
+  If no shared team exists yet (provisioning not yet run), returns silently.
+
+  NOTE: team_profile_rel has no deleted_at column; membership is modeled only by rows.
+  "
+  [conn {:keys [id] :as _profile}]
+  (let [existing (db/exec-one! conn
+                               ["SELECT tpr.team_id AS team_id
+                                 FROM team_profile_rel AS tpr
+                                 JOIN team AS t ON t.id = tpr.team_id
+                                 WHERE tpr.profile_id = ?
+                                   AND t.is_default = false
+                                 LIMIT 1" id])]
+    (when-not (some? (:team-id existing))
+      (when-let [team (db/exec-one! conn
+                                    ["SELECT id FROM team
+                                      WHERE is_default = false
+                                        AND deleted_at IS NULL
+                                      ORDER BY created_at ASC
+                                      LIMIT 1"])]
+        (db/insert! conn :team-profile-rel
+                     {:team-id    (:id team)
+                      :profile-id id
+                      :is-owner   false
+                      :is-admin   false
+                      :can-edit   true}
+                     {::db/on-conflict-do-nothing? true})
+        (l/inf :hint "x-auth-request: auto-joined profile to shared team"
+               :profile-id (str id)
+               :team-id    (str (:id team)))))))
+
 (defn- get-or-register-profile
   "Looks up a profile by email. If not found and the
   :x-auth-request-auto-register flag is enabled, creates a new active
@@ -58,19 +92,30 @@
   [cfg email fullname]
   (db/tx-run! cfg
               (fn [{:keys [::db/conn] :as cfg}]
-                (or (profile/get-profile-by-email conn email)
-                    (when (contains? cf/flags :x-auth-request-auto-register)
-                      (let [display-name (or (not-empty fullname)
-                                             (first (str/split email #"@")))
-                            profile      (auth/create-profile cfg
-                                                              {:email    email
-                                                               :fullname display-name
-                                                               :backend  "x-auth-request"
-                                                               :is-active true})]
-                        (l/inf :hint "x-auth-request: auto-registered profile"
-                               :email email
-                               :profile-id (str (:id profile)))
-                        (auth/create-profile-rels conn profile)))))))
+                (let [profile (or (profile/get-profile-by-email conn email)
+                                  (when (contains? cf/flags :x-auth-request-auto-register)
+                                    (let [display-name (or (not-empty fullname)
+                                                           (first (str/split email #"@")))
+                                          profile      (auth/create-profile cfg
+                                                                            {:email    email
+                                                                             :fullname display-name
+                                                                             :backend  "x-auth-request"
+                                                                             :is-active true})]
+                                      (l/inf :hint "x-auth-request: auto-registered profile"
+                                             :email email
+                                             :profile-id (str (:id profile)))
+                                      (auth/create-profile-rels conn profile))))]
+                  ;; Auto-join: add to the first shared team if not yet a member
+                  ;; of any non-default team. Runs for both new and existing profiles.
+                  ;; Never fail auth if join fails (e.g. quotas, constraints).
+                  (when profile
+                    (try
+                      (auto-join-team! conn profile)
+                      (catch Throwable cause
+                        (l/err :hint "x-auth-request: auto-join to shared team failed"
+                               :profile-id (:id profile)
+                               :cause cause))))
+                  profile))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; MIDDLEWARE
