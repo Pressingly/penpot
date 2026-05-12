@@ -162,6 +162,15 @@
         team-route-synced?  (or (nil? route-team-id)
                                 (= route-team-id current-team-id))
 
+        ;; Forward-auth installs use :x-auth-request-headers and typically
+        ;; provision users onto a shared team; don't push "create a team".
+        ;; Also skip when get-teams has already populated a workspace team —
+        ;; URL ?team-id= often repeats the personal default id, which kept
+        ;; (:is-default team) true despite membership elsewhere.
+        user-has-shared-team?
+        (some #(and (some? %) (not (:is-default %)))
+              (vals (:teams (mf/deref st/state))))
+
         show-question-modal?
         (and (contains? cf/flags :onboarding)
              (not (:onboarding-viewed props))
@@ -171,6 +180,8 @@
         (and (contains? cf/flags :onboarding)
              (not (:onboarding-viewed props))
              (not (contains? props :onboarding-team-id))
+             (not (contains? cf/flags :x-auth-request-headers))
+             (not user-has-shared-team?)
              (:is-default team)
              team-route-synced?)
 
