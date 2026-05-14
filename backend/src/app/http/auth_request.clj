@@ -16,7 +16,9 @@
   Optional: enable-x-auth-request-auto-register (parsed as :x-auth-request-auto-register)
   automatically creates a Penpot profile (with a default team) for email addresses
   that are not yet registered. After resolving a profile (new or existing), users
-  with no membership in any non-default team are added to the oldest shared team."
+  with no membership in any non-default team are joined to the shared team matching
+  PENPOT_SMB_DEFAULT_WORKSPACE_NAME (team.name); no fallback to another team."
+
   (:require
    [app.common.logging :as l]
    [app.config :as cf]
@@ -52,27 +54,24 @@
       (str (first (str/split email-claim #"@")) "@" domain))))
 
 (defn- auto-join-team!
-  "Add the profile to the first non-default shared team if they are not
-  already a member of any non-default team. Idempotent: uses ON CONFLICT DO NOTHING.
-  If no shared team exists yet (provisioning not yet run), returns silently.
+  "Same semantics as Plane _auto_join_workspace: ensure a ``team_profile_rel`` row for
+  the non-default team whose ``name`` matches PENPOT_SMB_DEFAULT_WORKSPACE_NAME
+  (:smb-default-workspace-name). Runs even when the profile already belongs to another
+  shared team (multi-team parity with Plane workspaces).
 
-  NOTE: team_profile_rel has no deleted_at column; membership is modeled only by rows.
-  "
+  If config is unset or no such team exists, does nothing — no fallback. Idempotent
+  INSERT ON CONFLICT DO NOTHING."
+
   [conn {:keys [id] :as _profile}]
-  (let [existing (db/exec-one! conn
-                               ["SELECT tpr.team_id AS team_id
-                                 FROM team_profile_rel AS tpr
-                                 JOIN team AS t ON t.id = tpr.team_id
-                                 WHERE tpr.profile_id = ?
-                                   AND t.is_default = false
-                                 LIMIT 1" id])]
-    (when-not (some? (:team-id existing))
+  (let [preferred (some-> (cf/get :smb-default-workspace-name) str/trim not-empty)]
+    (when-not (str/blank? preferred)
       (when-let [team (db/exec-one! conn
                                     ["SELECT id FROM team
                                       WHERE is_default = false
                                         AND deleted_at IS NULL
-                                      ORDER BY created_at ASC
-                                      LIMIT 1"])]
+                                        AND name = ?
+                                      LIMIT 1"
+                                     preferred])]
         (db/insert! conn :team-profile-rel
                      {:team-id    (:id team)
                       :profile-id id
@@ -80,7 +79,7 @@
                       :is-admin   false
                       :can-edit   true}
                      {::db/on-conflict-do-nothing? true})
-        (l/inf :hint "x-auth-request: auto-joined profile to shared team"
+        (l/inf :hint "x-auth-request: ensured SMB shared team membership"
                :profile-id (str id)
                :team-id    (str (:id team)))))))
 
@@ -105,8 +104,7 @@
                                              :email email
                                              :profile-id (str (:id profile)))
                                       (auth/create-profile-rels conn profile))))]
-                  ;; Auto-join: add to the first shared team if not yet a member
-                  ;; of any non-default team. Runs for both new and existing profiles.
+                  ;; Same semantics as Plane: join only provisioned SMB team by name — no fallback.
                   ;; Never fail auth if join fails (e.g. quotas, constraints).
                   (when profile
                     (try
