@@ -54,7 +54,7 @@
       (str (first (str/split email-claim #"@")) "@" domain))))
 
 (defn- auto-join-team!
-  "Same semantics as Plane _auto_join_workspace: ensure a ``team_profile_rel`` row for
+  "_auto_join_workspace: ensure a ``team_profile_rel`` row for
   the non-default team whose ``name`` matches PENPOT_SMB_DEFAULT_WORKSPACE_NAME
   (:smb-default-workspace-name). Runs even when the profile already belongs to another
   shared team (multi-team parity with Plane workspaces).
