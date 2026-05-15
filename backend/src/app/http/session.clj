@@ -248,7 +248,10 @@
               (binding [ct/*clock* (clock/get-clock (:profile-id session))]
                 (handler request))]
 
-          (if (and session (renew-session? session))
+          (if (and session
+                   (renew-session? session)
+                   (not (contains? (::yres/cookies response)
+                                   (cf/get :auth-token-cookie-name))))
             (let [session (->> session
                                (update-session manager)
                                (assign-token cfg))]

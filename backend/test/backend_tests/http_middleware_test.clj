@@ -176,8 +176,8 @@
   ;; logs in upstream. wrap-session resolves alice's profile-id from the
   ;; old cookie, but oauth2-proxy is forwarding bob's email. The middleware
   ;; must re-key to bob.
-  (let [alice    (th/create-profile* 1)
-        bob      (th/create-profile* 2)
+  (let [alice    (th/create-profile* 1 {:is-active true})
+        bob      (th/create-profile* 2 {:is-active true})
         captured (volatile! nil)
         cfg      (make-xauth-cfg)
         handler  (#'app.http.auth-request/wrap-authz
@@ -195,7 +195,7 @@
   ;; Steady-state: the browser session matches the proxy identity. No
   ;; re-key, no new cookie — the session passes through cleanly. This
   ;; guards against issuing a fresh cookie on every authenticated request.
-  (let [profile  (th/create-profile* 1)
+  (let [profile  (th/create-profile* 1 {:is-active true})
         captured (volatile! nil)
         cfg      (make-xauth-cfg)
         handler  (#'app.http.auth-request/wrap-authz
@@ -207,6 +207,35 @@
     (t/is (= (:id profile) (::session/profile-id @captured)))
     ;; No new auth-token cookie when the session already matches.
     (t/is (not (contains? (::yres/cookies response) "auth-token")))))
+
+(t/deftest x-auth-request-rekey-not-overwritten-by-session-renewal
+  ;; Integration guard: session/authz wraps x-auth-request and can renew the
+  ;; incoming cookie after inner middleware returns. Ensure bob's re-keyed
+  ;; cookie wins even when renewal is forced.
+  (let [alice          (th/create-profile* 1 {:is-active true})
+        bob            (th/create-profile* 2 {:is-active true})
+        cfg            (make-xauth-cfg)
+        middleware     (-> (fn [req] {::yres/status 200
+                                       :seen-profile-id (::session/profile-id req)})
+                           (#'app.http.auth-request/wrap-authz cfg)
+                           (#'session/wrap-authz cfg)
+                           (#'mw/wrap-auth {:bearer (partial session/decode-token cfg)
+                                            :cookie (partial session/decode-token cfg)}))
+        seeded-token   (get-in ((session/create-fn cfg alice)
+                                (->DummyRequest {} {})
+                                {::yres/status 200})
+                               [::yres/cookies "auth-token" :value])
+        response       (with-redefs [#'session/renew-session? (constantly true)]
+                         (middleware (->DummyRequest {"x-auth-request-email" (:email bob)}
+                                                     {"auth-token" seeded-token})))
+        rekeyed-token  (get-in response [::yres/cookies "auth-token" :value])
+        followup       ((-> identity
+                            (#'session/wrap-authz cfg)
+                            (#'mw/wrap-auth {:bearer (partial session/decode-token cfg)
+                                             :cookie (partial session/decode-token cfg)}))
+                        (->DummyRequest {} {"auth-token" rekeyed-token}))]
+    (t/is (= (:id bob) (:seen-profile-id response)))
+    (t/is (= (:id bob) (::session/profile-id followup)))))
 
 (t/deftest x-auth-request-skips-when-access-token-present
   (let [profile-id (random-uuid)

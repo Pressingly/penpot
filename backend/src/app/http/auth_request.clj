@@ -113,8 +113,9 @@
             ;; is off). Pass through with whatever session wrap-session set
             ;; — we don't have a profile to switch *to*.
             (do
-              (l/wrn :hint "x-auth-request: no profile found for email, passing through unauthenticated"
-                     :email email)
+              (l/wrn :hint "x-auth-request: no profile found for email, preserving current auth context"
+                     :email email
+                     :session-profile-id (some-> session-pid str))
               (handler request))
 
             (:is-blocked profile)
