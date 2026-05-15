@@ -126,7 +126,6 @@
               (let [delete-session! (session/delete-fn cfg)
                     request         (dissoc request
                                             ::session/profile-id
-                                            ::session/id
                                             ::session/session-id
                                             ::session/session)
                     response        (handler request)]
@@ -172,8 +171,7 @@
                      :profile-id (str (:id profile)))
               (let [create-session! (session/create-fn cfg profile)
                     response        (-> request
-                                        (dissoc ::session/id
-                                                ::session/session-id
+                                        (dissoc ::session/session-id
                                                 ::session/session)
                                         (assoc ::session/profile-id (:id profile))
                                         handler)]
