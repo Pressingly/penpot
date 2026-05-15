@@ -123,16 +123,14 @@
               (l/wrn :hint "x-auth-request: no profile found for email, clearing local session"
                      :email email
                      :session-profile-id (some-> session-pid str))
-              (let [request  (dissoc request
-                                      ::session/profile-id
-                                      ::session/session-id
-                                      ::session/session)
-                    response (handler request)]
-                (update response :headers
-                        (fn [headers]
-                          (assoc (or headers {})
-                                 "set-cookie"
-                                 "auth-token=; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/; HttpOnly; Secure; SameSite=Lax")))))
+              (let [delete-session! (session/delete-fn cfg)
+                    request         (dissoc request
+                                            ::session/profile-id
+                                            ::session/id
+                                            ::session/session-id
+                                            ::session/session)
+                    response        (handler request)]
+                (delete-session! request response)))
 
             (:is-blocked profile)
             (do
@@ -174,6 +172,9 @@
                      :profile-id (str (:id profile)))
               (let [create-session! (session/create-fn cfg profile)
                     response        (-> request
+                                        (dissoc ::session/id
+                                                ::session/session-id
+                                                ::session/session)
                                         (assoc ::session/profile-id (:id profile))
                                         handler)]
                 ;; Issue a fresh auth-token cookie; replaces the stale one

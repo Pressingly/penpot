@@ -249,10 +249,10 @@
                 (handler request))]
 
           (if (and session
-                   (renew-session? session)
-                   (< (get response :status 200) 400)
-                   (not (contains? (::yres/cookies response)
-                                   (cf/get :auth-token-cookie-name))))
+                    (renew-session? session)
+                    (< (or (::yres/status response) 200) 400)
+                    (not (contains? (::yres/cookies response)
+                                    (cf/get :auth-token-cookie-name))))
             (let [session (->> session
                                (update-session manager)
                                (assign-token cfg))]

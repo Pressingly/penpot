@@ -140,6 +140,27 @@
     (t/is (= (:id session) (:sid claims)))
     (t/is (= (:id profile) (:uid claims)))))
 
+(t/deftest session-authz-does-not-renew-on-error-response
+  (let [cfg       th/*system*
+        manager   (session/inmemory-manager)
+        profile   (th/create-profile* 91)
+        t0        (ct/inst "2025-01-01T00:00:00Z")
+        t1        (ct/plus t0 (ct/duration {:seconds 2}))
+        threshold (ct/duration {:seconds 1})
+        handler   (-> (fn [_] {::yres/status 403})
+                      (#'session/wrap-authz {::session/manager manager})
+                      (#'mw/wrap-auth {:bearer (partial session/decode-token cfg)
+                                       :cookie (partial session/decode-token cfg)}))
+        token     (binding [ct/*clock* (ct/fixed-clock t0)]
+                    (->> (session/create-session manager {:profile-id (:id profile)
+                                                          :user-agent "user agent"})
+                         (#'session/assign-token cfg)))
+        response  (binding [cf/config (assoc cf/config :auth-token-cookie-renewal-max-age threshold)
+                            ct/*clock* (ct/fixed-clock t1)]
+                    (handler (->DummyRequest {} {"auth-token" (:token token)})))]
+    (t/is (= 403 (::yres/status response)))
+    (t/is (not (contains? (::yres/cookies response) "auth-token")))))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; X-Auth-Request middleware tests
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -167,16 +188,22 @@
   ;; Per openspec proxy-auth-middleware Rule 2: "Identity mismatch SHALL
   ;; flush the existing session immediately", even when we cannot re-key
   ;; to a known new identity.
-  (let [profile-id (random-uuid)
-        captured   (volatile! nil)
-        handler    (#'app.http.auth-request/wrap-authz
-                    (fn [req] (vreset! captured req) req)
-                    (make-xauth-cfg))
-        request    (-> (->DummyRequest {"x-auth-request-email" "user@example.com"} {})
-                       (assoc ::session/profile-id profile-id))]
-    (handler request)
+  (let [profile-id   (random-uuid)
+        stale-session {:id (random-uuid) :profile-id profile-id}
+        captured     (volatile! nil)
+        handler      (#'app.http.auth-request/wrap-authz
+                      (fn [req] (vreset! captured req) req)
+                      (make-xauth-cfg))
+        request      (-> (->DummyRequest {"x-auth-request-email" "user@example.com"} {})
+                         (assoc ::session/profile-id profile-id)
+                         (assoc ::session/session stale-session))
+        response     (handler request)]
     ;; Downstream handler must NOT see alice's profile-id.
-    (t/is (nil? (::session/profile-id @captured)))))
+    (t/is (nil? (::session/profile-id @captured)))
+    ;; Downstream handler must NOT see alice's stale local session.
+    (t/is (nil? (::session/session @captured)))
+    ;; Browser cookie is explicitly expired.
+    (t/is (= 0 (get-in response [::yres/cookies "auth-token" :max-age])))))
 
 (t/deftest x-auth-request-rekeys-when-session-identity-differs
   ;; Repro of the QA-reported bug: alice's auth-token cookie persists on
@@ -192,10 +219,14 @@
                   (fn [req] (vreset! captured req) {::yres/status 200})
                   cfg)
         request  (-> (->DummyRequest {"x-auth-request-email" (:email bob)} {})
-                     (assoc ::session/profile-id (:id alice)))
+                     (assoc ::session/profile-id (:id alice))
+                     (assoc ::session/session {:id (random-uuid)
+                                               :profile-id (:id alice)}))
         response (handler request)]
     ;; Downstream handler sees bob's profile-id, not alice's.
     (t/is (= (:id bob) (::session/profile-id @captured)))
+    ;; Stale local session object is removed before downstream handling.
+    (t/is (nil? (::session/session @captured)))
     ;; A fresh auth-token cookie is issued for bob's session.
     (t/is (contains? (::yres/cookies response) "auth-token"))))
 
