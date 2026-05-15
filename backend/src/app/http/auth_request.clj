@@ -113,17 +113,26 @@
             ;; is off). The upstream identity is something the local DB
             ;; doesn't know — we cannot safely keep serving whatever session
             ;; cookie alice happens to have in this browser, because the
-            ;; upstream says alice is no longer the active identity. Drop
-            ;; the local session-pid so the request continues unauthenticated
-            ;; (downstream handlers will respond with 401/redirect-to-login
-            ;; per their own rules) rather than as the previous user.
+            ;; upstream says alice is no longer the active identity. Clear
+            ;; the in-flight local session markers and expire the browser's
+            ;; auth-token cookie so subsequent requests cannot resurrect the
+            ;; stale local session. The request then continues
+            ;; unauthenticated (downstream handlers will respond with
+            ;; 401/redirect-to-login per their own rules).
             (do
-              (l/wrn :hint "x-auth-request: no profile found for email, dropping local session"
+              (l/wrn :hint "x-auth-request: no profile found for email, clearing local session"
                      :email email
                      :session-profile-id (some-> session-pid str))
-              (-> request
-                  (dissoc ::session/profile-id)
-                  handler))
+              (let [request  (dissoc request
+                                      ::session/profile-id
+                                      ::session/session-id
+                                      ::session/session)
+                    response (handler request)]
+                (update response :headers
+                        (fn [headers]
+                          (assoc (or headers {})
+                                 "set-cookie"
+                                 "auth-token=; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/; HttpOnly; Secure; SameSite=Lax")))))
 
             (:is-blocked profile)
             (do
