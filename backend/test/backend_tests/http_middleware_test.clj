@@ -215,20 +215,23 @@
   (let [alice          (th/create-profile* 1 {:is-active true})
         bob            (th/create-profile* 2 {:is-active true})
         cfg            (make-xauth-cfg)
+        t0             (ct/inst "2025-01-01T00:00:00Z")
+        t1             (ct/plus t0 (ct/duration {:seconds 2}))
         middleware     (-> (fn [req] {::yres/status 200
                                        :seen-profile-id (::session/profile-id req)})
                            (#'app.http.auth-request/wrap-authz cfg)
                            (#'session/wrap-authz cfg)
                            (#'mw/wrap-auth {:bearer (partial session/decode-token cfg)
                                             :cookie (partial session/decode-token cfg)}))
-        seeded-token   (get-in ((session/create-fn cfg alice)
-                                (->DummyRequest {} {})
-                                {::yres/status 200})
-                               [::yres/cookies "auth-token" :value])
+        seeded-token   (binding [ct/*clock* (ct/fixed-clock t0)]
+                         (get-in ((session/create-fn cfg alice)
+                                  (->DummyRequest {} {})
+                                  {::yres/status 200})
+                                 [::yres/cookies "auth-token" :value]))
         response       (binding [cf/config (assoc cf/config
                                                   :auth-token-cookie-renewal-max-age
-                                                  (ct/duration {:millis 0}))]
-                         (Thread/sleep 5)
+                                                  (ct/duration {:seconds 1}))
+                                 ct/*clock* (ct/fixed-clock t1)]
                          (middleware (->DummyRequest {"x-auth-request-email" (:email bob)}
                                                      {"auth-token" seeded-token})))
         rekeyed-token  (get-in response [::yres/cookies "auth-token" :value])
