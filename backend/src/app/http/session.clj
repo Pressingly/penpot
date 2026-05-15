@@ -248,16 +248,17 @@
               (binding [ct/*clock* (clock/get-clock (:profile-id session))]
                 (handler request))]
 
-          (if (and session
-                    (renew-session? session)
-                    (< (or (::yres/status response) 200) 400)
-                    (not (contains? (::yres/cookies response)
-                                    (cf/get :auth-token-cookie-name))))
-            (let [session (->> session
-                               (update-session manager)
-                               (assign-token cfg))]
-              (assign-session-cookie response session))
-            response))
+          (let [status (::yres/status response)]
+            (if (and session
+                     (renew-session? session)
+                     (or (nil? status) (< status 400))
+                     (not (contains? (::yres/cookies response)
+                                     (cf/get :auth-token-cookie-name))))
+              (let [session (->> session
+                                 (update-session manager)
+                                 (assign-token cfg))]
+                (assign-session-cookie response session))
+              response)))
 
         (= type :bearer)
         (let [session (case (:ver metadata)

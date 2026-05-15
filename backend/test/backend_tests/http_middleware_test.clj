@@ -147,7 +147,7 @@
         t0        (ct/inst "2025-01-01T00:00:00Z")
         t1        (ct/plus t0 (ct/duration {:seconds 2}))
         threshold (ct/duration {:seconds 1})
-        handler   (-> (fn [_] {::yres/status 403})
+        handler   (-> (fn [_req] {::yres/status 403})
                       (#'session/wrap-authz {::session/manager manager})
                       (#'mw/wrap-auth {:bearer (partial session/decode-token cfg)
                                        :cookie (partial session/decode-token cfg)}))
