@@ -240,15 +240,12 @@
                          (middleware (->DummyRequest {"x-auth-request-email" (:email bob)}
                                                      {"auth-token" seeded-token})))
         rekeyed-token  (get-in response [::yres/cookies "auth-token" :value])
-        followup       ((-> identity
-                            (#'session/wrap-authz cfg)
-                            (#'mw/wrap-auth {:bearer (partial session/decode-token cfg)
-                                             :cookie (partial session/decode-token cfg)}))
-                        (->DummyRequest {} {"auth-token" rekeyed-token}))]
+        followup       (middleware (->DummyRequest {} {"auth-token" rekeyed-token}))]
+    (t/is (neg? (compare renewal-threshold (ct/diff t0 t1))))
     (t/is (some? rekeyed-token))
     (t/is (not= seeded-token rekeyed-token))
     (t/is (= (:id bob) (:seen-profile-id response)))
-    (t/is (= (:id bob) (::session/profile-id followup)))))
+    (t/is (= (:id bob) (:seen-profile-id followup)))))
 
 (t/deftest x-auth-request-skips-when-access-token-present
   (let [profile-id (random-uuid)
