@@ -156,17 +156,57 @@
     (handler (->DummyRequest {} {}))
     (t/is (nil? (::session/profile-id @captured)))))
 
-(t/deftest x-auth-request-skips-when-session-present
+(t/deftest x-auth-request-preserves-session-when-header-email-unresolvable
+  ;; When wrap-session has already set a profile-id, and the proxy header
+  ;; email cannot be resolved to a profile (unknown email + auto-register
+  ;; off), the existing session passes through unchanged. The middleware
+  ;; only re-keys when it has a *real* alternative identity to switch to.
   (let [profile-id (random-uuid)
-        called?    (volatile! false)
         handler    (#'app.http.auth-request/wrap-authz
-                    (fn [req] (vreset! called? true) req)
+                    (fn [req] req)
                     (make-xauth-cfg))
         request    (-> (->DummyRequest {"x-auth-request-email" "user@example.com"} {})
                        (assoc ::session/profile-id profile-id))
         result     (handler request)]
-    ;; profile-id must pass through unchanged — middleware must not overwrite it
     (t/is (= profile-id (::session/profile-id result)))))
+
+(t/deftest x-auth-request-rekeys-when-session-identity-differs
+  ;; Repro of the QA-reported bug: alice's auth-token cookie persists on
+  ;; Penpot's subdomain after the portal "log out of all apps"; bob then
+  ;; logs in upstream. wrap-session resolves alice's profile-id from the
+  ;; old cookie, but oauth2-proxy is forwarding bob's email. The middleware
+  ;; must re-key to bob.
+  (let [alice    (th/create-profile* 1)
+        bob      (th/create-profile* 2)
+        captured (volatile! nil)
+        cfg      (make-xauth-cfg)
+        handler  (#'app.http.auth-request/wrap-authz
+                  (fn [req] (vreset! captured req) {::yres/status 200})
+                  cfg)
+        request  (-> (->DummyRequest {"x-auth-request-email" (:email bob)} {})
+                     (assoc ::session/profile-id (:id alice)))
+        response (handler request)]
+    ;; Downstream handler sees bob's profile-id, not alice's.
+    (t/is (= (:id bob) (::session/profile-id @captured)))
+    ;; A fresh auth-token cookie is issued for bob's session.
+    (t/is (contains? (::yres/cookies response) "auth-token"))))
+
+(t/deftest x-auth-request-no-rekey-when-session-matches-header
+  ;; Steady-state: the browser session matches the proxy identity. No
+  ;; re-key, no new cookie — the session passes through cleanly. This
+  ;; guards against issuing a fresh cookie on every authenticated request.
+  (let [profile  (th/create-profile* 1)
+        captured (volatile! nil)
+        cfg      (make-xauth-cfg)
+        handler  (#'app.http.auth-request/wrap-authz
+                  (fn [req] (vreset! captured req) {::yres/status 200})
+                  cfg)
+        request  (-> (->DummyRequest {"x-auth-request-email" (:email profile)} {})
+                     (assoc ::session/profile-id (:id profile)))
+        response (handler request)]
+    (t/is (= (:id profile) (::session/profile-id @captured)))
+    ;; No new auth-token cookie when the session already matches.
+    (t/is (not (contains? (::yres/cookies response) "auth-token")))))
 
 (t/deftest x-auth-request-skips-when-access-token-present
   (let [profile-id (random-uuid)

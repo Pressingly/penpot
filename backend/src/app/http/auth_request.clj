@@ -79,60 +79,89 @@
 (defn- wrap-authz
   [handler cfg]
   (fn [request]
-    ;; Skip when a prior middleware (session or access-token) already
-    ;; resolved a profile — we only act as a fallback.
-    (if (or (some? (::session/profile-id request))
-            (some? (::actoken/profile-id request)))
-      (handler request)
-      (let [email-claim (yreq/get-header request "x-auth-request-email")]
-        (if (str/blank? email-claim)
-          (handler request)
-          (let [local-part (first (str/split email-claim #"@"))
-                email      (resolve-email email-claim)
-                fullname   (or (not-empty (yreq/get-header request "x-auth-request-user"))
-                               local-part)
-                profile    (try
+    (let [atoken-pid  (::actoken/profile-id request)
+          session-pid (::session/profile-id request)
+          email-claim (yreq/get-header request "x-auth-request-email")]
+      (cond
+        ;; Access-token (API key) — programmatic identity issued out-of-band
+        ;; by the user. Not a browser SSO session, so the header is not
+        ;; meaningful here. Pass through unconditionally.
+        (some? atoken-pid)
+        (handler request)
+
+        ;; No proxy header — trust whatever wrap-session decided (session
+        ;; cookie, or anonymous). Without a header we have no upstream
+        ;; identity to compare against.
+        (str/blank? email-claim)
+        (handler request)
+
+        :else
+        (let [local-part (first (str/split email-claim #"@"))
+              email      (resolve-email email-claim)
+              fullname   (or (not-empty (yreq/get-header request "x-auth-request-user"))
+                             local-part)
+              profile    (try
                            (get-or-register-profile cfg email fullname)
                            (catch Throwable cause
                              (l/err :hint "x-auth-request: error resolving profile"
                                     :email email
                                     :cause cause)
                              nil))]
-            (cond
-              (nil? profile)
-              (do
-                (l/wrn :hint "x-auth-request: no profile found for email, passing through unauthenticated"
-                       :email email)
-                (handler request))
+          (cond
+            (nil? profile)
+            ;; Header email doesn't resolve to a profile (and auto-register
+            ;; is off). Pass through with whatever session wrap-session set
+            ;; — we don't have a profile to switch *to*.
+            (do
+              (l/wrn :hint "x-auth-request: no profile found for email, passing through unauthenticated"
+                     :email email)
+              (handler request))
 
-              (:is-blocked profile)
-              (do
-                (l/wrn :hint "x-auth-request: profile is blocked, denying access"
-                       :email email
-                       :profile-id (str (:id profile)))
-                {::yres/status 403})
+            (:is-blocked profile)
+            (do
+              (l/wrn :hint "x-auth-request: profile is blocked, denying access"
+                     :email email
+                     :profile-id (str (:id profile)))
+              {::yres/status 403})
 
-              (not (:is-active profile))
-              (do
-                (l/wrn :hint "x-auth-request: profile is not active, denying access"
-                       :email email
-                       :profile-id (str (:id profile)))
-                {::yres/status 403})
+            (not (:is-active profile))
+            (do
+              (l/wrn :hint "x-auth-request: profile is not active, denying access"
+                     :email email
+                     :profile-id (str (:id profile)))
+              {::yres/status 403})
 
-              :else
-              (do
-                (l/dbg :hint "x-auth-request: authenticating via forwarded header"
-                       :email email
-                       :profile-id (str (:id profile)))
-                (let [create-session! (session/create-fn cfg profile)
-                      ;; Inject profile-id into the request so this very
-                      ;; request is also treated as authenticated downstream.
-                      response        (-> request
-                                          (assoc ::session/profile-id (:id profile))
-                                          handler)]
-                  ;; Attach a session cookie so the browser is authenticated
-                  ;; for all subsequent requests without needing to log in.
-                  (create-session! request response))))))))))
+            ;; Existing browser session matches the proxy-asserted identity.
+            ;; Steady-state case — no work to do.
+            (and session-pid (= session-pid (:id profile)))
+            (handler request)
+
+            ;; Either no existing session, or the session points at a
+            ;; *different* profile than oauth2-proxy is asserting. Re-key.
+            ;;
+            ;; Re-keying is what fixes the stale-session bug after the
+            ;; portal "log out of all apps" + new-user login pattern:
+            ;; oauth2-proxy + Cognito are cleared, but Penpot's own
+            ;; auth-token cookie on its subdomain survives. Without this
+            ;; branch, wrap-session would resolve the old session-pid and
+            ;; this middleware (under the previous always-skip-when-session
+            ;; rule) would never override it.
+            :else
+            (do
+              (when session-pid
+                (l/inf :hint "x-auth-request: proxy identity differs from existing session — re-keying"
+                       :session-profile-id (str session-pid)
+                       :header-profile-id  (str (:id profile))))
+              (l/dbg :hint "x-auth-request: authenticating via forwarded header"
+                     :email email
+                     :profile-id (str (:id profile)))
+              (let [create-session! (session/create-fn cfg profile)
+                    response        (-> request
+                                        (assoc ::session/profile-id (:id profile))
+                                        handler)]
+                ;; Issue a fresh auth-token cookie; replaces the stale one
+                ;; the browser still has (if any).
+                (create-session! request response)))))))))
 
 (def authz
   {:name ::authz
