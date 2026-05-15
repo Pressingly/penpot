@@ -225,7 +225,10 @@
                                 (->DummyRequest {} {})
                                 {::yres/status 200})
                                [::yres/cookies "auth-token" :value])
-        response       (with-redefs [#'session/renew-session? (constantly true)]
+        response       (binding [cf/config (assoc cf/config
+                                                  :auth-token-cookie-renewal-max-age
+                                                  (ct/duration {:millis 0}))]
+                         (Thread/sleep 5)
                          (middleware (->DummyRequest {"x-auth-request-email" (:email bob)}
                                                      {"auth-token" seeded-token})))
         rekeyed-token  (get-in response [::yres/cookies "auth-token" :value])
@@ -234,6 +237,8 @@
                             (#'mw/wrap-auth {:bearer (partial session/decode-token cfg)
                                              :cookie (partial session/decode-token cfg)}))
                         (->DummyRequest {} {"auth-token" rekeyed-token}))]
+    (t/is (some? rekeyed-token))
+    (t/is (not= seeded-token rekeyed-token))
     (t/is (= (:id bob) (:seen-profile-id response)))
     (t/is (= (:id bob) (::session/profile-id followup)))))
 
