@@ -229,6 +229,8 @@
                                   {::yres/status 200})
                                  [::yres/cookies "auth-token" :value]))
         response       (binding [cf/config (assoc cf/config
+                                                  ;; Renewal is triggered once elapsed age exceeds
+                                                  ;; this threshold.
                                                   :auth-token-cookie-renewal-max-age
                                                   (ct/duration {:seconds 1}))
                                  ct/*clock* (ct/fixed-clock t1)]
