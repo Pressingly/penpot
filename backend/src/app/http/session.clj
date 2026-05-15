@@ -250,6 +250,7 @@
 
           (if (and session
                    (renew-session? session)
+                   (< (get response :status 200) 400)
                    (not (contains? (::yres/cookies response)
                                    (cf/get :auth-token-cookie-name))))
             (let [session (->> session
