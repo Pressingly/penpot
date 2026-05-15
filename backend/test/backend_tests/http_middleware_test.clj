@@ -156,19 +156,27 @@
     (handler (->DummyRequest {} {}))
     (t/is (nil? (::session/profile-id @captured)))))
 
-(t/deftest x-auth-request-preserves-session-when-header-email-unresolvable
-  ;; When wrap-session has already set a profile-id, and the proxy header
-  ;; email cannot be resolved to a profile (unknown email + auto-register
-  ;; off), the existing session passes through unchanged. The middleware
-  ;; only re-keys when it has a *real* alternative identity to switch to.
+(t/deftest x-auth-request-drops-local-session-when-header-email-unresolvable
+  ;; When wrap-session has resolved alice's profile-id from the local
+  ;; auth-token cookie, and the proxy header asserts an email that does
+  ;; NOT resolve to a Penpot profile (unknown upstream user + auto-register
+  ;; off), the middleware MUST drop alice's session-pid before calling
+  ;; the downstream handler. The upstream identity has changed; continuing
+  ;; to serve alice would leak her data to whoever is now upstream.
+  ;;
+  ;; Per openspec proxy-auth-middleware Rule 2: "Identity mismatch SHALL
+  ;; flush the existing session immediately", even when we cannot re-key
+  ;; to a known new identity.
   (let [profile-id (random-uuid)
+        captured   (volatile! nil)
         handler    (#'app.http.auth-request/wrap-authz
-                    (fn [req] req)
+                    (fn [req] (vreset! captured req) req)
                     (make-xauth-cfg))
         request    (-> (->DummyRequest {"x-auth-request-email" "user@example.com"} {})
-                       (assoc ::session/profile-id profile-id))
-        result     (handler request)]
-    (t/is (= profile-id (::session/profile-id result)))))
+                       (assoc ::session/profile-id profile-id))]
+    (handler request)
+    ;; Downstream handler must NOT see alice's profile-id.
+    (t/is (nil? (::session/profile-id @captured)))))
 
 (t/deftest x-auth-request-rekeys-when-session-identity-differs
   ;; Repro of the QA-reported bug: alice's auth-token cookie persists on

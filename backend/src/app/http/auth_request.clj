@@ -110,13 +110,20 @@
           (cond
             (nil? profile)
             ;; Header email doesn't resolve to a profile (and auto-register
-            ;; is off). Pass through with whatever session wrap-session set
-            ;; — we don't have a profile to switch *to*.
+            ;; is off). The upstream identity is something the local DB
+            ;; doesn't know — we cannot safely keep serving whatever session
+            ;; cookie alice happens to have in this browser, because the
+            ;; upstream says alice is no longer the active identity. Drop
+            ;; the local session-pid so the request continues unauthenticated
+            ;; (downstream handlers will respond with 401/redirect-to-login
+            ;; per their own rules) rather than as the previous user.
             (do
-              (l/wrn :hint "x-auth-request: no profile found for email, preserving current auth context"
+              (l/wrn :hint "x-auth-request: no profile found for email, dropping local session"
                      :email email
                      :session-profile-id (some-> session-pid str))
-              (handler request))
+              (-> request
+                  (dissoc ::session/profile-id)
+                  handler))
 
             (:is-blocked profile)
             (do
