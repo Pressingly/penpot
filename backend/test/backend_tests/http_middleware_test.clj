@@ -217,6 +217,9 @@
         cfg            (make-xauth-cfg)
         t0             (ct/inst "2025-01-01T00:00:00Z")
         t1             (ct/plus t0 (ct/duration {:seconds 2}))
+        ;; Keep this lower than (t1 - t0) so the stale incoming session is
+        ;; always considered due for renewal in this test.
+        renewal-threshold (ct/duration {:seconds 1})
         middleware     (-> (fn [req] {::yres/status 200
                                        :seen-profile-id (::session/profile-id req)})
                            (#'app.http.auth-request/wrap-authz cfg)
@@ -232,7 +235,7 @@
                                                   ;; Renewal is triggered once elapsed age exceeds
                                                   ;; this threshold.
                                                   :auth-token-cookie-renewal-max-age
-                                                  (ct/duration {:seconds 1}))
+                                                  renewal-threshold)
                                  ct/*clock* (ct/fixed-clock t1)]
                          (middleware (->DummyRequest {"x-auth-request-email" (:email bob)}
                                                      {"auth-token" seeded-token})))
