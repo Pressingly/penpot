@@ -242,6 +242,15 @@
               (cond-> request
                 (some? session)
                 (-> (assoc ::profile-id (:profile-id session))
+                    ;; ::id is the key delete-fn reads to remove the
+                    ;; server-side session row. Setting it here means
+                    ;; any downstream call to session/delete-fn (logout,
+                    ;; SSO re-key flush) actually deletes the row;
+                    ;; without it, delete-fn falls through and only
+                    ;; clears the browser cookie — leaving the row
+                    ;; replayable until GC (auth-token-cookie-max-age,
+                    ;; default 7d).
+                    (assoc ::id (:id session))
                     (assoc ::session session)))
 
               response
@@ -264,6 +273,7 @@
               request (cond-> request
                         (some? session)
                         (-> (assoc ::profile-id (:profile-id session))
+                            (assoc ::id (:id session))
                             (assoc ::session session)))]
           (handler request))
 
