@@ -20,6 +20,7 @@
    [app.common.logging :as l]
    [app.config :as cf]
    [app.db :as db]
+   [app.http :as-alias http]
    [app.http.access-token :as-alias actoken]
    [app.http.session :as session]
    [app.rpc.commands.auth :as auth]
@@ -76,6 +77,37 @@
 ;; MIDDLEWARE
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+;; The profile-lookup try/catch (below) returns a map `{:status …}` so
+;; the caller can distinguish a transient DB/IO failure from a clean
+;; "no profile for this email". Collapsing both to `nil` would let a
+;; Postgres blip silently flush an otherwise-valid session. On
+;; transient failure we preserve the local session and pass through
+;; unchanged — graceful degradation rather than fail-closed 503.
+
+(defn- clear-stale-session
+  "Returns a request with the local-session keys AND ::http/auth-data
+  removed. Both must be cleared together because downstream handlers
+  read identity from BOTH `::session/profile-id` (the post-wrap-authz
+  shorthand) and `::http/auth-data.claims.uid` (the raw decoded cookie
+  claims, used by errors.clj and access_token.clj). Leaving auth-data
+  in place after re-keying or after a mismatch flush leaks the stale
+  identity to those readers."
+  [request]
+  (dissoc request
+          ::session/profile-id
+          ::session/session-id
+          ::session/session
+          ::http/auth-data))
+
+(defn- response-has-auth-cookie?
+  "True when the handler already wrote the auth-token cookie on the
+  response. Used to avoid clobbering an explicit logout / re-issue
+  written by a downstream handler with a fresh re-key cookie. Same
+  guard shape as session.clj's renewal path."
+  [response]
+  (contains? (::yres/cookies response)
+             (cf/get :auth-token-cookie-name)))
+
 (defn- wrap-authz
   [handler cfg]
   (fn [request]
@@ -111,6 +143,11 @@
                                  :cause cause}))
               profile       (:profile profile-state)]
           (cond
+            ;; Transient failure resolving the proxy identity. We have NO
+            ;; basis to flush the existing session (a Postgres restart or
+            ;; network blip would otherwise log everyone out), so preserve
+            ;; whatever wrap-session decided. The next successful request
+            ;; reconciles normally.
             (= :error (:status profile-state))
             (do
               (l/wrn :hint "x-auth-request: preserving local auth state because profile resolution failed"
@@ -124,36 +161,44 @@
             ;; doesn't know — we cannot safely keep serving whatever session
             ;; cookie alice happens to have in this browser, because the
             ;; upstream says alice is no longer the active identity. Clear
-            ;; the in-flight local session markers and expire the browser's
-            ;; auth-token cookie so subsequent requests cannot resurrect the
-            ;; stale local session. The request then continues
-            ;; unauthenticated (downstream handlers will respond with
-            ;; 401/redirect-to-login per their own rules).
+            ;; the in-flight local session markers AND auth-data, then
+            ;; expire the browser's auth-token cookie so subsequent
+            ;; requests cannot resurrect the stale local session. The
+            ;; request then continues unauthenticated (downstream handlers
+            ;; will respond with 401/redirect-to-login per their own rules).
             (do
               (l/wrn :hint "x-auth-request: no profile found for email, clearing local session"
                      :email email
                      :session-profile-id (some-> session-pid str))
               (let [delete-session! (session/delete-fn cfg)
-                    request         (dissoc request
-                                            ::session/profile-id
-                                            ::session/session-id
-                                            ::session/session)
+                    request         (clear-stale-session request)
                     response        (handler request)]
                 (delete-session! request response)))
 
-            (:is-blocked profile)
+            ;; Blocked / inactive incoming identity. Return 403 — and if
+            ;; there was a session for a DIFFERENT user, flush it too. The
+            ;; openspec Rule 2 contract (identity mismatch SHALL flush)
+            ;; applies regardless of whether the new identity is usable;
+            ;; otherwise alice's session survives an attempted switch to
+            ;; the blocked user bob and the next request still serves alice.
+            (or (:is-blocked profile)
+                (not (:is-active profile)))
             (do
-              (l/wrn :hint "x-auth-request: profile is blocked, denying access"
+              (l/wrn :hint (if (:is-blocked profile)
+                             "x-auth-request: profile is blocked, denying access"
+                             "x-auth-request: profile is not active, denying access")
                      :email email
-                     :profile-id (str (:id profile)))
-              {::yres/status 403})
-
-            (not (:is-active profile))
-            (do
-              (l/wrn :hint "x-auth-request: profile is not active, denying access"
-                     :email email
-                     :profile-id (str (:id profile)))
-              {::yres/status 403})
+                     :profile-id (str (:id profile))
+                     :session-profile-id (some-> session-pid str))
+              (let [response {::yres/status 403}]
+                (if (and session-pid (not= session-pid (:id profile)))
+                  ;; Identity mismatch with a refused incoming user — also
+                  ;; clear the existing local session cookie so alice
+                  ;; doesn't keep her session via the still-valid
+                  ;; auth-token cookie on her browser.
+                  (let [delete-session! (session/delete-fn cfg)]
+                    (delete-session! request response))
+                  response)))
 
             ;; Existing browser session matches the proxy-asserted identity.
             ;; Steady-state case — no work to do.
@@ -181,13 +226,20 @@
                      :profile-id (str (:id profile)))
               (let [create-session! (session/create-fn cfg profile)
                     response        (-> request
-                                        (dissoc ::session/session-id
-                                                ::session/session)
+                                        clear-stale-session
                                         (assoc ::session/profile-id (:id profile))
                                         handler)]
-                ;; Issue a fresh auth-token cookie; replaces the stale one
-                ;; the browser still has (if any).
-                (create-session! request response)))))))))
+                ;; Issue a fresh auth-token cookie unless the downstream
+                ;; handler already wrote the auth-token cookie on the
+                ;; response (e.g. an explicit logout that called
+                ;; clear-session-cookie, or an auth endpoint that re-issued
+                ;; the cookie itself). Otherwise the re-key would clobber
+                ;; the handler's intent — most visibly, it would prevent a
+                ;; user from ever completing a logout while the SSO
+                ;; cookie is still present.
+                (if (response-has-auth-cookie? response)
+                  response
+                  (create-session! request response))))))))))
 
 (def authz
   {:name ::authz

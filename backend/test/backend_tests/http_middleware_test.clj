@@ -354,6 +354,121 @@
     (handler (->DummyRequest {"x-auth-request-email" "nobody@example.com"} {}))
     (t/is (nil? (::session/profile-id @captured)))))
 
+(t/deftest x-auth-request-preserves-session-on-transient-lookup-error
+  ;; A Postgres blip / network timeout while resolving the header email's
+  ;; profile MUST NOT be conflated with "email doesn't resolve". The
+  ;; former is transient and the local session should survive; the
+  ;; latter is an identity mismatch and the session should flush.
+  ;; Without this guard, a single DB error would silently log every
+  ;; SSO user out.
+  ;;
+  ;; Graceful degradation: on transient failure pass through with
+  ;; whatever wrap-session decided. Downstream gets alice's existing
+  ;; session-pid (or anonymous if none), and the next successful
+  ;; request reconciles normally.
+  (with-mocks [_ {:target 'app.http.auth-request/get-or-register-profile
+                  :return (fn [& _] (throw (ex-info "db boom" {})))}]
+    (let [captured (volatile! nil)
+          profile-id (random-uuid)
+          cfg      (make-xauth-cfg)
+          handler  (#'app.http.auth-request/wrap-authz
+                    (fn [req] (vreset! captured req) {::yres/status 200})
+                    cfg)
+          request  (-> (->DummyRequest {"x-auth-request-email" "user@example.com"} {})
+                       (assoc ::session/profile-id profile-id))
+          response (handler request)]
+      ;; Downstream handler ran with alice's session intact.
+      (t/is (= profile-id (::session/profile-id @captured)))
+      (t/is (= 200 (::yres/status response)))
+      ;; No cookie clear / no fresh cookie issued — session untouched.
+      (t/is (not (contains? (::yres/cookies response) "auth-token"))))))
+
+(t/deftest x-auth-request-rekey-clears-stale-auth-data
+  ;; The re-keyed request must have ::http/auth-data removed alongside
+  ;; the session keys. Without this, downstream code that reads
+  ;; ::http/auth-data.claims.uid (errors.clj, access_token.clj) would
+  ;; still see alice's profile-id after we re-keyed to bob, leaking the
+  ;; stale identity across the boundary the rest of the middleware
+  ;; thinks it has crossed.
+  (let [alice    (th/create-profile* 1 {:is-active true})
+        bob      (th/create-profile* 2 {:is-active true})
+        captured (volatile! nil)
+        cfg      (make-xauth-cfg)
+        handler  (#'app.http.auth-request/wrap-authz
+                  (fn [req] (vreset! captured req) {::yres/status 200})
+                  cfg)
+        request  (-> (->DummyRequest {"x-auth-request-email" (:email bob)} {})
+                     (assoc ::session/profile-id (:id alice))
+                     (assoc ::http/auth-data {:type :cookie
+                                              :claims {:uid (:id alice)
+                                                       :sid (random-uuid)}}))]
+    (handler request)
+    (t/is (= (:id bob) (::session/profile-id @captured)))
+    (t/is (nil? (::http/auth-data @captured)))))
+
+(t/deftest x-auth-request-unresolvable-email-clears-stale-auth-data
+  ;; Same invariant on the unresolvable-email branch: ::http/auth-data
+  ;; must be removed so downstream readers don't see alice's stale
+  ;; claims when we've explicitly decided to flush her session.
+  (let [profile-id   (random-uuid)
+        captured     (volatile! nil)
+        handler      (#'app.http.auth-request/wrap-authz
+                      (fn [req] (vreset! captured req) {::yres/status 200})
+                      (make-xauth-cfg))
+        request      (-> (->DummyRequest {"x-auth-request-email" "ghost@example.com"} {})
+                         (assoc ::session/profile-id profile-id)
+                         (assoc ::http/auth-data {:type :cookie
+                                                  :claims {:uid profile-id}}))]
+    (handler request)
+    (t/is (nil? (::http/auth-data @captured)))
+    (t/is (nil? (::session/profile-id @captured)))))
+
+(t/deftest x-auth-request-blocked-incoming-clears-existing-mismatched-session
+  ;; openspec proxy-auth-middleware Rule 2: "Identity mismatch SHALL
+  ;; flush". When alice is logged in locally and oauth2-proxy forwards
+  ;; bob's email but bob's profile is blocked, we still 403 — and we
+  ;; still flush alice's session, because the upstream identity has
+  ;; changed regardless of whether the new identity is usable.
+  ;; Otherwise alice's auth-token cookie stays valid and her next
+  ;; request still serves her, defeating the flush guarantee.
+  (let [alice    (th/create-profile* 1 {:is-active true})
+        bob      (th/create-profile* 2 {:is-active true})
+        _        (th/db-update! :profile {:is-blocked true} {:id (:id bob)})
+        handler  (#'app.http.auth-request/wrap-authz
+                  (fn [_] {::yres/status 200})
+                  (make-xauth-cfg))
+        request  (-> (->DummyRequest {"x-auth-request-email" (:email bob)} {})
+                     (assoc ::session/profile-id (:id alice))
+                     (assoc ::session/session {:id (random-uuid)
+                                               :profile-id (:id alice)}))
+        response (handler request)]
+    (t/is (= 403 (::yres/status response)))
+    (t/is (= 0 (get-in response [::yres/cookies "auth-token" :max-age])))))
+
+(t/deftest x-auth-request-rekey-does-not-overwrite-handler-cookie
+  ;; If the downstream handler already wrote the auth-token cookie on
+  ;; the response (e.g. an explicit logout that called
+  ;; session/clear-session-cookie), the re-key path MUST NOT clobber
+  ;; that cookie with a fresh one. Otherwise a logout from a
+  ;; re-key-eligible session would be silently undone.
+  (let [alice         (th/create-profile* 1 {:is-active true})
+        bob           (th/create-profile* 2 {:is-active true})
+        cookie-name   (cf/get :auth-token-cookie-name)
+        logout-cookie {:path "/" :value "" :max-age 0}
+        handler-resp  {::yres/status 200
+                       ::yres/cookies {cookie-name logout-cookie}}
+        cfg           (make-xauth-cfg)
+        handler       (#'app.http.auth-request/wrap-authz
+                       (fn [_] handler-resp)
+                       cfg)
+        request       (-> (->DummyRequest {"x-auth-request-email" (:email bob)} {})
+                          (assoc ::session/profile-id (:id alice)))
+        response      (handler request)]
+    ;; The handler's logout cookie is preserved — the middleware
+    ;; recognised the response already carried an auth-token cookie and
+    ;; stepped aside.
+    (t/is (= logout-cookie (get-in response [::yres/cookies cookie-name])))))
+
 (t/deftest x-auth-request-auto-register-creates-active-profile
   (binding [cf/flags (conj cf/flags :x-auth-request-auto-register)]
     (let [email    "newuser@example.com"
