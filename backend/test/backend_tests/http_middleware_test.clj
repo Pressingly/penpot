@@ -440,6 +440,26 @@
     (t/is (nil? (::http/auth-data @captured)))
     (t/is (nil? (::session/profile-id @captured)))))
 
+(t/deftest x-auth-request-unresolvable-email-passes-session-id-to-delete-fn
+  (let [profile-id    (random-uuid)
+        session-id    (random-uuid)
+        deleted-req   (volatile! nil)
+        handler       (#'app.http.auth-request/wrap-authz
+                       (fn [_req] {::yres/status 200})
+                       (make-xauth-cfg))
+        request       (-> (->DummyRequest {"x-auth-request-email" "ghost@example.com"} {})
+                          (assoc ::session/profile-id profile-id)
+                          (assoc ::session/session {:id session-id
+                                                    :profile-id profile-id}))
+        response      (with-mocks [_ {:target 'app.http.session/delete-fn
+                                      :return (fn [_cfg]
+                                                (fn [req resp]
+                                                  (vreset! deleted-req req)
+                                                  (session/clear-session-cookie resp)))}]
+                        (handler request))]
+    (t/is (= session-id (::session/id @deleted-req)))
+    (t/is (= 0 (get-in response [::yres/cookies "auth-token" :max-age])))))
+
 (t/deftest x-auth-request-blocked-incoming-clears-existing-mismatched-session
   ;; openspec proxy-auth-middleware Rule 2: "Identity mismatch SHALL
   ;; flush". When alice is logged in locally and oauth2-proxy forwards
@@ -460,6 +480,29 @@
                                                :profile-id (:id alice)}))
         response (handler request)]
     (t/is (= 403 (::yres/status response)))
+    (t/is (= 0 (get-in response [::yres/cookies "auth-token" :max-age])))))
+
+(t/deftest x-auth-request-blocked-incoming-passes-session-id-to-delete-fn
+  (let [alice      (th/create-profile* 1 {:is-active true})
+        bob        (th/create-profile* 2 {:is-active true})
+        session-id (random-uuid)
+        deleted-req (volatile! nil)
+        _          (th/db-update! :profile {:is-blocked true} {:id (:id bob)})
+        handler    (#'app.http.auth-request/wrap-authz
+                    (fn [_] {::yres/status 200})
+                    (make-xauth-cfg))
+        request    (-> (->DummyRequest {"x-auth-request-email" (:email bob)} {})
+                       (assoc ::session/profile-id (:id alice))
+                       (assoc ::session/session {:id session-id
+                                                 :profile-id (:id alice)}))
+        response   (with-mocks [_ {:target 'app.http.session/delete-fn
+                                   :return (fn [_cfg]
+                                             (fn [req resp]
+                                               (vreset! deleted-req req)
+                                               (session/clear-session-cookie resp)))}]
+                     (handler request))]
+    (t/is (= 403 (::yres/status response)))
+    (t/is (= session-id (::session/id @deleted-req)))
     (t/is (= 0 (get-in response [::yres/cookies "auth-token" :max-age])))))
 
 (t/deftest x-auth-request-rekey-does-not-overwrite-handler-cookie

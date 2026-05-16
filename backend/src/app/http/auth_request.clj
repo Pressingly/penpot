@@ -125,6 +125,14 @@
           ::session/session
           ::http/auth-data))
 
+(defn- with-session-id
+  "Attach ::session/id from the decoded local session map when present so
+  session/delete-fn can remove the backing server-side row."
+  [request]
+  (if-let [sid (some-> request ::session/session :id)]
+    (assoc request ::session/id sid)
+    request))
+
 (defn- response-has-auth-cookie?
   "True when the handler already wrote the auth-token cookie on the
   response. Used to avoid clobbering an explicit logout / re-issue
@@ -205,15 +213,12 @@
                      :email email
                      :session-profile-id (some-> session-pid str))
               (let [delete-session! (session/delete-fn cfg)
-                    cleared         (clear-stale-session request)
-                    response        (handler cleared)]
-                ;; delete-fn reads ::id from the request — pass the
-                ;; original (pre-clear) so the server-side row is
-                ;; actually removed, not just the browser cookie.
-                ;; Until the companion wrap-authz fix sets ::id, the
-                ;; server-side delete is a no-op; this is still the
-                ;; correct shape for when that lands.
-                (delete-session! request response)))
+                     cleared         (clear-stale-session request)
+                     response        (handler cleared)]
+                 ;; delete-fn reads ::session/id from the request. Preserve
+                 ;; the original request shape for deletion and project id
+                 ;; from the decoded ::session/session map when available.
+                 (delete-session! (with-session-id request) response)))
 
             ;; Blocked / inactive incoming identity. Return 403 — and if
             ;; there was a session for a DIFFERENT user, flush it too. The
@@ -237,7 +242,7 @@
                   ;; doesn't keep her session via the still-valid
                   ;; auth-token cookie on her browser.
                   (let [delete-session! (session/delete-fn cfg)]
-                    (delete-session! request response))
+                    (delete-session! (with-session-id request) response))
                   response)))
 
             ;; Existing browser session matches the proxy-asserted identity.
