@@ -140,6 +140,40 @@
     (t/is (= (:id session) (:sid claims)))
     (t/is (= (:id profile) (:uid claims)))))
 
+(t/deftest session-delete-fn-removes-server-side-row
+  ;; Regression guard for the gap where session/delete-fn read ::id from
+  ;; the request but session/wrap-authz never set it: every logout
+  ;; cleared the browser cookie but left the http_session_v2 row alive
+  ;; until GC, so a captured cookie remained replayable for up to the
+  ;; auth-token-cookie-max-age window (7d default). This test pins that
+  ;; wrap-authz now assocs ::id and delete-fn therefore actually
+  ;; deletes the row.
+  (let [cfg      th/*system*
+        manager  (session/inmemory-manager)
+        profile  (th/create-profile* 92)
+        handler  (-> (fn [req] req)
+                     (#'session/wrap-authz {::session/manager manager})
+                     (#'mw/wrap-auth {:bearer (partial session/decode-token cfg)
+                                      :cookie (partial session/decode-token cfg)}))
+        session  (->> (session/create-session manager {:profile-id (:id profile)
+                                                       :user-agent "user agent"})
+                      (#'session/assign-token cfg))
+        request  (handler (->DummyRequest {} {"auth-token" (:token session)}))]
+
+    ;; Sanity: wrap-authz populated ::id so delete-fn has something to read.
+    (t/is (= (:id session) (:app.http.session/id request))
+          "wrap-authz must populate ::id from the resolved session")
+
+    ;; Sanity: the row exists before delete.
+    (t/is (some? (#'session/read-session manager (:id session))))
+
+    ;; delete-fn reads ::id from the request; with the fix in place this
+    ;; actually removes the in-memory session.
+    (let [delete! (session/delete-fn {::session/manager manager})
+          _       (delete! request {::yres/status 200})]
+      (t/is (nil? (#'session/read-session manager (:id session)))
+            "after delete-fn runs, the server-side session row must be gone"))))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; X-Auth-Request middleware tests
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
