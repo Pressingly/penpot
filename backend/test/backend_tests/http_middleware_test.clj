@@ -205,6 +205,26 @@
     ;; Browser cookie is explicitly expired.
     (t/is (= 0 (get-in response [::yres/cookies "auth-token" :max-age])))))
 
+(t/deftest x-auth-request-preserves-local-session-when-profile-lookup-errors
+  (let [profile-id    (random-uuid)
+        stale-session {:id (random-uuid) :profile-id profile-id}
+        captured      (volatile! nil)
+        handler       (#'app.http.auth-request/wrap-authz
+                       (fn [req] (vreset! captured req) req)
+                       (make-xauth-cfg))
+        request       (-> (->DummyRequest {"x-auth-request-email" "user@example.com"} {})
+                          (assoc ::session/profile-id profile-id)
+                          (assoc ::session/session stale-session))
+        response      (with-redefs [app.http.auth-request/get-or-register-profile
+                                    (fn [& _]
+                                      (throw (ex-info "db down" {})))]
+                        (handler request))]
+    ;; Operational errors should not be treated as "unknown user" and
+    ;; destructively clear local session state.
+    (t/is (= profile-id (::session/profile-id @captured)))
+    (t/is (= stale-session (::session/session @captured)))
+    (t/is (not (contains? (::yres/cookies response) "auth-token")))))
+
 (t/deftest x-auth-request-rekeys-when-session-identity-differs
   ;; Repro of the QA-reported bug: alice's auth-token cookie persists on
   ;; Penpot's subdomain after the portal "log out of all apps"; bob then

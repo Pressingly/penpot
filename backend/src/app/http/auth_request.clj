@@ -96,18 +96,28 @@
         (handler request)
 
         :else
-        (let [local-part (first (str/split email-claim #"@"))
-              email      (resolve-email email-claim)
-              fullname   (or (not-empty (yreq/get-header request "x-auth-request-user"))
-                             local-part)
-              profile    (try
-                           (get-or-register-profile cfg email fullname)
-                           (catch Throwable cause
-                             (l/err :hint "x-auth-request: error resolving profile"
-                                    :email email
-                                    :cause cause)
-                             nil))]
+        (let [local-part    (first (str/split email-claim #"@"))
+              email         (resolve-email email-claim)
+              fullname      (or (not-empty (yreq/get-header request "x-auth-request-user"))
+                                local-part)
+              profile-state (try
+                              {:status :ok
+                               :profile (get-or-register-profile cfg email fullname)}
+                              (catch Throwable cause
+                                (l/err :hint "x-auth-request: error resolving profile"
+                                       :email email
+                                       :cause cause)
+                                {:status :error
+                                 :cause cause}))
+              profile       (:profile profile-state)]
           (cond
+            (= :error (:status profile-state))
+            (do
+              (l/wrn :hint "x-auth-request: preserving local auth state because profile resolution failed"
+                     :email email
+                     :session-profile-id (some-> session-pid str))
+              (handler request))
+
             (nil? profile)
             ;; Header email doesn't resolve to a profile (and auto-register
             ;; is off). The upstream identity is something the local DB
