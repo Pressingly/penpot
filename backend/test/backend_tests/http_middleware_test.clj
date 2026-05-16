@@ -217,7 +217,7 @@
                           (assoc ::session/session stale-session))
         response      (with-redefs [app.http.auth-request/get-or-register-profile
                                     (fn [& _]
-                                      (throw (ex-info "db down" {})))]
+                                      (throw (java.sql.SQLException. "db down")))]
                         (handler request))]
     ;; Operational errors should not be treated as "unknown user" and
     ;; destructively clear local session state.
