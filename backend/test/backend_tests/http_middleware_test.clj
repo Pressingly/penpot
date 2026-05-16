@@ -367,7 +367,7 @@
   ;; session-pid (or anonymous if none), and the next successful
   ;; request reconciles normally.
   (with-mocks [_ {:target 'app.http.auth-request/get-or-register-profile
-                  :return (fn [& _] (throw (ex-info "db boom" {})))}]
+                  :return (fn [& _] (throw (java.sql.SQLException. "db boom")))}]
     (let [captured (volatile! nil)
           profile-id (random-uuid)
           cfg      (make-xauth-cfg)
@@ -382,6 +382,23 @@
       (t/is (= 200 (::yres/status response)))
       ;; No cookie clear / no fresh cookie issued — session untouched.
       (t/is (not (contains? (::yres/cookies response) "auth-token"))))))
+
+(t/deftest x-auth-request-rethrows-non-transient-lookup-error
+  ;; A genuine bug (validation failure, NPE, ExceptionInfo from input
+  ;; validation, etc.) MUST NOT be silently absorbed as "transient". A
+  ;; broad catch Throwable would mask programming errors as a quiet
+  ;; "preserve session" pass-through and the bug would never surface.
+  ;; Narrow the transient-exception classification to DB/IO failures
+  ;; only; rethrow everything else so the standard 500 path runs.
+  (with-mocks [_ {:target 'app.http.auth-request/get-or-register-profile
+                  :return (fn [& _] (throw (ex-info "bad input" {:type :validation})))}]
+    (let [cfg     (make-xauth-cfg)
+          handler (#'app.http.auth-request/wrap-authz
+                   (fn [_] {::yres/status 200})
+                   cfg)
+          request (-> (->DummyRequest {"x-auth-request-email" "user@example.com"} {})
+                      (assoc ::session/profile-id (random-uuid)))]
+      (t/is (thrown? clojure.lang.ExceptionInfo (handler request))))))
 
 (t/deftest x-auth-request-rekey-clears-stale-auth-data
   ;; The re-keyed request must have ::http/auth-data removed alongside

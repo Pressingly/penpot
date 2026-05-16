@@ -77,25 +77,51 @@
 ;; MIDDLEWARE
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-;; The profile-lookup try/catch (below) returns a map `{:status …}` so
-;; the caller can distinguish a transient DB/IO failure from a clean
-;; "no profile for this email". Collapsing both to `nil` would let a
-;; Postgres blip silently flush an otherwise-valid session. On
-;; transient failure we preserve the local session and pass through
-;; unchanged — graceful degradation rather than fail-closed 503.
+;; The profile-lookup try/catch (below) narrows what counts as
+;; "transient" to known DB/IO failure classes — Postgres exceptions,
+;; JDBC SQL exceptions, JDBC connection exceptions, java.io.IOException.
+;; A broader `catch Throwable` would also swallow validation errors,
+;; bad-input parses, and programming bugs, masking them as transient
+;; failures that silently extend a stale session. On transient
+;; failure we preserve whatever wrap-session decided and pass through
+;; unchanged — graceful degradation, but only for the failure modes
+;; that genuinely warrant it. Any other exception escapes the catch
+;; and surfaces through the standard error handler as a 500.
+
+(def ^:private transient-exception-classes
+  #{java.sql.SQLException
+    java.sql.SQLTransientException
+    java.sql.SQLNonTransientConnectionException
+    java.io.IOException
+    org.postgresql.util.PSQLException})
+
+(defn- transient-exception?
+  "True iff cause (or any cause-chain ancestor) is an instance of a
+  class we treat as transient. Walks the cause chain so a wrapped
+  ExecutionException with a SQLException root still classifies."
+  [cause]
+  (loop [ex cause]
+    (cond
+      (nil? ex)                                              false
+      (some #(instance? % ex) transient-exception-classes)   true
+      :else                                                  (recur (.getCause ^Throwable ex)))))
 
 (defn- clear-stale-session
   "Returns a request with the local-session keys AND ::http/auth-data
   removed. Both must be cleared together because downstream handlers
   read identity from BOTH `::session/profile-id` (the post-wrap-authz
-  shorthand) and `::http/auth-data.claims.uid` (the raw decoded cookie
-  claims, used by errors.clj and access_token.clj). Leaving auth-data
-  in place after re-keying or after a mismatch flush leaks the stale
-  identity to those readers."
+  shorthand) and `::http/auth-data.claims.uid` (used by errors.clj for
+  log enrichment on cookie-auth requests). Leaving auth-data in place
+  after re-keying or after a mismatch flush leaks the stale identity
+  to that reader.
+
+  (access_token.clj reads ::http/auth-data too, but only branches on
+  `:type :token` — the API-key path is short-circuited before we get
+  here, so it's not relevant to the cookie-auth flow this middleware
+  reconciles.)"
   [request]
   (dissoc request
           ::session/profile-id
-          ::session/session-id
           ::session/session
           ::http/auth-data))
 
@@ -136,11 +162,19 @@
                               {:status :ok
                                :profile (get-or-register-profile cfg email fullname)}
                               (catch Throwable cause
-                                (l/err :hint "x-auth-request: error resolving profile"
-                                       :email email
-                                       :cause cause)
-                                {:status :error
-                                 :cause cause}))
+                                (if (transient-exception? cause)
+                                  (do
+                                    (l/err :hint "x-auth-request: transient error resolving profile, preserving session"
+                                           :email email
+                                           :cause cause)
+                                    {:status :error
+                                     :cause cause})
+                                  ;; Non-transient — programming bug, validation
+                                  ;; failure, bad input. Rethrow so the standard
+                                  ;; error pipeline returns 500 instead of
+                                  ;; silently masking it as a "preserve session"
+                                  ;; pass-through.
+                                  (throw cause))))
               profile       (:profile profile-state)]
           (cond
             ;; Transient failure resolving the proxy identity. We have NO
