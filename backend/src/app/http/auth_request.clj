@@ -131,6 +131,17 @@
 ;; email (so we can compare without get-or-register-profile) or by
 ;; caching email→profile-id in a short-lived in-memory map.
 
+(defn- with-session-id
+  "Attach ::session/id from the decoded local session map so
+  session/delete-fn can drop the backing server-side row. wrap-session
+  populates ::session/session (the full session map with :id) but not
+  ::session/id directly; delete-fn reads ::session/id, so this bridges
+  the two."
+  [request]
+  (if-let [sid (some-> request ::session/session :id)]
+    (assoc request ::session/id sid)
+    request))
+
 (defn- wrap-authz
   [handler cfg]
   (fn [request]
@@ -171,19 +182,35 @@
                      :email email)
               (handler request))
 
-            (:is-blocked profile)
-            (do
-              (l/wrn :hint "x-auth-request: profile is blocked, denying access"
+            (or (:is-blocked profile)
+                (not (:is-active profile)))
+            ;; Upstream identity is blocked or inactive. Two cases:
+            ;;
+            ;;   1. No existing local session (session-pid == nil) — or
+            ;;      the local session already matches the refused incoming
+            ;;      profile. Plain 403, no flush needed.
+            ;;
+            ;;   2. An existing local session for a DIFFERENT profile
+            ;;      (alice is logged in, upstream now says bob, bob is
+            ;;      blocked). Mirror Plane's behaviour: flush alice's
+            ;;      session before responding. Otherwise alice's
+            ;;      auth-token cookie survives the upstream identity
+            ;;      change — inert in practice (every subsequent request
+            ;;      re-fires this same 403) but present until natural
+            ;;      expiry. Cross-fork consistency wins: Plane / Outline
+            ;;      / Twenty all clear their session on bail-out paths.
+            (let [reason (if (:is-blocked profile)
+                           "x-auth-request: profile is blocked, denying access"
+                           "x-auth-request: profile is not active, denying access")
+                  response {::yres/status 403}]
+              (l/wrn :hint reason
                      :email email
-                     :profile-id (str (:id profile)))
-              {::yres/status 403})
-
-            (not (:is-active profile))
-            (do
-              (l/wrn :hint "x-auth-request: profile is not active, denying access"
-                     :email email
-                     :profile-id (str (:id profile)))
-              {::yres/status 403})
+                     :profile-id (str (:id profile))
+                     :session-profile-id (some-> session-pid str))
+              (if (and session-pid (not= session-pid (:id profile)))
+                (let [delete-session! (session/delete-fn cfg)]
+                  (delete-session! (with-session-id request) response))
+                response))
 
             ;; Steady state — existing browser session matches the proxy-
             ;; asserted identity. No work to do.

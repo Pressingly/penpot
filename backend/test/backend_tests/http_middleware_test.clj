@@ -258,6 +258,64 @@
     (t/is (= (:id bob) (::session/profile-id @captured)))
     (t/is (nil? (::http/auth-data @captured)))))
 
+(t/deftest x-auth-request-blocked-incoming-clears-existing-mismatched-session
+  ;; Cross-fork consistency (Plane / Outline / Twenty all flush on
+  ;; mismatch bail-out paths). When alice is logged in locally and the
+  ;; proxy header asserts bob's email but bob is blocked, return 403
+  ;; AND flush alice's session — otherwise her auth-token cookie
+  ;; survives the upstream identity change indefinitely.
+  (let [alice    (th/create-profile* 1 {:is-active true})
+        bob      (th/create-profile* 2 {:is-active true})
+        _        (th/db-update! :profile {:is-blocked true} {:id (:id bob)})
+        cfg      (make-xauth-cfg)
+        handler  (#'app.http.auth-request/wrap-authz
+                  (fn [_] {::yres/status 200})
+                  cfg)
+        request  (-> (->DummyRequest {"x-auth-request-email" (:email bob)} {})
+                     (assoc ::session/profile-id (:id alice))
+                     (assoc ::session/session {:id (random-uuid)
+                                               :profile-id (:id alice)}))
+        response (handler request)]
+    (t/is (= 403 (::yres/status response)))
+    ;; Browser auth-token cookie is explicitly cleared (max-age 0).
+    (t/is (= 0 (get-in response [::yres/cookies "auth-token" :max-age])))))
+
+(t/deftest x-auth-request-inactive-incoming-clears-existing-mismatched-session
+  ;; Same as blocked-mismatch but for is-active=false. Symmetric handling.
+  (let [alice    (th/create-profile* 1 {:is-active true})
+        bob      (th/create-profile* 2 {:is-active false})
+        cfg      (make-xauth-cfg)
+        handler  (#'app.http.auth-request/wrap-authz
+                  (fn [_] {::yres/status 200})
+                  cfg)
+        request  (-> (->DummyRequest {"x-auth-request-email" (:email bob)} {})
+                     (assoc ::session/profile-id (:id alice))
+                     (assoc ::session/session {:id (random-uuid)
+                                               :profile-id (:id alice)}))
+        response (handler request)]
+    (t/is (= 403 (::yres/status response)))
+    (t/is (= 0 (get-in response [::yres/cookies "auth-token" :max-age])))))
+
+(t/deftest x-auth-request-blocked-incoming-no-flush-when-no-mismatch
+  ;; Bob is blocked AND bob is the currently-authenticated local user.
+  ;; Plain 403; nothing to flush — there's no other identity to
+  ;; preserve. Defends against flushing on every 403 path.
+  (let [bob      (th/create-profile* 1 {:is-active true})
+        _        (th/db-update! :profile {:is-blocked true} {:id (:id bob)})
+        cfg      (make-xauth-cfg)
+        handler  (#'app.http.auth-request/wrap-authz
+                  (fn [_] {::yres/status 200})
+                  cfg)
+        request  (-> (->DummyRequest {"x-auth-request-email" (:email bob)} {})
+                     (assoc ::session/profile-id (:id bob))
+                     (assoc ::session/session {:id (random-uuid)
+                                               :profile-id (:id bob)}))
+        response (handler request)]
+    (t/is (= 403 (::yres/status response)))
+    ;; No cookie clear — bob's session was the same identity as the
+    ;; refused incoming profile.
+    (t/is (not (contains? (::yres/cookies response) "auth-token")))))
+
 (t/deftest x-auth-request-rekey-clears-stale-session-map
   ;; ::session/session is read indirectly by session/get-session, which
   ;; the update-profile-password RPC calls via invalidate-others. If
