@@ -152,10 +152,8 @@
         :else
         (let [local-part (first (str/split email-claim #"@"))
               email      (resolve-email email-claim)
-              fullname   (or (not-empty (yreq/get-header request "x-auth-request-user"))
-                             local-part)
               profile    (try
-                           (get-or-register-profile cfg email fullname)
+                           (get-or-register-profile cfg email local-part)
                            (catch Throwable cause
                              (l/err :hint "x-auth-request: error resolving profile"
                                     :email email

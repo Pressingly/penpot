@@ -379,14 +379,12 @@
 (t/deftest x-auth-request-auto-register-creates-active-profile
   (binding [cf/flags (conj cf/flags :x-auth-request-auto-register)]
     (let [email    "newuser@example.com"
-          fullname "New User"
           captured (volatile! nil)
           cfg      (make-xauth-cfg)
           handler  (#'app.http.auth-request/wrap-authz
                     (fn [req] (vreset! captured req) {::yres/status 200})
                     cfg)
-          response (handler (->DummyRequest {"x-auth-request-email" email
-                                             "x-auth-request-user"  fullname} {}))]
+          response (handler (->DummyRequest {"x-auth-request-email" email} {}))]
       ;; Profile must be injected into the downstream request
       (t/is (uuid? (::session/profile-id @captured)))
       ;; A session cookie must be set so the browser is authenticated
@@ -397,6 +395,7 @@
                                   (profile/get-profile-by-email conn email)))]
         (t/is (some? profile))
         (t/is (true? (:is-active profile)))
+        (t/is (= "newuser" (:fullname profile)))
         (t/is (= (::session/profile-id @captured) (:id profile)))))))
 
 (t/deftest x-auth-request-auto-register-joins-named-smb-team
@@ -418,8 +417,7 @@
             handler  (#'app.http.auth-request/wrap-authz
                       (fn [req] (vreset! captured req) {::yres/status 200})
                       cfg)
-            _        (handler (->DummyRequest {"x-auth-request-email" email
-                                               "x-auth-request-user"  "Shared Team Join"} {}))
+            _        (handler (->DummyRequest {"x-auth-request-email" email} {}))
             profile  (db/tx-run! cfg
                                  (fn [{:keys [::db/conn]}]
                                    (profile/get-profile-by-email conn email)))
