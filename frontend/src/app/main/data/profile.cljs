@@ -152,10 +152,10 @@
 
            (when (not= (:theme profile)
                        (:theme profile'))
-             (rx/of (ptk/data-event ::ev/event
-                                    {::ev/name "activate-theme"
-                                     ::ev/origin "settings"
-                                     :theme (:theme profile)})))))))))
+             (rx/of (ev/event
+                     {::ev/name "activate-theme"
+                      ::ev/origin "settings"
+                      :theme (:theme profile)})))))))))
 
 ;; --- Toggle Theme
 
@@ -186,9 +186,9 @@
     (watch [it state _]
       (let [profile (get state :profile)
             origin  (::ev/origin (meta it))]
-        (rx/of (ptk/data-event ::ev/event {:theme (:theme profile)
-                                           ::ev/name "activate-theme"
-                                           ::ev/origin origin})
+        (rx/of (ev/event {:theme (:theme profile)
+                          ::ev/name "activate-theme"
+                          ::ev/origin origin})
                (persist-profile))))))
 
 ;; --- Request Email Change
@@ -498,4 +498,3 @@
         (->> (rp/cmd! :delete-access-token params)
              (rx/tap on-success)
              (rx/catch on-error))))))
-

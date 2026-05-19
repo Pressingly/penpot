@@ -9,14 +9,17 @@
   (:require
    [app.common.data :as d]
    [app.common.data.macros :as dm]
-   [app.common.json :as json]
+   [app.common.i18n :as i18n :refer [tr]]
    [app.common.schema :as sm]
+   [app.common.schema.messages :as csm]
+   [app.common.types.component :as ctk]
    [app.common.types.container :as ctn]
    [app.common.types.file :as ctf]
    [app.common.types.tokens-lib :as ctob]
    [app.main.data.helpers :as dsh]
    [app.main.store :as st]
-   [app.util.object :as obj]))
+   [app.util.object :as obj]
+   [cuerdas.core :as str]))
 
 (defn locate-file
   [id]
@@ -221,6 +224,16 @@
               (resolve value)))))]
     [ret-v ret-p]))
 
+(defn natural-child-ordering?
+  [plugin-id]
+  (boolean
+   (dm/get-in @st/state [:plugins :flags plugin-id :natural-child-ordering])))
+
+(defn throw-validation-errors?
+  [plugin-id]
+  (boolean
+   (dm/get-in @st/state [:plugins :flags plugin-id :throw-validation-errors])))
+
 (defn display-not-valid
   [code value]
   (if (some? value)
@@ -228,34 +241,54 @@
     (.error js/console (dm/str "[PENPOT PLUGIN] Value not valid. Code: " code)))
   nil)
 
+(defn throw-not-valid
+  [code value]
+  (if (some? value)
+    (throw (js/Error. (dm/str "[PENPOT PLUGIN] Value not valid: " value ". Code: " code)))
+    (throw (js/Error. (dm/str "[PENPOT PLUGIN] Value not valid. Code: " code))))
+  nil)
+
+(defn not-valid
+  [plugin-id code value]
+  (if (throw-validation-errors? plugin-id)
+    (throw-not-valid code value)
+    (display-not-valid code value)))
+
 (defn reject-not-valid
   [reject code value]
   (let [msg (dm/str "[PENPOT PLUGIN] Value not valid: " value ". Code: " code)]
     (.error js/console msg)
     (reject msg)))
 
-(defn coerce
-  "Decodes a javascript object into clj and check against schema. If schema validation fails,
-   displays a not-valid message with the code and hint provided and returns nil."
-  [attrs schema code hint]
-  (let [decoder   (sm/decoder schema sm/json-transformer)
-        explainer (sm/explainer schema)
-        attrs     (-> attrs json/->clj decoder)]
-    (if-let [explain (explainer attrs)]
-      (display-not-valid code (str hint " " (sm/humanize-explain explain)))
-      attrs)))
-
 (defn mixed-value
   [values]
   (let [s (set values)]
     (if (= (count s) 1) (first s) "mixed")))
 
+(defn error-messages
+  [explain]
+  (->> (:errors explain)
+       (reduce csm/interpret-schema-problem {})
+       (mapcat (comp seq val))
+       (map (fn [[field {:keys [message]}]]
+              (tr "plugins.validation.message" (name field) message)))
+       (str/join ". ")))
+
 (defn handle-error
   "Function to be used in plugin proxies methods to handle errors and print a readable
    message to the console."
-  [cause]
-  (display-not-valid (ex-message cause) nil)
-  (if-let [explain (-> cause ex-data ::sm/explain)]
-    (println (sm/humanize-explain explain))
-    (js/console.log (ex-data cause)))
-  (js/console.log (.-stack cause)))
+  [plugin-id]
+  (fn [cause]
+    (let [message
+          (if-let [explain (-> cause ex-data ::sm/explain)]
+            (do
+              (js/console.error (sm/humanize-explain explain))
+              (error-messages explain))
+            (ex-data cause))]
+      (js/console.log (.-stack cause))
+      (not-valid plugin-id :error message))))
+
+(defn is-main-component-proxy?
+  [p]
+  (when-let [shape (proxy->shape p)]
+    (ctk/main-instance? shape)))

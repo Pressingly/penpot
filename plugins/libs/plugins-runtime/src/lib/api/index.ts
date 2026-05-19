@@ -165,6 +165,10 @@ export function createApi(
 
     // Penpot State API
 
+    get version(): string {
+      return plugin.context.version;
+    },
+
     get root(): Shape | null {
       checkPermission('content:read');
       return plugin.context.root;
@@ -370,6 +374,11 @@ export function createApi(
     flatten(shapes: Shape[]): Path[] {
       checkPermission('content:write');
       return plugin.context.flatten(shapes);
+    },
+
+    createVariantFromComponents(shapes: Board[]): VariantContainer {
+      checkPermission('content:write');
+      return plugin.context.createVariantFromComponents(shapes);
     },
   };
 

@@ -1,6 +1,6 @@
 import type { Context, Theme } from '@penpot/plugin-types';
 
-import { getValidUrl, loadManifestCode } from './parse-manifest.js';
+import { prepareUrl, loadManifestCode } from './parse-manifest.js';
 import { Manifest } from './models/manifest.model.js';
 import { PluginModalElement } from './modal/plugin-modal.js';
 import { openUIApi } from './api/openUI.api.js';
@@ -21,6 +21,7 @@ export async function createPluginManager(
   let modal: PluginModalElement | null = null;
   let uiMessagesCallbacks: ((message: unknown) => void)[] = [];
   const timeouts = new Set<ReturnType<typeof setTimeout>>();
+  const intervals = new Set<ReturnType<typeof setInterval>>();
 
   const allowDownloads = !!manifest.permissions.find(
     (s) => s === 'allow:downloads',
@@ -55,6 +56,9 @@ export async function createPluginManager(
     timeouts.forEach(clearTimeout);
     timeouts.clear();
 
+    intervals.forEach(clearInterval);
+    intervals.clear();
+
     if (modal) {
       modal.removeEventListener('close', closePlugin);
       modal.remove();
@@ -80,9 +84,8 @@ export async function createPluginManager(
   };
 
   const openModal = (name: string, url: string, options?: OpenUIOptions) => {
-    const theme = context.theme as 'light' | 'dark';
-
-    const modalUrl = getValidUrl(manifest.host, url);
+    const theme = context.theme as Theme;
+    const modalUrl = prepareUrl(manifest, url, { theme });
 
     if (modal?.getAttribute('iframe-src') === modalUrl) {
       return;
@@ -151,6 +154,9 @@ export async function createPluginManager(
     },
     get timeouts() {
       return timeouts;
+    },
+    get intervals() {
+      return intervals;
     },
     get code() {
       return code;

@@ -19,6 +19,7 @@
    [app.config :as cf]
    [app.db :as db]
    [app.email :as eml]
+   [app.email.blacklist :as email.blacklist]
    [app.loggers.audit :as audit]
    [app.main :as-alias main]
    [app.rpc :as-alias rpc]
@@ -91,6 +92,12 @@
   (let [email  (profile/clean-email email)
         member (profile/get-profile-by-email conn email)]
 
+    (when (and (email.blacklist/enabled? cfg)
+               (email.blacklist/contains? cfg email))
+      (ex/raise :type :restriction
+                :code :email-domain-is-not-allowed
+                :hint "email domain is in the blacklist"))
+
     ;; When we have email verification disabled and invitation user is
     ;; already present in the database, we proceed to add it to the
     ;; team as-is, without email roundtrip.
@@ -149,9 +156,9 @@
                          "update-team-invitation"
                          "create-team-invitation")
                 event (-> (audit/event-from-rpc-params params)
-                          (assoc ::audit/name evname)
-                          (assoc ::audit/props props))]
-            (audit/submit! cfg event))
+                          (assoc :name evname)
+                          (assoc :props props))]
+            (audit/submit cfg event))
 
           (when (allow-invitation-emails? member)
             (eml/send! {::eml/conn conn
@@ -403,9 +410,9 @@
 
     (let [props {:name name :features features}
           event (-> (audit/event-from-rpc-params params)
-                    (assoc ::audit/name "create-team")
-                    (assoc ::audit/props props))]
-      (audit/submit! cfg event))
+                    (assoc :name "create-team")
+                    (assoc :props props))]
+      (audit/submit cfg event))
 
     ;; Create invitations for all provided emails.
     (let [profile     (db/get-by-id conn :profile profile-id)

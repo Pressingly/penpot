@@ -463,8 +463,22 @@
     :fn (mg/resource "app/migrations/sql/0144-mod-server-error-report-table.sql")}
 
    {:name "0145-fix-plugins-uri-on-profile"
-    :fn mg0145/migrate}])
+    :fn mg0145/migrate}
 
+   {:name "0145-mod-audit-log-table"
+    :fn (mg/resource "app/migrations/sql/0145-mod-audit-log-table.sql")}
+
+   {:name "0145-mod-audit-log-table"
+    :fn (mg/resource "app/migrations/sql/0145-mod-audit-log-table.sql")}
+
+   {:name "0146-mod-audit-log-table"
+    :fn (mg/resource "app/migrations/sql/0146-mod-audit-log-table.sql")}
+
+   {:name "0146-mod-access-token-table"
+    :fn (mg/resource "app/migrations/sql/0146-mod-access-token-table.sql")}
+
+   {:name "0147-add-upload-session-table"
+    :fn (mg/resource "app/migrations/sql/0147-add-upload-session-table.sql")}])
 
 (defn apply-migrations!
   [pool name migrations]

@@ -11,7 +11,7 @@ Penpot:
             open: (
                 name: string,
                 url: string,
-                options?: { width: number; height: number },
+                options?: { width: number; height: number; hidden: boolean },
             ) => void;
             size: { width: number; height: number } | null;
             resize: (width: number, height: number) => void;
@@ -26,6 +26,7 @@ Penpot:
             props?: { [key: string]: unknown },
         ): symbol;
         off(listenerId: symbol): void;
+        version: string;
         root: Shape | null;
         currentFile: File | null;
         currentPage: Page | null;
@@ -72,7 +73,7 @@ Penpot:
         generateFontFaces(shapes: Shape[]): Promise<string>;
         openViewer(): void;
         createPage(): Page;
-        openPage(page: Page, newWindow?: boolean): void;
+        openPage(page: string | Page, newWindow?: boolean): void;
         alignHorizontal(
             shapes: Shape[],
             direction: "center" | "left" | "right",
@@ -84,6 +85,7 @@ Penpot:
         distributeHorizontal(shapes: Shape[]): void;
         distributeVertical(shapes: Shape[]): void;
         flatten(shapes: Shape[]): Path[];
+        createVariantFromComponents(shapes: Board[]): VariantContainer;
     }
     ```
 
@@ -99,7 +101,7 @@ Penpot:
             open: (
                 name: string,
                 url: string,
-                options?: { width: number; height: number },
+                options?: { width: number; height: number; hidden: boolean },
             ) => void;
             size: { width: number; height: number } | null;
             resize: (width: number, height: number) => void;
@@ -110,7 +112,7 @@ Penpot:
 
         Type Declaration
 
-        * open: (name: string, url: string, options?: { width: number; height: number }) => void
+        * open: (    name: string,    url: string,    options?: { width: number; height: number; hidden: boolean },) => void
 
           Opens the plugin UI. It is possible to develop a plugin without interface (see Palette color example) but if you need, the way to open this UI is using `penpot.ui.open`.
           There is a minimum and maximum size for this modal and a default size but it's possible to customize it anyway with the options parameter.
@@ -161,6 +163,12 @@ Penpot:
         ```
         penpot.closePlugin();
         ```
+      version: |-
+        ```
+        readonly version: string
+        ```
+
+        Returns the current penpot version.
       root: |-
         ```
         readonly root: Shape | null
@@ -724,19 +732,19 @@ Penpot:
         Returns Page
       openPage: |-
         ```
-        openPage(page: Page, newWindow?: boolean): void
+        openPage(page: string | Page, newWindow?: boolean): void
         ```
 
         Changes the current open page to given page. Requires `content:read` permission.
 
         Parameters
 
-        * page: Page
+        * page: string | Page
 
-          the page to open
+          the page to open (a Page object or a page UUID string)
         * newWindow: boolean
 
-          if true opens the page in a new window
+          if true opens the page in a new window, defaults to false
 
         Returns void
 
@@ -823,6 +831,24 @@ Penpot:
           to flatten
 
         Returns Path[]
+      createVariantFromComponents: |-
+        ```
+        createVariantFromComponents(shapes: Board[]): VariantContainer
+        ```
+
+        Combine several standard Components into a VariantComponent. Similar to doing it
+        with the contextual menu on the Penpot interface.
+        All the shapes passed as arguments should be main instances.
+
+        Parameters
+
+        * shapes: Board[]
+
+          A list of main instances of the components to combine.
+
+        Returns VariantContainer
+
+        The variant container created
 ActiveUser:
   overview: |-
     Interface ActiveUser
@@ -1062,7 +1088,7 @@ Board:
         rotation: number;
         strokes: Stroke[];
         layoutChild?: LayoutChildProperties;
-        layoutCell?: LayoutChildProperties;
+        layoutCell?: LayoutCellProperties;
         setParentIndex(index: number): void;
         tokens: {
             width: string;
@@ -1071,10 +1097,10 @@ Board:
             x: string;
             y: string;
             all: string;
-            r1: string;
-            r2: string;
-            r3: string;
-            r4: string;
+            borderRadiusTopLeft: string;
+            borderRadiusTopRight: string;
+            borderRadiusBottomRight: string;
+            borderRadiusBottomLeft: string;
             shadow: string;
             strokeColor: string;
             strokeWidth: string;
@@ -1090,14 +1116,14 @@ Board:
             layoutItemMaxH: string;
             rowGap: string;
             columnGap: string;
-            p1: string;
-            p2: string;
-            p3: string;
-            p4: string;
-            m1: string;
-            m2: string;
-            m3: string;
-            m4: string;
+            paddingLeft: string;
+            paddingTop: string;
+            paddingRight: string;
+            paddingBottom: string;
+            marginLeft: string;
+            marginTop: string;
+            marginRight: string;
+            marginBottom: string;
             textCase: string;
             textDecoration: string;
             typography: string;
@@ -1114,7 +1140,7 @@ Board:
         detach(): void;
         swapComponent(component: LibraryComponent): void;
         switchVariant(pos: number, value: string): void;
-        combineAsVariants(ids: string[]): void;
+        combineAsVariants(ids: string[]): VariantContainer;
         isVariantHead(): boolean;
         resize(width: number, height: number): void;
         rotate(angle: number, center?: { x: number; y: number } | null): void;
@@ -1193,12 +1219,20 @@ Board:
         ```
 
         The horizontal sizing behavior of the board.
+        It can be one of the following values:
+
+        * 'fix': The containers has its own intrinsic fixed size.
+        * 'auto': The container fits the content.
       verticalSizing: |-
         ```
         verticalSizing?: "auto" | "fix"
         ```
 
         The vertical sizing behavior of the board.
+        It can be one of the following values:
+
+        * 'fix': The containers has its own intrinsic fixed size.
+        * 'auto': The container fits the content.
       fills: |-
         ```
         fills: Fill[]
@@ -1456,7 +1490,7 @@ Board:
         Layout properties for children of the shape.
       layoutCell: |-
         ```
-        readonly layoutCell?: LayoutChildProperties
+        readonly layoutCell?: LayoutCellProperties
         ```
 
         Layout properties for cells in a grid layout.
@@ -1469,10 +1503,10 @@ Board:
             x: string;
             y: string;
             all: string;
-            r1: string;
-            r2: string;
-            r3: string;
-            r4: string;
+            borderRadiusTopLeft: string;
+            borderRadiusTopRight: string;
+            borderRadiusBottomRight: string;
+            borderRadiusBottomLeft: string;
             shadow: string;
             strokeColor: string;
             strokeWidth: string;
@@ -1488,14 +1522,14 @@ Board:
             layoutItemMaxH: string;
             rowGap: string;
             columnGap: string;
-            p1: string;
-            p2: string;
-            p3: string;
-            p4: string;
-            m1: string;
-            m2: string;
-            m3: string;
-            m4: string;
+            paddingLeft: string;
+            paddingTop: string;
+            paddingRight: string;
+            paddingBottom: string;
+            marginLeft: string;
+            marginTop: string;
+            marginRight: string;
+            marginBottom: string;
             textCase: string;
             textDecoration: string;
             typography: string;
@@ -1881,7 +1915,7 @@ Board:
         Returns void
       combineAsVariants: |-
         ```
-        combineAsVariants(ids: string[]): void
+        combineAsVariants(ids: string[]): VariantContainer
         ```
 
         Combine several standard Components into a VariantComponent. Similar to doing it with the contextual menu
@@ -1894,7 +1928,9 @@ Board:
 
           A list of ids of the main instances of the components to combine with this one.
 
-        Returns void
+        Returns VariantContainer
+
+        The variant container created
       isVariantHead: |-
         ```
         isVariantHead(): boolean
@@ -2171,7 +2207,7 @@ VariantContainer:
         rotation: number;
         strokes: Stroke[];
         layoutChild?: LayoutChildProperties;
-        layoutCell?: LayoutChildProperties;
+        layoutCell?: LayoutCellProperties;
         setParentIndex(index: number): void;
         tokens: {
             width: string;
@@ -2180,10 +2216,10 @@ VariantContainer:
             x: string;
             y: string;
             all: string;
-            r1: string;
-            r2: string;
-            r3: string;
-            r4: string;
+            borderRadiusTopLeft: string;
+            borderRadiusTopRight: string;
+            borderRadiusBottomRight: string;
+            borderRadiusBottomLeft: string;
             shadow: string;
             strokeColor: string;
             strokeWidth: string;
@@ -2199,14 +2235,14 @@ VariantContainer:
             layoutItemMaxH: string;
             rowGap: string;
             columnGap: string;
-            p1: string;
-            p2: string;
-            p3: string;
-            p4: string;
-            m1: string;
-            m2: string;
-            m3: string;
-            m4: string;
+            paddingLeft: string;
+            paddingTop: string;
+            paddingRight: string;
+            paddingBottom: string;
+            marginLeft: string;
+            marginTop: string;
+            marginRight: string;
+            marginBottom: string;
             textCase: string;
             textDecoration: string;
             typography: string;
@@ -2223,7 +2259,7 @@ VariantContainer:
         detach(): void;
         swapComponent(component: LibraryComponent): void;
         switchVariant(pos: number, value: string): void;
-        combineAsVariants(ids: string[]): void;
+        combineAsVariants(ids: string[]): VariantContainer;
         isVariantHead(): boolean;
         resize(width: number, height: number): void;
         rotate(angle: number, center?: { x: number; y: number } | null): void;
@@ -2250,7 +2286,7 @@ VariantContainer:
     * Board
       + VariantContainer
 
-    Referenced by: ContextTypesUtils
+    Referenced by: Board, Boolean, Context, ContextTypesUtils, Ellipse, Group, Image, Path, Penpot, Rectangle, ShapeBase, SvgRaw, Text, VariantContainer
   members:
     Properties:
       type: |-
@@ -2301,12 +2337,20 @@ VariantContainer:
         ```
 
         The horizontal sizing behavior of the board.
+        It can be one of the following values:
+
+        * 'fix': The containers has its own intrinsic fixed size.
+        * 'auto': The container fits the content.
       verticalSizing: |-
         ```
         verticalSizing?: "auto" | "fix"
         ```
 
         The vertical sizing behavior of the board.
+        It can be one of the following values:
+
+        * 'fix': The containers has its own intrinsic fixed size.
+        * 'auto': The container fits the content.
       fills: |-
         ```
         fills: Fill[]
@@ -2568,7 +2612,7 @@ VariantContainer:
         Layout properties for children of the shape.
       layoutCell: |-
         ```
-        readonly layoutCell?: LayoutChildProperties
+        readonly layoutCell?: LayoutCellProperties
         ```
 
         Layout properties for cells in a grid layout.
@@ -2581,10 +2625,10 @@ VariantContainer:
             x: string;
             y: string;
             all: string;
-            r1: string;
-            r2: string;
-            r3: string;
-            r4: string;
+            borderRadiusTopLeft: string;
+            borderRadiusTopRight: string;
+            borderRadiusBottomRight: string;
+            borderRadiusBottomLeft: string;
             shadow: string;
             strokeColor: string;
             strokeWidth: string;
@@ -2600,14 +2644,14 @@ VariantContainer:
             layoutItemMaxH: string;
             rowGap: string;
             columnGap: string;
-            p1: string;
-            p2: string;
-            p3: string;
-            p4: string;
-            m1: string;
-            m2: string;
-            m3: string;
-            m4: string;
+            paddingLeft: string;
+            paddingTop: string;
+            paddingRight: string;
+            paddingBottom: string;
+            marginLeft: string;
+            marginTop: string;
+            marginRight: string;
+            marginBottom: string;
             textCase: string;
             textDecoration: string;
             typography: string;
@@ -2993,7 +3037,7 @@ VariantContainer:
         Returns void
       combineAsVariants: |-
         ```
-        combineAsVariants(ids: string[]): void
+        combineAsVariants(ids: string[]): VariantContainer
         ```
 
         Combine several standard Components into a VariantComponent. Similar to doing it with the contextual menu
@@ -3006,7 +3050,9 @@ VariantContainer:
 
           A list of ids of the main instances of the components to combine with this one.
 
-        Returns void
+        Returns VariantContainer
+
+        The variant container created
       isVariantHead: |-
         ```
         isVariantHead(): boolean
@@ -3270,7 +3316,7 @@ Boolean:
         rotation: number;
         strokes: Stroke[];
         layoutChild?: LayoutChildProperties;
-        layoutCell?: LayoutChildProperties;
+        layoutCell?: LayoutCellProperties;
         setParentIndex(index: number): void;
         tokens: {
             width: string;
@@ -3279,10 +3325,10 @@ Boolean:
             x: string;
             y: string;
             all: string;
-            r1: string;
-            r2: string;
-            r3: string;
-            r4: string;
+            borderRadiusTopLeft: string;
+            borderRadiusTopRight: string;
+            borderRadiusBottomRight: string;
+            borderRadiusBottomLeft: string;
             shadow: string;
             strokeColor: string;
             strokeWidth: string;
@@ -3298,14 +3344,14 @@ Boolean:
             layoutItemMaxH: string;
             rowGap: string;
             columnGap: string;
-            p1: string;
-            p2: string;
-            p3: string;
-            p4: string;
-            m1: string;
-            m2: string;
-            m3: string;
-            m4: string;
+            paddingLeft: string;
+            paddingTop: string;
+            paddingRight: string;
+            paddingBottom: string;
+            marginLeft: string;
+            marginTop: string;
+            marginRight: string;
+            marginBottom: string;
             textCase: string;
             textDecoration: string;
             typography: string;
@@ -3322,7 +3368,7 @@ Boolean:
         detach(): void;
         swapComponent(component: LibraryComponent): void;
         switchVariant(pos: number, value: string): void;
-        combineAsVariants(ids: string[]): void;
+        combineAsVariants(ids: string[]): VariantContainer;
         isVariantHead(): boolean;
         resize(width: number, height: number): void;
         rotate(angle: number, center?: { x: number; y: number } | null): void;
@@ -3629,7 +3675,7 @@ Boolean:
         Layout properties for children of the shape.
       layoutCell: |-
         ```
-        readonly layoutCell?: LayoutChildProperties
+        readonly layoutCell?: LayoutCellProperties
         ```
 
         Layout properties for cells in a grid layout.
@@ -3642,10 +3688,10 @@ Boolean:
             x: string;
             y: string;
             all: string;
-            r1: string;
-            r2: string;
-            r3: string;
-            r4: string;
+            borderRadiusTopLeft: string;
+            borderRadiusTopRight: string;
+            borderRadiusBottomRight: string;
+            borderRadiusBottomLeft: string;
             shadow: string;
             strokeColor: string;
             strokeWidth: string;
@@ -3661,14 +3707,14 @@ Boolean:
             layoutItemMaxH: string;
             rowGap: string;
             columnGap: string;
-            p1: string;
-            p2: string;
-            p3: string;
-            p4: string;
-            m1: string;
-            m2: string;
-            m3: string;
-            m4: string;
+            paddingLeft: string;
+            paddingTop: string;
+            paddingRight: string;
+            paddingBottom: string;
+            marginLeft: string;
+            marginTop: string;
+            marginRight: string;
+            marginBottom: string;
             textCase: string;
             textDecoration: string;
             typography: string;
@@ -4005,7 +4051,7 @@ Boolean:
         Returns void
       combineAsVariants: |-
         ```
-        combineAsVariants(ids: string[]): void
+        combineAsVariants(ids: string[]): VariantContainer
         ```
 
         Combine several standard Components into a VariantComponent. Similar to doing it with the contextual menu
@@ -4018,7 +4064,9 @@ Boolean:
 
           A list of ids of the main instances of the components to combine with this one.
 
-        Returns void
+        Returns VariantContainer
+
+        The variant container created
       isVariantHead: |-
         ```
         isVariantHead(): boolean
@@ -4575,8 +4623,8 @@ CommonLayout:
         leftPadding: number;
         horizontalSizing: "fill"
         | "auto"
-        | "fit-content";
-        verticalSizing: "fill" | "auto" | "fit-content";
+        | "fix";
+        verticalSizing: "fill" | "auto" | "fix";
         remove(): void;
     }
     ```
@@ -4706,26 +4754,26 @@ CommonLayout:
         The `leftPadding` property specifies the padding at the left of the container.
       horizontalSizing: |-
         ```
-        horizontalSizing: "fill" | "auto" | "fit-content"
+        horizontalSizing: "fill" | "auto" | "fix"
         ```
 
         The `horizontalSizing` property specifies the horizontal sizing behavior of the container.
         It can be one of the following values:
 
-        * 'fit-content': The container fits the content.
-        * 'fill': The container fills the available space.
-        * 'auto': The container size is determined automatically.
+        * 'fix': The containers has its own intrinsic fixed size.
+        * 'fill': The container fills the available space. Only can be set if it's inside another layout.
+        * 'auto': The container fits the content.
       verticalSizing: |-
         ```
-        verticalSizing: "fill" | "auto" | "fit-content"
+        verticalSizing: "fill" | "auto" | "fix"
         ```
 
         The `verticalSizing` property specifies the vertical sizing behavior of the container.
         It can be one of the following values:
 
-        * 'fit-content': The container fits the content.
-        * 'fill': The container fills the available space.
-        * 'auto': The container size is determined automatically.
+        * 'fix': The containers has its own intrinsic fixed size.
+        * 'fill': The container fills the available space. Only can be set if it's inside another layout.
+        * 'auto': The container fits the content.
     Methods:
       remove: |-
         ```
@@ -4744,6 +4792,7 @@ Context:
 
     ```
     interface Context {
+        version: string;
         root: Shape | null;
         currentFile: File | null;
         currentPage: Page | null;
@@ -4796,7 +4845,7 @@ Context:
         removeListener(listenerId: symbol): void;
         openViewer(): void;
         createPage(): Page;
-        openPage(page: Page, newWindow?: boolean): void;
+        openPage(page: string | Page, newWindow?: boolean): void;
         alignHorizontal(
             shapes: Shape[],
             direction: "center" | "left" | "right",
@@ -4808,10 +4857,17 @@ Context:
         distributeHorizontal(shapes: Shape[]): void;
         distributeVertical(shapes: Shape[]): void;
         flatten(shapes: Shape[]): Path[];
+        createVariantFromComponents(shapes: Board[]): VariantContainer;
     }
     ```
   members:
     Properties:
+      version: |-
+        ```
+        readonly version: string
+        ```
+
+        Returns the current penpot version.
       root: |-
         ```
         readonly root: Shape | null
@@ -5350,19 +5406,19 @@ Context:
         Returns Page
       openPage: |-
         ```
-        openPage(page: Page, newWindow?: boolean): void
+        openPage(page: string | Page, newWindow?: boolean): void
         ```
 
         Changes the current open page to given page. Requires `content:read` permission.
 
         Parameters
 
-        * page: Page
+        * page: string | Page
 
-          the page to open
+          the page to open (a Page object or a page UUID string)
         * newWindow: boolean
 
-          if true opens the page in a new window
+          if true opens the page in a new window, defaults to false
 
         Returns void
 
@@ -5449,6 +5505,24 @@ Context:
           to flatten
 
         Returns Path[]
+      createVariantFromComponents: |-
+        ```
+        createVariantFromComponents(shapes: Board[]): VariantContainer
+        ```
+
+        Combine several standard Components into a VariantComponent. Similar to doing it
+        with the contextual menu on the Penpot interface.
+        All the shapes passed as arguments should be main instances.
+
+        Parameters
+
+        * shapes: Board[]
+
+          A list of main instances of the components to combine.
+
+        Returns VariantContainer
+
+        The variant container created
 ContextGeometryUtils:
   overview: |-
     Interface ContextGeometryUtils
@@ -5850,7 +5924,7 @@ Ellipse:
         rotation: number;
         strokes: Stroke[];
         layoutChild?: LayoutChildProperties;
-        layoutCell?: LayoutChildProperties;
+        layoutCell?: LayoutCellProperties;
         setParentIndex(index: number): void;
         tokens: {
             width: string;
@@ -5859,10 +5933,10 @@ Ellipse:
             x: string;
             y: string;
             all: string;
-            r1: string;
-            r2: string;
-            r3: string;
-            r4: string;
+            borderRadiusTopLeft: string;
+            borderRadiusTopRight: string;
+            borderRadiusBottomRight: string;
+            borderRadiusBottomLeft: string;
             shadow: string;
             strokeColor: string;
             strokeWidth: string;
@@ -5878,14 +5952,14 @@ Ellipse:
             layoutItemMaxH: string;
             rowGap: string;
             columnGap: string;
-            p1: string;
-            p2: string;
-            p3: string;
-            p4: string;
-            m1: string;
-            m2: string;
-            m3: string;
-            m4: string;
+            paddingLeft: string;
+            paddingTop: string;
+            paddingRight: string;
+            paddingBottom: string;
+            marginLeft: string;
+            marginTop: string;
+            marginRight: string;
+            marginBottom: string;
             textCase: string;
             textDecoration: string;
             typography: string;
@@ -5902,7 +5976,7 @@ Ellipse:
         detach(): void;
         swapComponent(component: LibraryComponent): void;
         switchVariant(pos: number, value: string): void;
-        combineAsVariants(ids: string[]): void;
+        combineAsVariants(ids: string[]): VariantContainer;
         isVariantHead(): boolean;
         resize(width: number, height: number): void;
         rotate(angle: number, center?: { x: number; y: number } | null): void;
@@ -6179,7 +6253,7 @@ Ellipse:
         Layout properties for children of the shape.
       layoutCell: |-
         ```
-        readonly layoutCell?: LayoutChildProperties
+        readonly layoutCell?: LayoutCellProperties
         ```
 
         Layout properties for cells in a grid layout.
@@ -6192,10 +6266,10 @@ Ellipse:
             x: string;
             y: string;
             all: string;
-            r1: string;
-            r2: string;
-            r3: string;
-            r4: string;
+            borderRadiusTopLeft: string;
+            borderRadiusTopRight: string;
+            borderRadiusBottomRight: string;
+            borderRadiusBottomLeft: string;
             shadow: string;
             strokeColor: string;
             strokeWidth: string;
@@ -6211,14 +6285,14 @@ Ellipse:
             layoutItemMaxH: string;
             rowGap: string;
             columnGap: string;
-            p1: string;
-            p2: string;
-            p3: string;
-            p4: string;
-            m1: string;
-            m2: string;
-            m3: string;
-            m4: string;
+            paddingLeft: string;
+            paddingTop: string;
+            paddingRight: string;
+            paddingBottom: string;
+            marginLeft: string;
+            marginTop: string;
+            marginRight: string;
+            marginBottom: string;
             textCase: string;
             textDecoration: string;
             typography: string;
@@ -6500,7 +6574,7 @@ Ellipse:
         Returns void
       combineAsVariants: |-
         ```
-        combineAsVariants(ids: string[]): void
+        combineAsVariants(ids: string[]): VariantContainer
         ```
 
         Combine several standard Components into a VariantComponent. Similar to doing it with the contextual menu
@@ -6513,7 +6587,9 @@ Ellipse:
 
           A list of ids of the main instances of the components to combine with this one.
 
-        Returns void
+        Returns VariantContainer
+
+        The variant container created
       isVariantHead: |-
         ```
         isVariantHead(): boolean
@@ -6783,7 +6859,7 @@ Export:
 
     ```
     interface Export {
-        type: "svg" | "png" | "jpeg" | "pdf";
+        type: "svg" | "png" | "jpeg" | "webp" | "pdf";
         scale?: number;
         suffix?: string;
         skipChildren?: boolean;
@@ -6795,10 +6871,10 @@ Export:
     Properties:
       type: |-
         ```
-        type: "svg" | "png" | "jpeg" | "pdf"
+        type: "svg" | "png" | "jpeg" | "webp" | "pdf"
         ```
 
-        Type of the file to export. Can be one of the following values: png, jpeg, svg, pdf
+        Type of the file to export. Can be one of the following values: png, jpeg, webp, svg, pdf
       scale: |-
         ```
         scale?: number
@@ -7187,6 +7263,7 @@ Flags:
     ```
     interface Flags {
         naturalChildOrdering: boolean;
+        throwValidationErrors: boolean;
     }
     ```
 
@@ -7201,6 +7278,14 @@ Flags:
         If `true` the .children property will be always sorted in the z-index ordering.
         Also, appendChild method will be append the children in the top-most position.
         The insertchild method is changed acordingly to respect this ordering.
+        Defaults to false
+      throwValidationErrors: |-
+        ```
+        throwValidationErrors: boolean
+        ```
+
+        If `true` the validation errors will throw an exception instead of displaying an
+        error in the debugger console.
         Defaults to false
 FlexLayout:
   overview: |-
@@ -7244,8 +7329,8 @@ FlexLayout:
         leftPadding: number;
         horizontalSizing: "fill"
         | "auto"
-        | "fit-content";
-        verticalSizing: "fill" | "auto" | "fit-content";
+        | "fix";
+        verticalSizing: "fill" | "auto" | "fix";
         remove(): void;
         dir: "row" | "row-reverse" | "column" | "column-reverse";
         wrap?: "wrap" | "nowrap";
@@ -7379,26 +7464,26 @@ FlexLayout:
         The `leftPadding` property specifies the padding at the left of the container.
       horizontalSizing: |-
         ```
-        horizontalSizing: "fill" | "auto" | "fit-content"
+        horizontalSizing: "fill" | "auto" | "fix"
         ```
 
         The `horizontalSizing` property specifies the horizontal sizing behavior of the container.
         It can be one of the following values:
 
-        * 'fit-content': The container fits the content.
-        * 'fill': The container fills the available space.
-        * 'auto': The container size is determined automatically.
+        * 'fix': The containers has its own intrinsic fixed size.
+        * 'fill': The container fills the available space. Only can be set if it's inside another layout.
+        * 'auto': The container fits the content.
       verticalSizing: |-
         ```
-        verticalSizing: "fill" | "auto" | "fit-content"
+        verticalSizing: "fill" | "auto" | "fix"
         ```
 
         The `verticalSizing` property specifies the vertical sizing behavior of the container.
         It can be one of the following values:
 
-        * 'fit-content': The container fits the content.
-        * 'fill': The container fills the available space.
-        * 'auto': The container size is determined automatically.
+        * 'fix': The containers has its own intrinsic fixed size.
+        * 'fill': The container fills the available space. Only can be set if it's inside another layout.
+        * 'auto': The container fits the content.
       dir: |-
         ```
         dir: "row" | "row-reverse" | "column" | "column-reverse"
@@ -7802,8 +7887,8 @@ GridLayout:
         leftPadding: number;
         horizontalSizing: "fill"
         | "auto"
-        | "fit-content";
-        verticalSizing: "fill" | "auto" | "fit-content";
+        | "fix";
+        verticalSizing: "fill" | "auto" | "fix";
         remove(): void;
         dir: "row" | "column";
         rows: Track[];
@@ -7946,26 +8031,26 @@ GridLayout:
         The `leftPadding` property specifies the padding at the left of the container.
       horizontalSizing: |-
         ```
-        horizontalSizing: "fill" | "auto" | "fit-content"
+        horizontalSizing: "fill" | "auto" | "fix"
         ```
 
         The `horizontalSizing` property specifies the horizontal sizing behavior of the container.
         It can be one of the following values:
 
-        * 'fit-content': The container fits the content.
-        * 'fill': The container fills the available space.
-        * 'auto': The container size is determined automatically.
+        * 'fix': The containers has its own intrinsic fixed size.
+        * 'fill': The container fills the available space. Only can be set if it's inside another layout.
+        * 'auto': The container fits the content.
       verticalSizing: |-
         ```
-        verticalSizing: "fill" | "auto" | "fit-content"
+        verticalSizing: "fill" | "auto" | "fix"
         ```
 
         The `verticalSizing` property specifies the vertical sizing behavior of the container.
         It can be one of the following values:
 
-        * 'fit-content': The container fits the content.
-        * 'fill': The container fills the available space.
-        * 'auto': The container size is determined automatically.
+        * 'fix': The containers has its own intrinsic fixed size.
+        * 'fill': The container fills the available space. Only can be set if it's inside another layout.
+        * 'auto': The container fits the content.
       dir: |-
         ```
         dir: "row" | "column"
@@ -8279,7 +8364,7 @@ Group:
         | "mixed";
         strokes: Stroke[];
         layoutChild?: LayoutChildProperties;
-        layoutCell?: LayoutChildProperties;
+        layoutCell?: LayoutCellProperties;
         setParentIndex(index: number): void;
         tokens: {
             width: string;
@@ -8288,10 +8373,10 @@ Group:
             x: string;
             y: string;
             all: string;
-            r1: string;
-            r2: string;
-            r3: string;
-            r4: string;
+            borderRadiusTopLeft: string;
+            borderRadiusTopRight: string;
+            borderRadiusBottomRight: string;
+            borderRadiusBottomLeft: string;
             shadow: string;
             strokeColor: string;
             strokeWidth: string;
@@ -8307,14 +8392,14 @@ Group:
             layoutItemMaxH: string;
             rowGap: string;
             columnGap: string;
-            p1: string;
-            p2: string;
-            p3: string;
-            p4: string;
-            m1: string;
-            m2: string;
-            m3: string;
-            m4: string;
+            paddingLeft: string;
+            paddingTop: string;
+            paddingRight: string;
+            paddingBottom: string;
+            marginLeft: string;
+            marginTop: string;
+            marginRight: string;
+            marginBottom: string;
             textCase: string;
             textDecoration: string;
             typography: string;
@@ -8331,7 +8416,7 @@ Group:
         detach(): void;
         swapComponent(component: LibraryComponent): void;
         switchVariant(pos: number, value: string): void;
-        combineAsVariants(ids: string[]): void;
+        combineAsVariants(ids: string[]): VariantContainer;
         isVariantHead(): boolean;
         resize(width: number, height: number): void;
         rotate(angle: number, center?: { x: number; y: number } | null): void;
@@ -8614,7 +8699,7 @@ Group:
         Layout properties for children of the shape.
       layoutCell: |-
         ```
-        readonly layoutCell?: LayoutChildProperties
+        readonly layoutCell?: LayoutCellProperties
         ```
 
         Layout properties for cells in a grid layout.
@@ -8627,10 +8712,10 @@ Group:
             x: string;
             y: string;
             all: string;
-            r1: string;
-            r2: string;
-            r3: string;
-            r4: string;
+            borderRadiusTopLeft: string;
+            borderRadiusTopRight: string;
+            borderRadiusBottomRight: string;
+            borderRadiusBottomLeft: string;
             shadow: string;
             strokeColor: string;
             strokeWidth: string;
@@ -8646,14 +8731,14 @@ Group:
             layoutItemMaxH: string;
             rowGap: string;
             columnGap: string;
-            p1: string;
-            p2: string;
-            p3: string;
-            p4: string;
-            m1: string;
-            m2: string;
-            m3: string;
-            m4: string;
+            paddingLeft: string;
+            paddingTop: string;
+            paddingRight: string;
+            paddingBottom: string;
+            marginLeft: string;
+            marginTop: string;
+            marginRight: string;
+            marginBottom: string;
             textCase: string;
             textDecoration: string;
             typography: string;
@@ -9001,7 +9086,7 @@ Group:
         Returns void
       combineAsVariants: |-
         ```
-        combineAsVariants(ids: string[]): void
+        combineAsVariants(ids: string[]): VariantContainer
         ```
 
         Combine several standard Components into a VariantComponent. Similar to doing it with the contextual menu
@@ -9014,7 +9099,9 @@ Group:
 
           A list of ids of the main instances of the components to combine with this one.
 
-        Returns void
+        Returns VariantContainer
+
+        The variant container created
       isVariantHead: |-
         ```
         isVariantHead(): boolean
@@ -9523,7 +9610,7 @@ Image:
         rotation: number;
         strokes: Stroke[];
         layoutChild?: LayoutChildProperties;
-        layoutCell?: LayoutChildProperties;
+        layoutCell?: LayoutCellProperties;
         setParentIndex(index: number): void;
         tokens: {
             width: string;
@@ -9532,10 +9619,10 @@ Image:
             x: string;
             y: string;
             all: string;
-            r1: string;
-            r2: string;
-            r3: string;
-            r4: string;
+            borderRadiusTopLeft: string;
+            borderRadiusTopRight: string;
+            borderRadiusBottomRight: string;
+            borderRadiusBottomLeft: string;
             shadow: string;
             strokeColor: string;
             strokeWidth: string;
@@ -9551,14 +9638,14 @@ Image:
             layoutItemMaxH: string;
             rowGap: string;
             columnGap: string;
-            p1: string;
-            p2: string;
-            p3: string;
-            p4: string;
-            m1: string;
-            m2: string;
-            m3: string;
-            m4: string;
+            paddingLeft: string;
+            paddingTop: string;
+            paddingRight: string;
+            paddingBottom: string;
+            marginLeft: string;
+            marginTop: string;
+            marginRight: string;
+            marginBottom: string;
             textCase: string;
             textDecoration: string;
             typography: string;
@@ -9575,7 +9662,7 @@ Image:
         detach(): void;
         swapComponent(component: LibraryComponent): void;
         switchVariant(pos: number, value: string): void;
-        combineAsVariants(ids: string[]): void;
+        combineAsVariants(ids: string[]): VariantContainer;
         isVariantHead(): boolean;
         resize(width: number, height: number): void;
         rotate(angle: number, center?: { x: number; y: number } | null): void;
@@ -9852,7 +9939,7 @@ Image:
         Layout properties for children of the shape.
       layoutCell: |-
         ```
-        readonly layoutCell?: LayoutChildProperties
+        readonly layoutCell?: LayoutCellProperties
         ```
 
         Layout properties for cells in a grid layout.
@@ -9865,10 +9952,10 @@ Image:
             x: string;
             y: string;
             all: string;
-            r1: string;
-            r2: string;
-            r3: string;
-            r4: string;
+            borderRadiusTopLeft: string;
+            borderRadiusTopRight: string;
+            borderRadiusBottomRight: string;
+            borderRadiusBottomLeft: string;
             shadow: string;
             strokeColor: string;
             strokeWidth: string;
@@ -9884,14 +9971,14 @@ Image:
             layoutItemMaxH: string;
             rowGap: string;
             columnGap: string;
-            p1: string;
-            p2: string;
-            p3: string;
-            p4: string;
-            m1: string;
-            m2: string;
-            m3: string;
-            m4: string;
+            paddingLeft: string;
+            paddingTop: string;
+            paddingRight: string;
+            paddingBottom: string;
+            marginLeft: string;
+            marginTop: string;
+            marginRight: string;
+            marginBottom: string;
             textCase: string;
             textDecoration: string;
             typography: string;
@@ -10173,7 +10260,7 @@ Image:
         Returns void
       combineAsVariants: |-
         ```
-        combineAsVariants(ids: string[]): void
+        combineAsVariants(ids: string[]): VariantContainer
         ```
 
         Combine several standard Components into a VariantComponent. Similar to doing it with the contextual menu
@@ -10186,7 +10273,9 @@ Image:
 
           A list of ids of the main instances of the components to combine with this one.
 
-        Returns void
+        Returns VariantContainer
+
+        The variant container created
       isVariantHead: |-
         ```
         isVariantHead(): boolean
@@ -10444,6 +10533,8 @@ LayoutCellProperties:
         position?: "area" | "auto" | "manual";
     }
     ```
+
+    Referenced by: Board, Boolean, Ellipse, Group, Image, Path, Rectangle, ShapeBase, SvgRaw, Text, VariantContainer
   members:
     Properties:
       row: |-
@@ -12986,7 +13077,7 @@ Path:
         rotation: number;
         strokes: Stroke[];
         layoutChild?: LayoutChildProperties;
-        layoutCell?: LayoutChildProperties;
+        layoutCell?: LayoutCellProperties;
         setParentIndex(index: number): void;
         tokens: {
             width: string;
@@ -12995,10 +13086,10 @@ Path:
             x: string;
             y: string;
             all: string;
-            r1: string;
-            r2: string;
-            r3: string;
-            r4: string;
+            borderRadiusTopLeft: string;
+            borderRadiusTopRight: string;
+            borderRadiusBottomRight: string;
+            borderRadiusBottomLeft: string;
             shadow: string;
             strokeColor: string;
             strokeWidth: string;
@@ -13014,14 +13105,14 @@ Path:
             layoutItemMaxH: string;
             rowGap: string;
             columnGap: string;
-            p1: string;
-            p2: string;
-            p3: string;
-            p4: string;
-            m1: string;
-            m2: string;
-            m3: string;
-            m4: string;
+            paddingLeft: string;
+            paddingTop: string;
+            paddingRight: string;
+            paddingBottom: string;
+            marginLeft: string;
+            marginTop: string;
+            marginRight: string;
+            marginBottom: string;
             textCase: string;
             textDecoration: string;
             typography: string;
@@ -13038,7 +13129,7 @@ Path:
         detach(): void;
         swapComponent(component: LibraryComponent): void;
         switchVariant(pos: number, value: string): void;
-        combineAsVariants(ids: string[]): void;
+        combineAsVariants(ids: string[]): VariantContainer;
         isVariantHead(): boolean;
         resize(width: number, height: number): void;
         rotate(angle: number, center?: { x: number; y: number } | null): void;
@@ -13339,7 +13430,7 @@ Path:
         Layout properties for children of the shape.
       layoutCell: |-
         ```
-        readonly layoutCell?: LayoutChildProperties
+        readonly layoutCell?: LayoutCellProperties
         ```
 
         Layout properties for cells in a grid layout.
@@ -13352,10 +13443,10 @@ Path:
             x: string;
             y: string;
             all: string;
-            r1: string;
-            r2: string;
-            r3: string;
-            r4: string;
+            borderRadiusTopLeft: string;
+            borderRadiusTopRight: string;
+            borderRadiusBottomRight: string;
+            borderRadiusBottomLeft: string;
             shadow: string;
             strokeColor: string;
             strokeWidth: string;
@@ -13371,14 +13462,14 @@ Path:
             layoutItemMaxH: string;
             rowGap: string;
             columnGap: string;
-            p1: string;
-            p2: string;
-            p3: string;
-            p4: string;
-            m1: string;
-            m2: string;
-            m3: string;
-            m4: string;
+            paddingLeft: string;
+            paddingTop: string;
+            paddingRight: string;
+            paddingBottom: string;
+            marginLeft: string;
+            marginTop: string;
+            marginRight: string;
+            marginBottom: string;
             textCase: string;
             textDecoration: string;
             typography: string;
@@ -13674,7 +13765,7 @@ Path:
         Returns void
       combineAsVariants: |-
         ```
-        combineAsVariants(ids: string[]): void
+        combineAsVariants(ids: string[]): VariantContainer
         ```
 
         Combine several standard Components into a VariantComponent. Similar to doing it with the contextual menu
@@ -13687,7 +13778,9 @@ Path:
 
           A list of ids of the main instances of the components to combine with this one.
 
-        Returns void
+        Returns VariantContainer
+
+        The variant container created
       isVariantHead: |-
         ```
         isVariantHead(): boolean
@@ -14313,7 +14406,7 @@ Rectangle:
         rotation: number;
         strokes: Stroke[];
         layoutChild?: LayoutChildProperties;
-        layoutCell?: LayoutChildProperties;
+        layoutCell?: LayoutCellProperties;
         setParentIndex(index: number): void;
         tokens: {
             width: string;
@@ -14322,10 +14415,10 @@ Rectangle:
             x: string;
             y: string;
             all: string;
-            r1: string;
-            r2: string;
-            r3: string;
-            r4: string;
+            borderRadiusTopLeft: string;
+            borderRadiusTopRight: string;
+            borderRadiusBottomRight: string;
+            borderRadiusBottomLeft: string;
             shadow: string;
             strokeColor: string;
             strokeWidth: string;
@@ -14341,14 +14434,14 @@ Rectangle:
             layoutItemMaxH: string;
             rowGap: string;
             columnGap: string;
-            p1: string;
-            p2: string;
-            p3: string;
-            p4: string;
-            m1: string;
-            m2: string;
-            m3: string;
-            m4: string;
+            paddingLeft: string;
+            paddingTop: string;
+            paddingRight: string;
+            paddingBottom: string;
+            marginLeft: string;
+            marginTop: string;
+            marginRight: string;
+            marginBottom: string;
             textCase: string;
             textDecoration: string;
             typography: string;
@@ -14365,7 +14458,7 @@ Rectangle:
         detach(): void;
         swapComponent(component: LibraryComponent): void;
         switchVariant(pos: number, value: string): void;
-        combineAsVariants(ids: string[]): void;
+        combineAsVariants(ids: string[]): VariantContainer;
         isVariantHead(): boolean;
         resize(width: number, height: number): void;
         rotate(angle: number, center?: { x: number; y: number } | null): void;
@@ -14644,7 +14737,7 @@ Rectangle:
         Layout properties for children of the shape.
       layoutCell: |-
         ```
-        readonly layoutCell?: LayoutChildProperties
+        readonly layoutCell?: LayoutCellProperties
         ```
 
         Layout properties for cells in a grid layout.
@@ -14657,10 +14750,10 @@ Rectangle:
             x: string;
             y: string;
             all: string;
-            r1: string;
-            r2: string;
-            r3: string;
-            r4: string;
+            borderRadiusTopLeft: string;
+            borderRadiusTopRight: string;
+            borderRadiusBottomRight: string;
+            borderRadiusBottomLeft: string;
             shadow: string;
             strokeColor: string;
             strokeWidth: string;
@@ -14676,14 +14769,14 @@ Rectangle:
             layoutItemMaxH: string;
             rowGap: string;
             columnGap: string;
-            p1: string;
-            p2: string;
-            p3: string;
-            p4: string;
-            m1: string;
-            m2: string;
-            m3: string;
-            m4: string;
+            paddingLeft: string;
+            paddingTop: string;
+            paddingRight: string;
+            paddingBottom: string;
+            marginLeft: string;
+            marginTop: string;
+            marginRight: string;
+            marginBottom: string;
             textCase: string;
             textDecoration: string;
             typography: string;
@@ -14965,7 +15058,7 @@ Rectangle:
         Returns void
       combineAsVariants: |-
         ```
-        combineAsVariants(ids: string[]): void
+        combineAsVariants(ids: string[]): VariantContainer
         ```
 
         Combine several standard Components into a VariantComponent. Similar to doing it with the contextual menu
@@ -14978,7 +15071,9 @@ Rectangle:
 
           A list of ids of the main instances of the components to combine with this one.
 
-        Returns void
+        Returns VariantContainer
+
+        The variant container created
       isVariantHead: |-
         ```
         isVariantHead(): boolean
@@ -15349,7 +15444,7 @@ ShapeBase:
         | "mixed";
         strokes: Stroke[];
         layoutChild?: LayoutChildProperties;
-        layoutCell?: LayoutChildProperties;
+        layoutCell?: LayoutCellProperties;
         setParentIndex(index: number): void;
         tokens: {
             width: string;
@@ -15358,10 +15453,10 @@ ShapeBase:
             x: string;
             y: string;
             all: string;
-            r1: string;
-            r2: string;
-            r3: string;
-            r4: string;
+            borderRadiusTopLeft: string;
+            borderRadiusTopRight: string;
+            borderRadiusBottomRight: string;
+            borderRadiusBottomLeft: string;
             shadow: string;
             strokeColor: string;
             strokeWidth: string;
@@ -15377,14 +15472,14 @@ ShapeBase:
             layoutItemMaxH: string;
             rowGap: string;
             columnGap: string;
-            p1: string;
-            p2: string;
-            p3: string;
-            p4: string;
-            m1: string;
-            m2: string;
-            m3: string;
-            m4: string;
+            paddingLeft: string;
+            paddingTop: string;
+            paddingRight: string;
+            paddingBottom: string;
+            marginLeft: string;
+            marginTop: string;
+            marginRight: string;
+            marginBottom: string;
             textCase: string;
             textDecoration: string;
             typography: string;
@@ -15401,7 +15496,7 @@ ShapeBase:
         detach(): void;
         swapComponent(component: LibraryComponent): void;
         switchVariant(pos: number, value: string): void;
-        combineAsVariants(ids: string[]): void;
+        combineAsVariants(ids: string[]): VariantContainer;
         isVariantHead(): boolean;
         resize(width: number, height: number): void;
         rotate(angle: number, center?: { x: number; y: number } | null): void;
@@ -15679,7 +15774,7 @@ ShapeBase:
         Layout properties for children of the shape.
       layoutCell: |-
         ```
-        readonly layoutCell?: LayoutChildProperties
+        readonly layoutCell?: LayoutCellProperties
         ```
 
         Layout properties for cells in a grid layout.
@@ -15692,10 +15787,10 @@ ShapeBase:
             x: string;
             y: string;
             all: string;
-            r1: string;
-            r2: string;
-            r3: string;
-            r4: string;
+            borderRadiusTopLeft: string;
+            borderRadiusTopRight: string;
+            borderRadiusBottomRight: string;
+            borderRadiusBottomLeft: string;
             shadow: string;
             strokeColor: string;
             strokeWidth: string;
@@ -15711,14 +15806,14 @@ ShapeBase:
             layoutItemMaxH: string;
             rowGap: string;
             columnGap: string;
-            p1: string;
-            p2: string;
-            p3: string;
-            p4: string;
-            m1: string;
-            m2: string;
-            m3: string;
-            m4: string;
+            paddingLeft: string;
+            paddingTop: string;
+            paddingRight: string;
+            paddingBottom: string;
+            marginLeft: string;
+            marginTop: string;
+            marginRight: string;
+            marginBottom: string;
             textCase: string;
             textDecoration: string;
             typography: string;
@@ -16000,7 +16095,7 @@ ShapeBase:
         Returns void
       combineAsVariants: |-
         ```
-        combineAsVariants(ids: string[]): void
+        combineAsVariants(ids: string[]): VariantContainer
         ```
 
         Combine several standard Components into a VariantComponent. Similar to doing it with the contextual menu
@@ -16013,7 +16108,9 @@ ShapeBase:
 
           A list of ids of the main instances of the components to combine with this one.
 
-        Returns void
+        Returns VariantContainer
+
+        The variant container created
       isVariantHead: |-
         ```
         isVariantHead(): boolean
@@ -16273,7 +16370,7 @@ Stroke:
         strokeColorRefFile?: string;
         strokeColorRefId?: string;
         strokeOpacity?: number;
-        strokeStyle?: "svg" | "none" | "mixed" | "solid" | "dotted" | "dashed";
+        strokeStyle?: "none" | "svg" | "mixed" | "solid" | "dotted" | "dashed";
         strokeWidth?: number;
         strokeAlignment?: "center" | "inner" | "outer";
         strokeCapStart?: StrokeCap;
@@ -16312,7 +16409,7 @@ Stroke:
         Defaults to 1 if omitted.
       strokeStyle: |-
         ```
-        strokeStyle?: "svg" | "none" | "mixed" | "solid" | "dotted" | "dashed"
+        strokeStyle?: "none" | "svg" | "mixed" | "solid" | "dotted" | "dashed"
         ```
 
         The optional style of the stroke.
@@ -16415,7 +16512,7 @@ SvgRaw:
         | "mixed";
         strokes: Stroke[];
         layoutChild?: LayoutChildProperties;
-        layoutCell?: LayoutChildProperties;
+        layoutCell?: LayoutCellProperties;
         setParentIndex(index: number): void;
         tokens: {
             width: string;
@@ -16424,10 +16521,10 @@ SvgRaw:
             x: string;
             y: string;
             all: string;
-            r1: string;
-            r2: string;
-            r3: string;
-            r4: string;
+            borderRadiusTopLeft: string;
+            borderRadiusTopRight: string;
+            borderRadiusBottomRight: string;
+            borderRadiusBottomLeft: string;
             shadow: string;
             strokeColor: string;
             strokeWidth: string;
@@ -16443,14 +16540,14 @@ SvgRaw:
             layoutItemMaxH: string;
             rowGap: string;
             columnGap: string;
-            p1: string;
-            p2: string;
-            p3: string;
-            p4: string;
-            m1: string;
-            m2: string;
-            m3: string;
-            m4: string;
+            paddingLeft: string;
+            paddingTop: string;
+            paddingRight: string;
+            paddingBottom: string;
+            marginLeft: string;
+            marginTop: string;
+            marginRight: string;
+            marginBottom: string;
             textCase: string;
             textDecoration: string;
             typography: string;
@@ -16467,7 +16564,7 @@ SvgRaw:
         detach(): void;
         swapComponent(component: LibraryComponent): void;
         switchVariant(pos: number, value: string): void;
-        combineAsVariants(ids: string[]): void;
+        combineAsVariants(ids: string[]): VariantContainer;
         isVariantHead(): boolean;
         resize(width: number, height: number): void;
         rotate(angle: number, center?: { x: number; y: number } | null): void;
@@ -16739,7 +16836,7 @@ SvgRaw:
         Layout properties for children of the shape.
       layoutCell: |-
         ```
-        readonly layoutCell?: LayoutChildProperties
+        readonly layoutCell?: LayoutCellProperties
         ```
 
         Layout properties for cells in a grid layout.
@@ -16752,10 +16849,10 @@ SvgRaw:
             x: string;
             y: string;
             all: string;
-            r1: string;
-            r2: string;
-            r3: string;
-            r4: string;
+            borderRadiusTopLeft: string;
+            borderRadiusTopRight: string;
+            borderRadiusBottomRight: string;
+            borderRadiusBottomLeft: string;
             shadow: string;
             strokeColor: string;
             strokeWidth: string;
@@ -16771,14 +16868,14 @@ SvgRaw:
             layoutItemMaxH: string;
             rowGap: string;
             columnGap: string;
-            p1: string;
-            p2: string;
-            p3: string;
-            p4: string;
-            m1: string;
-            m2: string;
-            m3: string;
-            m4: string;
+            paddingLeft: string;
+            paddingTop: string;
+            paddingRight: string;
+            paddingBottom: string;
+            marginLeft: string;
+            marginTop: string;
+            marginRight: string;
+            marginBottom: string;
             textCase: string;
             textDecoration: string;
             typography: string;
@@ -17064,7 +17161,7 @@ SvgRaw:
         Returns void
       combineAsVariants: |-
         ```
-        combineAsVariants(ids: string[]): void
+        combineAsVariants(ids: string[]): VariantContainer
         ```
 
         Combine several standard Components into a VariantComponent. Similar to doing it with the contextual menu
@@ -17077,7 +17174,9 @@ SvgRaw:
 
           A list of ids of the main instances of the components to combine with this one.
 
-        Returns void
+        Returns VariantContainer
+
+        The variant container created
       isVariantHead: |-
         ```
         isVariantHead(): boolean
@@ -17334,7 +17433,7 @@ Text:
         | "mixed";
         strokes: Stroke[];
         layoutChild?: LayoutChildProperties;
-        layoutCell?: LayoutChildProperties;
+        layoutCell?: LayoutCellProperties;
         setParentIndex(index: number): void;
         tokens: {
             width: string;
@@ -17343,10 +17442,10 @@ Text:
             x: string;
             y: string;
             all: string;
-            r1: string;
-            r2: string;
-            r3: string;
-            r4: string;
+            borderRadiusTopLeft: string;
+            borderRadiusTopRight: string;
+            borderRadiusBottomRight: string;
+            borderRadiusBottomLeft: string;
             shadow: string;
             strokeColor: string;
             strokeWidth: string;
@@ -17362,14 +17461,14 @@ Text:
             layoutItemMaxH: string;
             rowGap: string;
             columnGap: string;
-            p1: string;
-            p2: string;
-            p3: string;
-            p4: string;
-            m1: string;
-            m2: string;
-            m3: string;
-            m4: string;
+            paddingLeft: string;
+            paddingTop: string;
+            paddingRight: string;
+            paddingBottom: string;
+            marginLeft: string;
+            marginTop: string;
+            marginRight: string;
+            marginBottom: string;
             textCase: string;
             textDecoration: string;
             typography: string;
@@ -17386,7 +17485,7 @@ Text:
         detach(): void;
         swapComponent(component: LibraryComponent): void;
         switchVariant(pos: number, value: string): void;
-        combineAsVariants(ids: string[]): void;
+        combineAsVariants(ids: string[]): VariantContainer;
         isVariantHead(): boolean;
         resize(width: number, height: number): void;
         rotate(angle: number, center?: { x: number; y: number } | null): void;
@@ -17421,6 +17520,7 @@ Text:
         direction: "mixed" | "ltr" | "rtl" | null;
         align: "center" | "left" | "right" | "mixed" | "justify" | null;
         verticalAlign: "center" | "top" | "bottom" | null;
+        textBounds: { x: number; y: number; width: number; height: number };
         getRange(start: number, end: number): TextRange;
         applyTypography(typography: LibraryTypography): void;
     }
@@ -17675,7 +17775,7 @@ Text:
         Layout properties for children of the shape.
       layoutCell: |-
         ```
-        readonly layoutCell?: LayoutChildProperties
+        readonly layoutCell?: LayoutCellProperties
         ```
 
         Layout properties for cells in a grid layout.
@@ -17688,10 +17788,10 @@ Text:
             x: string;
             y: string;
             all: string;
-            r1: string;
-            r2: string;
-            r3: string;
-            r4: string;
+            borderRadiusTopLeft: string;
+            borderRadiusTopRight: string;
+            borderRadiusBottomRight: string;
+            borderRadiusBottomLeft: string;
             shadow: string;
             strokeColor: string;
             strokeWidth: string;
@@ -17707,14 +17807,14 @@ Text:
             layoutItemMaxH: string;
             rowGap: string;
             columnGap: string;
-            p1: string;
-            p2: string;
-            p3: string;
-            p4: string;
-            m1: string;
-            m2: string;
-            m3: string;
-            m4: string;
+            paddingLeft: string;
+            paddingTop: string;
+            paddingRight: string;
+            paddingBottom: string;
+            marginLeft: string;
+            marginTop: string;
+            marginRight: string;
+            marginBottom: string;
             textCase: string;
             textDecoration: string;
             typography: string;
@@ -17835,6 +17935,13 @@ Text:
         ```
 
         The vertical alignment of the text shape. It can be a specific alignment or 'mixed' if multiple alignments are used.
+      textBounds: |-
+        ```
+        readonly textBounds: { x: number; y: number; width: number; height: number }
+        ```
+
+        Return the bounding box for the text as a (x, y, width, height) rectangle
+        This is the box that covers the text even if it overflows its selection rectangle.
     Methods:
       getPluginData: |-
         ```
@@ -18097,7 +18204,7 @@ Text:
         Returns void
       combineAsVariants: |-
         ```
-        combineAsVariants(ids: string[]): void
+        combineAsVariants(ids: string[]): VariantContainer
         ```
 
         Combine several standard Components into a VariantComponent. Similar to doing it with the contextual menu
@@ -18110,7 +18217,9 @@ Text:
 
           A list of ids of the main instances of the components to combine with this one.
 
-        Returns void
+        Returns VariantContainer
+
+        The variant container created
       isVariantHead: |-
         ```
         isVariantHead(): boolean
@@ -22608,7 +22717,11 @@ TokenBorderRadiusProps:
     =================================
 
     ```
-    TokenBorderRadiusProps: "r1" | "r2" | "r3" | "r4"
+    TokenBorderRadiusProps:
+        | "borderRadiusTopLeft"
+        | "borderRadiusTopRight"
+        | "borderRadiusBottomRight"
+        | "borderRadiusBottomLeft"
     ```
 
     The properties that a BorderRadius token can be applied to.
@@ -22760,14 +22873,14 @@ TokenSpacingProps:
     TokenSpacingProps:
         | "rowGap"
         | "columnGap"
-        | "p1"
-        | "p2"
-        | "p3"
-        | "p4"
-        | "m1"
-        | "m2"
-        | "m3"
-        | "m4"
+        | "paddingLeft"
+        | "paddingTop"
+        | "paddingRight"
+        | "paddingBottom"
+        | "marginLeft"
+        | "marginTop"
+        | "marginRight"
+        | "marginBottom"
     ```
 
     The properties that a Spacing token can be applied to.

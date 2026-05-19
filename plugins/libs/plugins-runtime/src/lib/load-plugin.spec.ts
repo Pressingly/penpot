@@ -19,6 +19,10 @@ vi.mock('./create-plugin', () => ({
   createPlugin: vi.fn(),
 }));
 
+vi.mock('./create-sandbox.js', () => ({
+  markPluginError: vi.fn(),
+}));
+
 vi.mock('./ses.js', () => ({
   ses: {
     harden: vi.fn().mockImplementation((obj) => obj),
@@ -78,6 +82,7 @@ describe('plugin-loader', () => {
       mockContext,
       manifest,
       expect.any(Function),
+      undefined,
     );
     expect(mockPluginApi.plugin.close).not.toHaveBeenCalled();
     expect(getPlugins()).toHaveLength(1);
@@ -101,16 +106,17 @@ describe('plugin-loader', () => {
   });
 
   it('should handle errors and close all plugins', async () => {
-    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
     vi.mocked(createPlugin).mockRejectedValue(
       new Error('Plugin creation failed'),
     );
 
-    await loadPlugin(manifest);
+    try {
+      await loadPlugin(manifest);
+    } catch (err) {
+      expect.assert(err);
+    }
 
     expect(getPlugins()).toHaveLength(0);
-    expect(consoleSpy).toHaveBeenCalled();
   });
 
   it('should handle messages sent to plugins', async () => {
@@ -130,6 +136,7 @@ describe('plugin-loader', () => {
       mockContext,
       manifest,
       expect.any(Function),
+      undefined,
     );
   });
 
@@ -144,6 +151,7 @@ describe('plugin-loader', () => {
       mockContext,
       manifest,
       expect.any(Function),
+      undefined,
     );
   });
 });

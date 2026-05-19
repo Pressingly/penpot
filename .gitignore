@@ -24,6 +24,9 @@
 /.clj-kondo/.cache
 /_dump
 /notes
+/.opencode/package-lock.json
+/plans
+/prompts
 /playground/
 /backend/*.md
 !/backend/AGENTS.md
@@ -63,6 +66,7 @@
 /frontend/test-results/
 /frontend/.shadow-cljs
 /other/
+/scripts/
 /nexus/
 /tmp/
 /vendor/**/target

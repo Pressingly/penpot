@@ -43,7 +43,6 @@
    [app.main.ui.workspace.tokens.sidebar :refer [tokens-sidebar-tab*]]
    [app.util.debug :as dbg]
    [app.util.i18n :refer [tr]]
-   [potok.v2.core :as ptk]
    [rumext.v2 :as mf]))
 
 ;; --- Left Sidebar (Component)
@@ -119,7 +118,7 @@
 
 (mf/defc left-sidebar*
   {::mf/memo true}
-  [{:keys [layout file page-id tokens-lib active-tokens resolved-active-tokens]}]
+  [{:keys [layout file tokens-lib active-tokens resolved-active-tokens]}]
   (let [options-mode   (mf/deref refs/options-mode-global)
         project        (mf/deref refs/project)
         file-id        (get file :id)
@@ -146,7 +145,7 @@
          (fn [id]
            (st/emit! (dcm/go-to-workspace :layout (keyword id)))
            (when (= id "tokens")
-             (st/emit! (ptk/event ::ev/event {::ev/name "open-tokens-tab"})))))
+             (st/emit! (ev/event {::ev/name "open-tokens-tab"})))))
 
         tabs
         (mf/with-memo [mode-inspect? design-tokens?]
@@ -185,12 +184,10 @@
               :class aside-class
               :style {:--left-sidebar-width (dm/str width "px")}}
 
-      [:> left-header*
-       {:file file
-        :layout layout
-        :project project
-        :page-id page-id
-        :class (stl/css :left-header)}]
+      [:> left-header* {:file file
+                        :layout layout
+                        :project project
+                        :class (stl/css :left-header)}]
 
       [:div {:on-pointer-down on-pointer-down
              :on-lost-pointer-capture on-lost-pointer-capture
