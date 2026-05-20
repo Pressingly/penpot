@@ -41,11 +41,15 @@ update_mpass_signout_url() {
 # AUTH_TYPE (e.g. SSO): consumed by frontend to hide native password UX.
 #
 # `#` separates pattern/replacement because values may contain "/" or "|".
-# Escape `\`, `"`, and `&` so the generated JS literal and sed replacement stay valid.
+# Escape `\`, `#`, `"`, and `&` so the generated JS literal and sed replacement stay valid.
 update_auth_type() {
   if [ -n "${AUTH_TYPE:-}" ]; then
     local auth_esc
-    auth_esc=$(printf '%s' "$AUTH_TYPE" | sed -e 's/\\/\\\\/g' -e 's/&/\\\&/g' -e 's/"/\\"/g')
+    auth_esc=$(printf '%s' "$AUTH_TYPE" | sed \
+      -e 's/\\/\\\\/g' \
+      -e 's/#/\\#/g' \
+      -e 's/&/\\\&/g' \
+      -e 's/"/\\"/g')
     echo "$(sed \
       -e "s#^//var penpotAuthType = .*;#var penpotAuthType = \"${auth_esc}\";#g" \
       "$1")" > "$1"

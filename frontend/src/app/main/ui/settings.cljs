@@ -12,7 +12,6 @@
    [app.main.refs :as refs]
    [app.main.router :as rt]
    [app.main.store :as st]
-   [app.main.ui.ds.product.loader :refer [loader*]]
    [app.main.ui.hooks :as hooks]
    [app.main.ui.modal :refer [modal-container*]]
    [app.main.ui.settings.change-email]
@@ -71,8 +70,8 @@
 
           :settings-password
           (if (cf/auth-type-sso?)
-            [:> loader*
-             {:title (tr "labels.loading") :overlay false}]
+            ;; Prefer profile UX over a loader until `rt/nav` updates the fragment.
+            [:& profile-page]
             [:& password-page])
 
           :settings-options
