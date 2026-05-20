@@ -12,6 +12,7 @@
    [app.main.refs :as refs]
    [app.main.router :as rt]
    [app.main.store :as st]
+   [app.main.ui.ds.product.loader :refer [loader*]]
    [app.main.ui.hooks :as hooks]
    [app.main.ui.modal :refer [modal-container*]]
    [app.main.ui.settings.change-email]
@@ -19,7 +20,6 @@
    [app.main.ui.settings.feedback :refer [feedback-page*]]
    [app.main.ui.settings.integrations :refer [integrations-page*]]
    [app.main.ui.settings.notifications :refer [notifications-page*]]
-   [app.main.ui.ds.product.loader :refer [loader*]]
    [app.main.ui.settings.options :refer [options-page]]
    [app.main.ui.settings.password :refer [password-page]]
    [app.main.ui.settings.profile :refer [profile-page]]
@@ -42,14 +42,12 @@
 
     (hooks/use-shortcuts ::dashboard sc/shortcuts)
 
-    (mf/with-effect [section]
+    (mf/with-effect [section profile]
+      (when (nil? profile)
+        (st/emit! (rt/assign-exception {:type :authentication})))
       (when (and (= section :settings-password)
                  (cf/auth-type-sso?))
         (st/emit! (rt/nav :settings-profile))))
-
-    (mf/with-effect [profile]
-      (when (nil? profile)
-        (st/emit! (rt/assign-exception {:type :authentication}))))
 
     [:*
      [:> modal-container*]
