@@ -27,7 +27,11 @@ popd
 pnpm -r --filter "!mcp-plugin" install;
 pnpm -r --filter "mcp-server" run build:multi-user;
 
-rsync -avr packages/server/dist/ ./dist/;
+# Normalize cpSync output modes before cp -a propagates them. On macOS Docker Desktop, Node's fs.cpSync writes a gRPC-FUSE xattr with mode 200 that cp -a turns into a real host mode 200 (unreadable). chmod here while host mode is still 644 fixes both layers.
+chmod -R u=rwX,go=rX packages/server/dist;
+
+mkdir -p ./dist;
+cp -a packages/server/dist/. ./dist/;
 
 cp packages/server/package.json ./dist/;
 cp packages/server/pnpm-lock.yaml ./dist/;
