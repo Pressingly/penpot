@@ -81,7 +81,13 @@
     (effect [_ state _]
       (let [editor (:workspace-editor state)
             element (when editor (.-element editor))]
-        (when (and element (.-focus element))
+        (cond
+          ;; V1 (DraftEditor)
+          (.-focus editor)
+          (ts/schedule #(.focus ^js editor))
+
+          ;; V2
+          (and element (.-focus element))
           (ts/schedule #(.focus ^js element)))))))
 
 (defn gen-name
@@ -891,8 +897,8 @@
 
         (rx/concat
          (rx/of (dwl/add-typography typ)
-                (ptk/event ::ev/event {::ev/name "add-asset-to-library"
-                                       :asset-type "typography"}))
+                (ev/event {::ev/name "add-asset-to-library"
+                           :asset-type "typography"}))
 
          (when (not multiple?)
            (rx/of (update-attrs (:id shape)

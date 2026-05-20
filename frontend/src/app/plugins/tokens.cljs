@@ -17,22 +17,75 @@
    [app.main.data.workspace.tokens.application :as dwta]
    [app.main.data.workspace.tokens.library-edit :as dwtl]
    [app.main.store :as st]
+   [app.plugins.system-events :as se]
    [app.plugins.utils :as u]
    [app.util.object :as obj]
-   [clojure.datafy :refer [datafy]]))
+   [clojure.datafy :refer [datafy]]
+   [clojure.set :refer [map-invert]]))
 
 ;; === Token
 
+;; Give more semantic names to the shape attributes that tokens can be applied to
+(def ^:private map:token-attr->token-attr-plugin
+  {:r1 :border-radius-top-left
+   :r2 :border-radius-top-right
+   :r3 :border-radius-bottom-right
+   :r4 :border-radius-bottom-left
+
+   :p1 :padding-top-left
+   :p2 :padding-top-right
+   :p3 :padding-bottom-right
+   :p4 :padding-bottom-left
+
+   :m1 :margin-top-left
+   :m2 :margin-top-right
+   :m3 :margin-bottom-right
+   :m4 :margin-bottom-left})
+
+(def ^:private map:token-attr-plugin->token-attr
+  (map-invert map:token-attr->token-attr-plugin))
+
+(defn token-attr->token-attr-plugin
+  [k]
+  (get map:token-attr->token-attr-plugin k k))
+
+(defn token-attr-plugin->token-attr
+  "Resolve a plugin-side token attribute reference to its canonical
+  internal keyword.
+
+  Accepts either a Clojure keyword (the canonical form, e.g. `:r1`,
+  `:fill`) or a string (the natural shape that arrives from a JS plugin
+  call such as `shape.applyToken(token, [\"fill\"])`). Converts strings
+  to keywords first, then maps verbose plugin-side aliases (e.g.
+  `:border-radius-top-left`) to their internal short form (e.g. `:r1`).
+  Inputs that are already in canonical form (`:r1`, `:fill`, `\"fill\"`,
+  …) pass through unchanged."
+  [k]
+  (let [k (cond-> k (string? k) keyword)]
+    (get map:token-attr-plugin->token-attr k k)))
+
+(defn applied-tokens-plugin->applied-tokens
+  [value]
+  (into {}
+        (map (fn [[k v]] [(token-attr->token-attr-plugin k) v]))
+        value))
+
+(defn token-attr?
+  [attr]
+  (cto/token-attr? (token-attr-plugin->token-attr attr)))
+
 (defn- apply-token-to-shapes
-  [file-id set-id id shape-ids attrs]
+  [plugin-id file-id set-id id shape-ids attrs]
+
   (let [token (u/locate-token file-id set-id id)]
-    (if (some #(not (cto/token-attr? %)) attrs)
-      (u/display-not-valid :applyToSelected attrs)
+    (if (some #(not (token-attr? %)) attrs)
+      (u/not-valid plugin-id :applyToSelected attrs)
       (st/emit!
-       (dwta/toggle-token {:token token
-                           :attrs attrs
-                           :shape-ids shape-ids
-                           :expand-with-children false})))))
+       (-> (dwta/toggle-token {:token token
+                               :attrs (into #{} (map token-attr-plugin->token-attr) attrs)
+                               :shape-ids shape-ids
+                               :expand-with-children false})
+           (se/add-event plugin-id))))))
 
 (defn- get-resolved-value
   [token tokens-tree]
@@ -52,7 +105,7 @@
 (defn token-proxy
   [plugin-id file-id set-id id]
   (obj/reify {:name "TokenProxy"
-              :on-error u/handle-error}
+              :on-error (u/handle-error plugin-id)}
     :$plugin {:enumerable false :get (constantly plugin-id)}
     :$file-id {:enumerable false :get (constantly file-id)}
     :$set-id {:enumerable false :get (constantly set-id)}
@@ -72,7 +125,8 @@
                       (ctob/get-tokens set-id)))
      :set
      (fn [_ value]
-       (st/emit! (dwtl/update-token set-id id {:name value})))}
+       (st/emit! (-> (dwtl/update-token set-id id {:name value})
+                     (se/add-event plugin-id))))}
 
     :type
     {:this true
@@ -122,7 +176,8 @@
      :schema cfo/schema:token-description
      :set
      (fn [_ value]
-       (st/emit! (dwtl/update-token set-id id {:description value})))}
+       (st/emit! (-> (dwtl/update-token set-id id {:description value})
+                     (se/add-event :plugin-id))))}
 
     :duplicate
     (fn []
@@ -135,27 +190,29 @@
             token' (ctob/make-token (-> (datafy token)
                                         (dissoc :id
                                                 :modified-at)))]
-        (st/emit! (dwtl/create-token set-id token'))
+        (st/emit! (-> (dwtl/create-token set-id token')
+                      (se/add-event plugin-id)))
         (token-proxy plugin-id file-id set-id (:id token'))))
 
     :remove
     (fn []
-      (st/emit! (dwtl/delete-token set-id id)))
+      (st/emit! (-> (dwtl/delete-token set-id id)
+                    (se/add-event plugin-id))))
 
     :applyToShapes
     {:enumerable false
      :schema [:tuple
               [:vector [:fn shape-proxy?]]
-              [:maybe [:set [:and ::sm/keyword [:fn cto/token-attr?]]]]]
+              [:maybe [::sm/set [:and ::sm/keyword [:fn token-attr?]]]]]
      :fn (fn [shapes attrs]
-           (apply-token-to-shapes file-id set-id id (map #(obj/get % "$id") shapes) attrs))}
+           (apply-token-to-shapes plugin-id file-id set-id id (map #(obj/get % "$id") shapes) attrs))}
 
     :applyToSelected
     {:enumerable false
-     :schema [:tuple [:maybe [:set [:and ::sm/keyword [:fn cto/token-attr?]]]]]
+     :schema [:tuple [:maybe [::sm/set [:and ::sm/keyword [:fn token-attr?]]]]]
      :fn (fn [attrs]
            (let [selected (get-in @st/state [:workspace-local :selected])]
-             (apply-token-to-shapes file-id set-id id selected attrs)))}))
+             (apply-token-to-shapes plugin-id file-id set-id id selected attrs)))}))
 
 ;; === Token Set
 
@@ -165,7 +222,7 @@
 (defn token-set-proxy
   [plugin-id file-id id]
   (obj/reify {:name "TokenSetProxy"
-              :on-error u/handle-error}
+              :on-error (u/handle-error plugin-id)}
     :$plugin {:enumerable false :get (constantly plugin-id)}
     :$file-id {:enumerable false :get (constantly file-id)}
     :$id {:enumerable false :get (constantly id)}
@@ -247,15 +304,19 @@
     :addToken
     {:enumerable false
      :schema (fn [args]
-               [:tuple (-> (cfo/make-token-schema
-                            (-> (u/locate-tokens-lib file-id) (ctob/get-tokens id))
-                            (cto/dtcg-token-type->token-type (-> args (first) (get "type"))))
-                           ;; Don't allow plugins to set the id
-                           (sm/dissoc-key :id)
-                           ;; Instruct the json decoder in obj/reify not to process map keys (:key-fn below)
-                           ;; and set a converter that changes DTCG types to internal types (:decode/json).
-                           ;; E.g. "FontFamilies" -> :font-family or "BorderWidth" -> :stroke-width
-                           (sm/update-properties assoc :decode/json cfo/convert-dtcg-token))])
+               (let [tokens-tree (-> (u/locate-tokens-lib file-id)
+                                     (ctob/get-tokens id)
+                                     ;; Convert to the adecuate format for schema
+                                     (ctob/tokens-tree))]
+                 [:tuple (-> (cfo/make-token-schema
+                              tokens-tree
+                              (cto/dtcg-token-type->token-type (-> args (first) (get "type"))))
+                             ;; Don't allow plugins to set the id
+                             (sm/dissoc-key :id)
+                             ;; Instruct the json decoder in obj/reify not to process map keys (:key-fn below)
+                             ;; and set a converter that changes DTCG types to internal types (:decode/json).
+                             ;; E.g. "FontFamilies" -> :font-family or "BorderWidth" -> :stroke-width
+                             (sm/update-properties assoc :decode/json cfo/convert-dtcg-token))]))
      :decode/options {:key-fn identity}
      :fn (fn [attrs]
            (let [tokens-lib (u/locate-tokens-lib file-id)
@@ -268,9 +329,10 @@
                  (get resolved-tokens (:name token))]
 
              (if resolved-value
-               (do (st/emit! (dwtl/create-token id token))
+               (do (st/emit! (-> (dwtl/create-token id token)
+                                 (se/add-event plugin-id)))
                    (token-proxy plugin-id file-id id (:id token)))
-               (do (u/display-not-valid :addToken (str errors))
+               (do (u/not-valid plugin-id :addToken (str errors))
                    nil))))}
 
     :duplicate
@@ -287,7 +349,7 @@
 (defn token-theme-proxy
   [plugin-id file-id id]
   (obj/reify {:name "TokenThemeProxy"
-              :on-error u/handle-error}
+              :on-error (u/handle-error plugin-id)}
     :$plugin {:enumerable false :get (constantly plugin-id)}
     :$file-id {:enumerable false :get (constantly file-id)}
     :$id {:enumerable false :get (constantly id)}
@@ -394,7 +456,7 @@
 (defn tokens-catalog
   [plugin-id file-id]
   (obj/reify {:name "TokensCatalog"
-              :on-error u/handle-error}
+              :on-error (u/handle-error plugin-id)}
     :$plugin {:enumerable false :get (constantly plugin-id)}
     :$id {:enumerable false :get (constantly file-id)}
 

@@ -2,6 +2,7 @@
 
 export PENPOT_NITRATE_SHARED_KEY=super-secret-nitrate-api-key
 export PENPOT_EXPORTER_SHARED_KEY=super-secret-exporter-api-key
+export PENPOT_NEXUS_SHARED_KEY=super-secret-nexus-api-key
 export PENPOT_SECRET_KEY=super-secret-devenv-key
 
 # DEPRECATED: only used for subscriptions
@@ -12,7 +13,7 @@ export PENPOT_PUBLIC_URI=https://localhost:3449
 
 export PENPOT_FLAGS="\
        $PENPOT_FLAGS \
-       enable-login-with-password
+       enable-login-with-password \
        disable-login-with-ldap \
        disable-login-with-oidc \
        disable-login-with-google \
@@ -45,6 +46,10 @@ export PENPOT_FLAGS="\
        enable-file-schema-validation \
        enable-redis-cache \
        enable-subscriptions";
+
+# Uncomment for nexus integration testing
+# export PENPOT_FLAGS="$PENPOT_FLAGS enable-audit-log-archive";
+# export PENPOT_AUDIT_LOG_ARCHIVE_URI="http://localhost:6070/api/audit";
 
 # Default deletion delay for devenv
 export PENPOT_DELETION_DELAY="24h"

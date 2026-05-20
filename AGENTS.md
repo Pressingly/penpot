@@ -32,6 +32,47 @@ precision while maintaining a strong focus on maintainability and performance.
 5. When searching code, prefer `ripgrep` (`rg`) over `grep` — it respects
    `.gitignore` by default.
 
+## Changelogs
+
+The project has two changelogs:
+
+- **Main project changelog**: `CHANGES.md` (root of the repository). Tracks changes for the core Penpot application (backend, frontend, common, render-wasm, exporter, mcp).
+- **Plugins changelog**: `plugins/CHANGELOG.md`. Tracks changes for the plugins subproject only.
+
+When making changes, add a changelog entry to the appropriate file under the
+`## <version> (Unreleased)` section in the correct category
+(`:sparkles: New features & Enhancements` or `:bug: Bugs fixed`).
+
+## GitHub Operations
+
+To obtain the list of repository members/collaborators:
+
+```bash
+gh api repos/:owner/:repo/collaborators --paginate --jq '.[].login'
+```
+
+To obtain the list of open PRs authored by members:
+
+```bash
+MEMBERS=$(gh api repos/:owner/:repo/collaborators --paginate --jq '.[].login' | tr '\n' '|' | sed 's/|$//')
+gh pr list --state open --limit 200 --json author,title,number | jq -r --arg members "$MEMBERS" '
+  ($members | split("|")) as $m |
+  .[] | select(.author.login as $a | $m | index($a)) |
+  "\(.number)\t\(.author.login)\t\(.title)"
+'
+```
+
+To obtain the list of open PRs from external contributors (non-members):
+
+```bash
+MEMBERS=$(gh api repos/:owner/:repo/collaborators --paginate --jq '.[].login' | tr '\n' '|' | sed 's/|$//')
+gh pr list --state open --limit 200 --json author,title,number | jq -r --arg members "$MEMBERS" '
+  ($members | split("|")) as $m |
+  .[] | select(.author.login as $a | $m | index($a) | not) |
+  "\(.number)\t\(.author.login)\t\(.title)"
+'
+```
+
 ## Architecture Overview
 
 Penpot is an open-source design tool composed of several modules:

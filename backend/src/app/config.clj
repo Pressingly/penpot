@@ -75,6 +75,7 @@
    :telemetry-uri "https://telemetry.penpot.app/"
 
    :media-max-file-size (* 1024 1024 30) ; 30MiB
+   :font-max-file-size  (* 1024 1024 30) ; 30MiB
 
    :ldap-user-query "(|(uid=:username)(mail=:username))"
    :ldap-attrs-username "uid"
@@ -85,7 +86,14 @@
    :initial-project-skey "initial-project"
 
    ;; time to avoid email sending after profile modification
-   :email-verify-threshold "15m"})
+   :email-verify-threshold "15m"
+
+   :quotes-upload-sessions-per-profile 5
+   :quotes-upload-chunks-per-session 20
+
+   ;; SSRF protection
+   :ssrf-allowed-hosts #{}
+   :ssrf-extra-blocked-cidrs #{}})
 
 (def schema:config
   (do #_sm/optional-keys
@@ -106,6 +114,7 @@
 
     [:exporter-shared-key {:optional true} :string]
     [:nitrate-shared-key {:optional true} :string]
+    [:nexus-shared-key {:optional true} :string]
     [:management-api-key {:optional true} :string]
 
     [:telemetry-uri {:optional true} :string]
@@ -115,6 +124,7 @@
     [:auto-file-snapshot-timeout {:optional true} ::ct/duration]
 
     [:media-max-file-size {:optional true} ::sm/int]
+    [:font-max-file-size  {:optional true} ::sm/int]
     [:deletion-delay {:optional true} ::ct/duration]
     [:file-clean-delay {:optional true} ::ct/duration]
     [:telemetry-enabled {:optional true} ::sm/boolean]
@@ -156,6 +166,8 @@
     [:quotes-snapshots-per-team {:optional true} ::sm/int]
     [:quotes-team-access-requests-per-team {:optional true} ::sm/int]
     [:quotes-team-access-requests-per-requester {:optional true} ::sm/int]
+    [:quotes-upload-sessions-per-profile {:optional true} ::sm/int]
+    [:quotes-upload-chunks-per-session {:optional true} ::sm/int]
 
     [:auth-token-cookie-name {:optional true} :string]
     [:auth-token-cookie-max-age {:optional true} ::ct/duration]
@@ -245,17 +257,26 @@
     [:objects-storage-fs-directory {:optional true} :string]
     [:objects-storage-s3-bucket {:optional true} :string]
     [:objects-storage-s3-region {:optional true} :keyword]
-    [:objects-storage-s3-endpoint {:optional true} ::sm/uri]]))
+    [:objects-storage-s3-endpoint {:optional true} ::sm/uri]
+
+    ;; SSRF protection
+    [:ssrf-allowed-hosts {:optional true} [::sm/set :string]]
+    [:ssrf-extra-blocked-cidrs {:optional true} [::sm/set :string]]]))
 
 (defn- parse-flags
   [config]
   (let [public-uri  (c/get config :public-uri)
         public-uri  (some-> public-uri (u/uri))
-        extra-flags (if (and public-uri
-                             (= (:scheme public-uri) "http")
-                             (not= (:host public-uri) "localhost"))
-                      #{:disable-secure-session-cookies}
-                      #{})]
+        extra-flags (cond-> #{}
+                      ;; When public-uri is http (non-localhost), disable secure cookies
+                      (and public-uri
+                           (= (:scheme public-uri) "http")
+                           (not= (:host public-uri) "localhost"))
+                      (conj :disable-secure-session-cookies)
+
+                      ;; When telemetry-enabled config is true, add :telemetry flag
+                      (true? (c/get config :telemetry-enabled))
+                      (conj :enable-telemetry))]
     (flags/parse flags/default extra-flags (:flags config))))
 
 (defn read-env

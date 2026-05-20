@@ -11,6 +11,7 @@ vi.mock('./plugin-manager.js', () => ({
 
 vi.mock('./create-sandbox.js', () => ({
   createSandbox: vi.fn(),
+  markPluginError: vi.fn(),
 }));
 
 describe('createPlugin', () => {
@@ -83,7 +84,7 @@ describe('createPlugin', () => {
       expect.any(Function),
       expect.any(Function),
     );
-    expect(createSandbox).toHaveBeenCalledWith(mockPluginManager);
+    expect(createSandbox).toHaveBeenCalledWith(mockPluginManager, undefined);
     expect(mockSandbox.evaluate).toHaveBeenCalled();
     expect(result).toEqual({
       plugin: mockPluginManager,
@@ -116,7 +117,11 @@ describe('createPlugin', () => {
       throw new Error('Evaluation error');
     });
 
-    await createPlugin(mockContext, manifest, onCloseCallback);
+    try {
+      await createPlugin(mockContext, manifest, onCloseCallback);
+    } catch (err) {
+      expect.assert(err);
+    }
 
     expect(mockPluginManager.close).toHaveBeenCalled();
   });
