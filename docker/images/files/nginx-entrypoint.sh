@@ -40,25 +40,23 @@ update_mpass_signout_url() {
 
 # AUTH_TYPE (e.g. SSO): writes penpotAuthType into frontend config.js.
 #
-# '#' is the sed delimiter so values may include "/" or "|".
-# Normalize: strip POSIX [:cntrl:], trim [:space:], fold case (ASCII uppercase to lowercase).
-# Escape \, #, ", & for a JS double-quoted literal. Writes via tmp + mv only on success.
+# Normalize: fold to lowercase, then validate against a strict whitelist of
+# safe characters ([a-z0-9_-]).  Any value that contains special characters
+# (spaces, #, &, \, ", newlines, …) is rejected and the line is left commented.
+# The temp file is created in the same directory as the target so that the
+# final 'mv' is always an atomic rename on the same filesystem (avoids EXDEV).
 update_auth_type() {
   if [ -n "${AUTH_TYPE:-}" ]; then
-    local auth_norm auth_esc tmp
-    auth_norm=$(printf '%s' "$AUTH_TYPE" \
-      | LC_ALL=C tr -d '[:cntrl:]' \
-      | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
-      | LC_ALL=C tr '[:upper:]' '[:lower:]')
-    [ -n "$auth_norm" ] || return 0
-    auth_esc=$(printf '%s' "$auth_norm" | sed \
-      -e 's/\\/\\\\/g' \
-      -e 's/#/\\#/g' \
-      -e 's/&/\\\&/g' \
-      -e 's/"/\\"/g')
-    tmp="$(mktemp)" || return 1
+    local auth_norm tmp
+    auth_norm=$(printf '%s' "$AUTH_TYPE" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+    # Reject values that contain anything outside a-z 0-9 _ -
+    if ! [[ "$auth_norm" =~ ^[a-z0-9_-]+$ ]]; then
+      echo "update_auth_type: AUTH_TYPE contains invalid characters; skipping injection" >&2
+      return 0
+    fi
+    tmp="$(mktemp -p "$(dirname "$1")")" || return 1
     if ! sed \
-      -e "s#^//var penpotAuthType = .*;#var penpotAuthType = \"${auth_esc}\";#g" \
+      -e "s#^//var penpotAuthType = .*;#var penpotAuthType = \"${auth_norm}\";#g" \
       "$1" > "$tmp"; then
       rm -f "$tmp"
       return 1
