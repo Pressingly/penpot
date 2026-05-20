@@ -40,12 +40,18 @@ update_mpass_signout_url() {
 
 # AUTH_TYPE (e.g. SSO): writes penpotAuthType into frontend config.js.
 # Substitution uses '#' as the sed delimiter (values may include "/" or "|").
-# Prefix escapes for \, #, ", & before embedding AUTH_TYPE into a JS double-quoted string.
+# Normalises AUTH_TYPE: strip control characters, trim whitespace, lowercase.
+# Then escapes \, #, ", & before embedding into a JS double-quoted string.
 # Writes via a temp file + mv so a failed/interrupted sed cannot truncate config.js.
 update_auth_type() {
   if [ -n "${AUTH_TYPE:-}" ]; then
-    local auth_esc tmp
-    auth_esc=$(printf '%s' "$AUTH_TYPE" | sed \
+    local auth_norm auth_esc tmp
+    # Strip control chars, trim leading/trailing whitespace, convert to lowercase.
+    auth_norm=$(printf '%s' "$AUTH_TYPE" \
+      | tr -d '[:cntrl:]' \
+      | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+      | tr '[:upper:]' '[:lower:]')
+    auth_esc=$(printf '%s' "$auth_norm" | sed \
       -e 's/\\/\\\\/g' \
       -e 's/#/\\#/g' \
       -e 's/&/\\\&/g' \

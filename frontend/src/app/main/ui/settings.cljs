@@ -49,7 +49,7 @@
       (when (and (= section :settings-password)
                  (some? profile)
                  (cf/auth-type-sso?))
-        (st/emit! (rt/nav :settings-profile))))
+        (st/emit! (rt/nav :settings-profile {} {::rt/replace true}))))
 
     [:*
      [:> modal-container*]
