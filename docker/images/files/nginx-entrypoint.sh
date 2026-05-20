@@ -38,8 +38,18 @@ update_mpass_signout_url() {
   fi
 }
 
+# AUTH_TYPE (e.g. SSO): consumed by frontend to hide native password UX.
+update_auth_type() {
+  if [ -n "$AUTH_TYPE" ]; then
+    echo "$(sed \
+      -e "s|^//var penpotAuthType = .*;|var penpotAuthType = \"$AUTH_TYPE\";|g" \
+      "$1")" > "$1"
+  fi
+}
+
 update_flags /var/www/app/js/config.js
 update_mpass_signout_url /var/www/app/js/config.js
+update_auth_type /var/www/app/js/config.js
 
 #########################################
 ## Nginx Config

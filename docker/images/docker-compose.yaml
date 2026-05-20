@@ -106,6 +106,8 @@ services:
 
     environment:
       << : [*penpot-flags, *penpot-http-body-size, *penpot-public-uri]
+      # Uncomment for SSO: hides Account → Password (injected into config.js by the frontend image entrypoint).
+      # AUTH_TYPE: SSO
 
   penpot-backend:
     image: "penpotapp/backend:${PENPOT_VERSION:-2.15}"

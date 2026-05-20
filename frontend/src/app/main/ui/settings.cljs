@@ -7,6 +7,7 @@
 (ns app.main.ui.settings
   (:require-macros [app.main.style :as stl])
   (:require
+   [app.config :as cf]
    [app.main.data.dashboard.shortcuts :as sc]
    [app.main.refs :as refs]
    [app.main.router :as rt]
@@ -18,6 +19,7 @@
    [app.main.ui.settings.feedback :refer [feedback-page*]]
    [app.main.ui.settings.integrations :refer [integrations-page*]]
    [app.main.ui.settings.notifications :refer [notifications-page*]]
+   [app.main.ui.ds.product.loader :refer [loader*]]
    [app.main.ui.settings.options :refer [options-page]]
    [app.main.ui.settings.password :refer [password-page]]
    [app.main.ui.settings.profile :refer [profile-page]]
@@ -39,6 +41,11 @@
         profile (mf/deref refs/profile)]
 
     (hooks/use-shortcuts ::dashboard sc/shortcuts)
+
+    (mf/with-effect [section]
+      (when (and (= section :settings-password)
+                 (cf/auth-type-sso?))
+        (st/emit! (rt/nav :settings-profile))))
 
     (mf/with-effect [profile]
       (when (nil? profile)
@@ -65,7 +72,10 @@
                               :error-href error-href}]
 
           :settings-password
-          [:& password-page]
+          (if (cf/auth-type-sso?)
+            [:> loader*
+             {:title (tr "labels.loading") :overlay false}]
+            [:& password-page])
 
           :settings-options
           [:& options-page]
