@@ -38,21 +38,29 @@ update_mpass_signout_url() {
   fi
 }
 
-# AUTH_TYPE (e.g. SSO): consumed by frontend to hide native password UX.
-#
-# `#` separates pattern/replacement because values may contain "/" or "|".
-# Escape `\`, `#`, `"`, and `&` so the generated JS literal and sed replacement stay valid.
+# AUTH_TYPE (e.g. SSO): writes penpotAuthType into frontend config.js.
+# Substitution uses '#' as the sed delimiter (values may include "/" or "|").
+# Prefix escapes for \, #, ", & before embedding AUTH_TYPE into a JS double-quoted string.
+# Writes via a temp file + mv so a failed/interrupted sed cannot truncate config.js.
 update_auth_type() {
   if [ -n "${AUTH_TYPE:-}" ]; then
-    local auth_esc
+    local auth_esc tmp
     auth_esc=$(printf '%s' "$AUTH_TYPE" | sed \
       -e 's/\\/\\\\/g' \
       -e 's/#/\\#/g' \
       -e 's/&/\\\&/g' \
       -e 's/"/\\"/g')
-    echo "$(sed \
+    tmp="$(mktemp)" || return 1
+    if ! sed \
       -e "s#^//var penpotAuthType = .*;#var penpotAuthType = \"${auth_esc}\";#g" \
-      "$1")" > "$1"
+      "$1" > "$tmp"; then
+      rm -f "$tmp"
+      return 1
+    fi
+    if ! mv "$tmp" "$1"; then
+      rm -f "$tmp"
+      return 1
+    fi
   fi
 }
 
