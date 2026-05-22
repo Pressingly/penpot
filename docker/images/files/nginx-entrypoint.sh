@@ -38,8 +38,39 @@ update_mpass_signout_url() {
   fi
 }
 
+# AUTH_TYPE (e.g. SSO): writes penpotAuthType into frontend config.js.
+#
+# Normalize: fold to lowercase, then validate against a strict whitelist of
+# safe characters ([a-z0-9_-]).  Any value that contains special characters
+# (spaces, #, &, \, ", newlines, …) is rejected and the line is left commented.
+# The temp file is created in the same directory as the target so that the
+# final 'mv' is always an atomic rename on the same filesystem (avoids EXDEV).
+update_auth_type() {
+  if [ -n "${AUTH_TYPE:-}" ]; then
+    local auth_norm tmp
+    auth_norm=$(printf '%s' "$AUTH_TYPE" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+    # Reject values that contain anything outside a-z 0-9 _ -
+    if ! [[ "$auth_norm" =~ ^[a-z0-9_-]+$ ]]; then
+      echo "update_auth_type: AUTH_TYPE contains invalid characters; skipping injection" >&2
+      return 0
+    fi
+    tmp="$(mktemp -p "$(dirname "$1")")" || return 1
+    if ! sed \
+      -e "s#^//var penpotAuthType = .*;#var penpotAuthType = \"${auth_norm}\";#g" \
+      "$1" > "$tmp"; then
+      rm -f "$tmp"
+      return 1
+    fi
+    if ! mv "$tmp" "$1"; then
+      rm -f "$tmp"
+      return 1
+    fi
+  fi
+}
+
 update_flags /var/www/app/js/config.js
 update_mpass_signout_url /var/www/app/js/config.js
+update_auth_type /var/www/app/js/config.js
 
 #########################################
 ## Nginx Config
