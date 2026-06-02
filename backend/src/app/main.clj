@@ -21,6 +21,7 @@
    [app.http.client :as-alias http.client]
    [app.http.debug :as-alias http.debug]
    [app.http.management :as mgmt]
+   [app.http.portal-logout :as-alias http.portal-logout]
    [app.http.session :as session]
    [app.http.session.tasks :as-alias session.tasks]
    [app.http.websocket :as http.ws]
@@ -271,18 +272,22 @@
    {::db/pool            (ig/ref ::db/pool)
     ::setup/props        (ig/ref ::setup/props)}
 
+   ::http.portal-logout/routes
+   {::session/manager    (ig/ref ::session/manager)}
+
    :app.http/router
-   {::session/manager    (ig/ref ::session/manager)
-    ::db/pool            (ig/ref ::db/pool)
-    ::rpc/routes         (ig/ref ::rpc/routes)
-    ::setup/props        (ig/ref ::setup/props)
-    ::mtx/routes         (ig/ref ::mtx/routes)
-    ::oidc/routes        (ig/ref ::oidc/routes)
-    ::mgmt/routes        (ig/ref ::mgmt/routes)
-    ::http.debug/routes  (ig/ref ::http.debug/routes)
-    ::http.assets/routes (ig/ref ::http.assets/routes)
-    ::http.ws/routes     (ig/ref ::http.ws/routes)
-    ::http.awsns/routes  (ig/ref ::http.awsns/routes)}
+   {::session/manager           (ig/ref ::session/manager)
+    ::db/pool                   (ig/ref ::db/pool)
+    ::rpc/routes                (ig/ref ::rpc/routes)
+    ::setup/props               (ig/ref ::setup/props)
+    ::mtx/routes                (ig/ref ::mtx/routes)
+    ::oidc/routes               (ig/ref ::oidc/routes)
+    ::mgmt/routes               (ig/ref ::mgmt/routes)
+    ::http.portal-logout/routes (ig/ref ::http.portal-logout/routes)
+    ::http.debug/routes         (ig/ref ::http.debug/routes)
+    ::http.assets/routes        (ig/ref ::http.assets/routes)
+    ::http.ws/routes            (ig/ref ::http.ws/routes)
+    ::http.awsns/routes         (ig/ref ::http.awsns/routes)}
 
    ::http.debug/routes
    {::db/pool         (ig/ref ::db/pool)
