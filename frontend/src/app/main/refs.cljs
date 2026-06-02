@@ -150,6 +150,9 @@
 (def workspace-global
   (l/derived :workspace-global st/state))
 
+(def mcp
+  (l/derived :mcp st/state))
+
 (def workspace-drawing
   (l/derived :workspace-drawing st/state))
 
@@ -645,3 +648,9 @@
 
 (def progress
   (l/derived :progress st/state))
+
+(def access-tokens
+  (l/derived :access-tokens st/state))
+
+(def access-token-created
+  (l/derived :access-token-created st/state))

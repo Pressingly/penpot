@@ -291,7 +291,7 @@
                                                                            :r4 "Bottom Left"
                                                                            :r3 "Bottom Right"}
                                                         :hint (tr "workspace.tokens.radius")
-                                                        :on-update-shape-all dwta/update-shape-radius-all
+                                                        :on-update-shape-all dwta/update-shape-radius
                                                         :on-update-shape update-shape-radius-for-corners})
         shadow (partial generic-attribute-actions #{:shadow} "Shadow")]
     {:border-radius border-radius
@@ -517,7 +517,7 @@
         dropdown-direction-change* (mf/use-ref 0)
         top                 (+ (get-in mdata [:position :y]) 5)
         left                (+ (get-in mdata [:position :x]) 5)
-        container           (hooks/use-portal-container)]
+        container           (hooks/use-portal-container :popup)]
 
     (mf/use-effect
      (mf/deps is-open?)

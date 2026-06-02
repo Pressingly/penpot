@@ -81,6 +81,7 @@
         on-error
         (mf/use-fn
          (fn [cause]
+           (reset! submitted? false)
            (let [{:keys [type code] :as edata} (ex-data cause)]
              (condp = [type code]
                [:restriction :email-does-not-match-invitation]
@@ -97,6 +98,9 @@
 
                [:restriction :email-has-complaints]
                (st/emit! (ntf/error (tr "errors.email-has-permanent-bounces" (:email edata))))
+
+               [:validation :email-already-exists]
+               (st/emit! (ntf/error (tr "errors.email-already-exists")))
 
                [:validation :email-as-password]
                (swap! form assoc-in [:errors :password]
@@ -276,6 +280,7 @@
         (mf/use-fn
          (mf/deps on-success-callback)
          (fn [params]
+           (cf/external-notify-register-success (:id params))
            (if (fn? on-success-callback)
              (on-success-callback (:email params))
 

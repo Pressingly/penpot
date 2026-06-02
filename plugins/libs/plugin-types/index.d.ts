@@ -23,7 +23,7 @@ export interface Penpot extends Omit<
     open: (
       name: string,
       url: string,
-      options?: { width: number; height: number },
+      options?: { width: number; height: number; hidden: boolean },
     ) => void;
 
     size: {
@@ -769,6 +769,11 @@ export interface CommonLayout {
  */
 export interface Context {
   /**
+   * Returns the current penpot version.
+   */
+  readonly version: string;
+
+  /**
    * The root shape in the current Penpot context. Requires `content:read` permission.
    *
    * @example
@@ -1303,6 +1308,15 @@ export interface Context {
    * @param shapes to flatten
    */
   flatten(shapes: Shape[]): Path[];
+
+  /**
+   * Combine several standard Components into a VariantComponent. Similar to doing it
+   * with the contextual menu on the Penpot interface.
+   * All the shapes passed as arguments should be main instances.
+   * @param shapes A list of main instances of the components to combine.
+   * @return The variant container created
+   */
+  createVariantFromComponents(shapes: Board[]): VariantContainer;
 }
 
 /**
@@ -1534,9 +1548,9 @@ export interface EventsMap {
  */
 export interface Export {
   /**
-   * Type of the file to export. Can be one of the following values: png, jpeg, svg, pdf
+   * Type of the file to export. Can be one of the following values: png, jpeg, webp, svg, pdf
    */
-  type: 'png' | 'jpeg' | 'svg' | 'pdf';
+  type: 'png' | 'jpeg' | 'webp' | 'svg' | 'pdf';
   /**
    * For bitmap formats represent the scale of the original size to resize the export
    */
@@ -1701,6 +1715,13 @@ export interface Flags {
    * Defaults to false
    */
   naturalChildOrdering: boolean;
+
+  /**
+   * If `true` the validation errors will throw an exception instead of displaying an
+   * error in the debugger console.
+   * Defaults to false
+   */
+  throwValidationErrors: boolean;
 }
 
 /**
@@ -3729,7 +3750,7 @@ export interface ShapeBase extends PluginData {
   /**
    * Layout properties for cells in a grid layout.
    */
-  readonly layoutCell?: LayoutChildProperties;
+  readonly layoutCell?: LayoutCellProperties;
 
   /**
    * Changes the index inside the parent of the current shape.
@@ -3824,8 +3845,9 @@ export interface ShapeBase extends PluginData {
    * on the Penpot interface.
    * The current shape must be a component main instance.
    * @param ids A list of ids of the main instances of the components to combine with this one.
+   * @return The variant container created
    */
-  combineAsVariants(ids: string[]): void;
+  combineAsVariants(ids: string[]): VariantContainer;
 
   /**
    * @return Returns true when the current shape is the head of a components tree nested structure,
@@ -4132,6 +4154,12 @@ export interface Text extends ShapeBase {
    * The vertical alignment of the text shape. It can be a specific alignment or 'mixed' if multiple alignments are used.
    */
   verticalAlign: 'top' | 'center' | 'bottom' | null;
+
+  /**
+   * Return the bounding box for the text as a (x, y, width, height) rectangle
+   * This is the box that covers the text even if it overflows its selection rectangle.
+   */
+  readonly textBounds: { x: number; y: number; width: number; height: number };
 
   /**
    * Gets a text range within the text shape.
@@ -5215,7 +5243,11 @@ export interface TokenTheme {
 /**
  * The properties that a BorderRadius token can be applied to.
  */
-type TokenBorderRadiusProps = 'r1' | 'r2' | 'r3' | 'r4';
+type TokenBorderRadiusProps =
+  | 'borderRadiusTopLeft'
+  | 'borderRadiusTopRight'
+  | 'borderRadiusBottomRight'
+  | 'borderRadiusBottomLeft';
 
 /**
  * The properties that a Shadow token can be applied to.
@@ -5291,16 +5323,16 @@ type TokenSpacingProps =
   | 'columnGap'
 
   // Spacing / Padding
-  | 'p1'
-  | 'p2'
-  | 'p3'
-  | 'p4'
+  | 'paddingLeft'
+  | 'paddingTop'
+  | 'paddingRight'
+  | 'paddingBottom'
 
   // Spacing / Margin
-  | 'm1'
-  | 'm2'
-  | 'm3'
-  | 'm4';
+  | 'marginLeft'
+  | 'marginTop'
+  | 'marginRight'
+  | 'marginBottom';
 
 /**
  * The properties that a BorderWidth token can be applied to.

@@ -13,6 +13,7 @@
    [app.main.store :as st]
    [app.plugins.format :as format]
    [app.plugins.register :as r]
+   [app.plugins.system-events :as se]
    [app.plugins.utils :as u]
    [app.util.object :as obj]))
 
@@ -44,18 +45,19 @@
        (let [shape (u/locate-shape file-id page-id (obj/get value "$id"))]
          (cond
            (not (shape-proxy? value))
-           (u/display-not-valid :board "The board is not a shape proxy")
+           (u/not-valid plugin-id :board "The board is not a shape proxy")
 
            (not (cfh/frame-shape? shape))
-           (u/display-not-valid :board "The shape is not a board")
+           (u/not-valid plugin-id :board "The shape is not a board")
 
            (not (r/check-permission plugin-id "content:write"))
-           (u/display-not-valid :board "Plugin doesn't have 'content:write' permission")
+           (u/not-valid plugin-id :board "Plugin doesn't have 'content:write' permission")
 
            :else
            (let [board-id (when value (obj/get value "$id"))
                  guide    (-> self u/proxy->ruler-guide)]
-             (st/emit! (dwgu/update-guides (assoc guide :frame-id board-id)))))))}
+             (st/emit! (-> (dwgu/update-guides (assoc guide :frame-id board-id))
+                           (se/add-event plugin-id)))))))}
 
     :orientation
     {:this true
@@ -78,10 +80,10 @@
      (fn [self value]
        (cond
          (not (sm/valid-safe-number? value))
-         (u/display-not-valid :position "Not valid position")
+         (u/not-valid plugin-id :position "Not valid position")
 
          (not (r/check-permission plugin-id "content:write"))
-         (u/display-not-valid :position "Plugin doesn't have 'content:write' permission")
+         (u/not-valid plugin-id :position "Plugin doesn't have 'content:write' permission")
 
          :else
          (let [guide (u/proxy->ruler-guide self)
@@ -92,9 +94,11 @@
                    (+ board-pos value))
 
                  value)]
-           (st/emit! (dwgu/update-guides (assoc guide :position position))))))}
+           (st/emit! (-> (dwgu/update-guides (assoc guide :position position))
+                         (se/add-event plugin-id))))))}
 
     :remove
     (fn []
       (let [guide (u/locate-ruler-guide file-id page-id id)]
-        (st/emit! (dwgu/remove-guide guide))))))
+        (st/emit! (-> (dwgu/remove-guide guide)
+                      (se/add-event plugin-id)))))))

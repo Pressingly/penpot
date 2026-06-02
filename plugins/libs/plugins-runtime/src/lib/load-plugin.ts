@@ -19,7 +19,10 @@ export const getPlugins = () => plugins;
 
 const closeAllPlugins = () => {
   plugins.forEach((pluginApi) => {
-    pluginApi.plugin.close();
+    /* eslint-disable  @typescript-eslint/no-explicit-any */
+    if (!(pluginApi.manifest as any)?.allowBackground) {
+      pluginApi.plugin.close();
+    }
   });
 
   plugins = [];
@@ -38,6 +41,7 @@ window.addEventListener('message', (event) => {
 export const loadPlugin = async function (
   manifest: Manifest,
   closeCallback?: () => void,
+  apiExtensions?: object,
 ) {
   try {
     const context = contextBuilder && contextBuilder(manifest.pluginId);
@@ -58,25 +62,26 @@ export const loadPlugin = async function (
           closeCallback();
         }
       },
+      apiExtensions,
     );
-
     plugins.push(plugin);
   } catch (error) {
     closeAllPlugins();
-    console.error(error);
+    throw error;
   }
 };
 
 export const ɵloadPlugin = async function (
   manifest: Manifest,
   closeCallback?: () => void,
+  apiExtensions?: object,
 ) {
-  loadPlugin(manifest, closeCallback);
+  await loadPlugin(manifest, closeCallback, apiExtensions);
 };
 
 export const ɵloadPluginByUrl = async function (manifestUrl: string) {
   const manifest = await loadManifest(manifestUrl);
-  ɵloadPlugin(manifest);
+  await ɵloadPlugin(manifest);
 };
 
 export const ɵunloadPlugin = function (id: Manifest['pluginId']) {

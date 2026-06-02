@@ -93,6 +93,7 @@
     (fn [{:keys [params path-params method] :as request}]
       (let [handler-name (:method-name path-params)
             etag         (yreq/get-header request "if-none-match")
+            session-id   (yreq/get-header request "x-session-id")
 
             key-id       (get request ::http/auth-key-id)
             profile-id   (or (::session/profile-id request)
@@ -105,6 +106,8 @@
                              (assoc ::handler-name handler-name)
                              (assoc ::ip-addr ip-addr)
                              (assoc ::request-at (ct/now))
+                             (assoc ::request-id (uuid/next))
+                             (assoc ::session-id (some-> session-id uuid/parse*))
                              (assoc ::cond/key etag)
                              (cond-> (uuid? profile-id)
                                (assoc ::profile-id profile-id)))
@@ -160,12 +163,13 @@
 (defn- wrap-audit
   [_ f mdata]
   (if (or (contains? cf/flags :webhooks)
-          (contains? cf/flags :audit-log))
+          (contains? cf/flags :audit-log)
+          (contains? cf/flags :telemetry))
     (if-not (::audit/skip mdata)
       (fn [cfg params]
         (let [result (f cfg params)]
-          (->> (audit/prepare-event cfg mdata params result)
-               (audit/submit! cfg))
+          (->> (audit/prepare-rpc-event cfg mdata params result)
+               (audit/submit cfg))
           result))
       f)
     f))

@@ -497,7 +497,7 @@
 
 (def ^:private schema:create-team
   [:map {:title "create-team"}
-   [:name [:string {:max 250}]]
+   [:name types.team/schema:team-name]
    [:features {:optional true} ::cfeat/features]
    [:id {:optional true} ::sm/uuid]])
 
@@ -591,7 +591,7 @@
 
 (def ^:private schema:update-team
   [:map {:title "update-team"}
-   [:name [:string {:max 250}]]
+   [:name types.team/schema:team-name]
    [:id ::sm/uuid]])
 
 (sv/defmethod ::update-team
@@ -827,6 +827,7 @@
   ;; Validate incoming mime type
 
   (media/validate-media-type! file #{"image/jpeg" "image/png" "image/webp"})
+  (media/validate-media-size! file)
   (update-team-photo cfg (assoc params :profile-id profile-id)))
 
 (defn update-team-photo

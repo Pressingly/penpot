@@ -7,16 +7,18 @@
 (ns app.main.ui.settings
   (:require-macros [app.main.style :as stl])
   (:require
+   [app.config :as cf]
    [app.main.data.dashboard.shortcuts :as sc]
    [app.main.refs :as refs]
    [app.main.router :as rt]
    [app.main.store :as st]
+   [app.main.ui.ds.product.loader :refer [loader*]]
    [app.main.ui.hooks :as hooks]
    [app.main.ui.modal :refer [modal-container*]]
-   [app.main.ui.settings.access-tokens :refer [access-tokens-page]]
    [app.main.ui.settings.change-email]
    [app.main.ui.settings.delete-account]
    [app.main.ui.settings.feedback :refer [feedback-page*]]
+   [app.main.ui.settings.integrations :refer [integrations-page*]]
    [app.main.ui.settings.notifications :refer [notifications-page*]]
    [app.main.ui.settings.options :refer [options-page]]
    [app.main.ui.settings.password :refer [password-page]]
@@ -40,9 +42,14 @@
 
     (hooks/use-shortcuts ::dashboard sc/shortcuts)
 
-    (mf/with-effect [profile]
+    (mf/with-effect [section profile]
       (when (nil? profile)
-        (st/emit! (rt/assign-exception {:type :authentication}))))
+        (st/emit! (rt/assign-exception {:type :authentication})))
+      ;; Wait for profile so we don't race assign-exception vs redirect on cold load.
+      (when (and (= section :settings-password)
+                 (some? profile)
+                 (cf/auth-type-sso?))
+        (st/emit! (rt/nav :settings-profile {} {::rt/replace true}))))
 
     [:*
      [:> modal-container*]
@@ -65,7 +72,12 @@
                               :error-href error-href}]
 
           :settings-password
-          [:& password-page]
+          (if (cf/auth-type-sso?)
+            (if (some? profile)
+              [:& profile-page]
+              [:> loader*
+               {:title (tr "labels.loading") :overlay false}])
+            [:& password-page])
 
           :settings-options
           [:& options-page]
@@ -73,8 +85,8 @@
           :settings-subscription
           [:> subscription-page* {:profile profile}]
 
-          :settings-access-tokens
-          [:& access-tokens-page]
+          :settings-integrations
+          [:> integrations-page*]
 
           :settings-notifications
           [:& notifications-page* {:profile profile}])]]]]))

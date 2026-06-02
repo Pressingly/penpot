@@ -12,6 +12,7 @@
    [app.common.logging :as log]
    [app.common.time :as ct]
    [app.common.uri :as u]
+   [app.common.uuid :as uuid]
    [app.common.version :as v]
    [app.util.avatars :as avatars]
    [app.util.extends]
@@ -108,9 +109,11 @@
 (def target               (parse-target global))
 (def browser              (parse-browser))
 (def platform             (parse-platform))
+(def session-id           (uuid/next))
 
 (def version              (parse-version global))
 (def version-tag          (obj/get global "penpotVersionTag"))
+
 
 (defn stale-build?
   "Returns true when the compiled JS was built with a different version
@@ -158,11 +161,22 @@
 ;; penpot /auth/login screen so the oauth2-proxy cookie and Cognito
 ;; session are also cleared. Nil on non-SSO deployments.
 (def mpass-signout-url    (obj/get global "penpotMpassSignoutUrl"))
+
+(defn ^boolean auth-type-sso?
+  "True when `penpotAuthType` is set in config.js from deploy env AUTH_TYPE,
+  normalized to SSO (case-insensitive). Enables hiding password/account flows
+  backed by Penpot-local credentials."
+  []
+  (let [v (obj/get global "penpotAuthType")]
+    (and (string? v)
+         (= "sso" (-> v str/trim str/lower)))))
+
 (def flex-help-uri        (obj/get global "penpotGridHelpURI" "https://help.penpot.app/user-guide/flexible-layouts/"))
 (def grid-help-uri        (obj/get global "penpotGridHelpURI" "https://help.penpot.app/user-guide/flexible-layouts/"))
-(def plugins-list-uri     (obj/get global "penpotPluginsListUri" "https://penpot.app/penpothub/plugins"))
+(def plugins-list-uri     (obj/get global "penpotPluginsListURI" "https://penpot.app/penpothub/plugins"))
 (def plugins-whitelist    (into #{} (obj/get global "penpotPluginsWhitelist" [])))
-(def templates-uri        (obj/get global "penpotTemplatesUri" "https://penpot.github.io/penpot-files/"))
+(def templates-uri        (obj/get global "penpotTemplatesURI" "https://penpot.github.io/penpot-files/"))
+(def upload-chunk-size    (obj/get global "penpotUploadChunkSize" (* 1024 1024 25))) ;; 25 MiB
 
 ;; We set the current parsed flags under common for make
 ;; it available for common code without the need to pass
@@ -179,12 +193,19 @@
   (normalize-uri (or (obj/get global "penpotPublicURI")
                      (obj/get location "origin"))))
 
+(def mcp-ws-uri
+  (or (some-> (obj/get global "penpotMcpServerURI") u/uri)
+      (u/join public-uri "mcp/ws")))
+
 (def rasterizer-uri
   (or (some-> (obj/get global "penpotRasterizerURI") normalize-uri)
       public-uri))
 
 (def worker-uri
-  (obj/get global "penpotWorkerURI" "/js/worker/main.js"))
+  (-> public-uri
+      (u/join "js/worker/main.js")
+      (get :path)
+      (str "?version=" version-tag)))
 
 (defn external-feature-flag
   [flag value]
@@ -202,10 +223,18 @@
   (let [f (obj/get global "externalContextInfo")]
     (when (fn? f) (f))))
 
+(defn external-notify-register-success
+  [profile-id]
+  (let [f (obj/get global "externalNotifyRegisterSuccess")]
+    (when (fn? f) (f (str profile-id)))))
+
 (defn initialize-external-context-info
   []
   (let [f (obj/get global "initializeExternalConfigInfo")]
     (when (fn? f) (f))))
+
+(def mcp-server-url (-> public-uri u/ensure-path-slash (u/join "mcp/stream") str))
+(def mcp-help-center-uri "https://help.penpot.app/mcp/")
 
 ;; --- Helper Functions
 
