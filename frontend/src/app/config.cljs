@@ -161,6 +161,16 @@
 ;; penpot /auth/login screen so the oauth2-proxy cookie and Cognito
 ;; session are also cleared. Nil on non-SSO deployments.
 (def mpass-signout-url    (obj/get global "penpotMpassSignoutUrl"))
+
+(defn ^boolean auth-type-sso?
+  "True when `penpotAuthType` is set in config.js from deploy env AUTH_TYPE,
+  normalized to SSO (case-insensitive). Enables hiding password/account flows
+  backed by Penpot-local credentials."
+  []
+  (let [v (obj/get global "penpotAuthType")]
+    (and (string? v)
+         (= "sso" (-> v str/trim str/lower)))))
+
 (def flex-help-uri        (obj/get global "penpotGridHelpURI" "https://help.penpot.app/user-guide/flexible-layouts/"))
 (def grid-help-uri        (obj/get global "penpotGridHelpURI" "https://help.penpot.app/user-guide/flexible-layouts/"))
 (def plugins-list-uri     (obj/get global "penpotPluginsListURI" "https://penpot.app/penpothub/plugins"))

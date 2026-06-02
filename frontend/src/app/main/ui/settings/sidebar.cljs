@@ -91,10 +91,11 @@
              :on-click go-settings-profile}
         [:span {:class (stl/css :element-title)} (tr "labels.profile")]]
 
-       [:li {:class (stl/css-case :current password?
-                                  :settings-item true)
-             :on-click go-settings-password}
-        [:span {:class (stl/css :element-title)} (tr "labels.password")]]
+       (when-not (cf/auth-type-sso?)
+         [:li {:class (stl/css-case :current password?
+                                    :settings-item true)
+               :on-click go-settings-password}
+          [:span {:class (stl/css :element-title)} (tr "labels.password")]])
 
        [:li {:class (stl/css-case :current notifications?
                                   :settings-item true)
