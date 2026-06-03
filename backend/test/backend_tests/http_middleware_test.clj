@@ -384,7 +384,12 @@
           handler  (#'app.http.auth-request/wrap-authz
                     (fn [req] (vreset! captured req) {::yres/status 200})
                     cfg)
-          response (handler (->DummyRequest {"x-auth-request-email" email} {}))]
+          ;; Regression guard: oauth2-proxy set x-auth-request-user to the
+          ;; Cognito sub UUID. The middleware must IGNORE that header and derive
+          ;; :fullname from the email local-part — sending it here proves it is
+          ;; not trusted for the display name.
+          response (handler (->DummyRequest {"x-auth-request-email" email
+                                             "x-auth-request-user" "892ae5ac-0021-7000-8000-000000000000"} {}))]
       ;; Profile must be injected into the downstream request
       (t/is (uuid? (::session/profile-id @captured)))
       ;; A session cookie must be set so the browser is authenticated
@@ -395,6 +400,7 @@
                                   (profile/get-profile-by-email conn email)))]
         (t/is (some? profile))
         (t/is (true? (:is-active profile)))
+        ;; Derived from the email local-part, NOT the x-auth-request-user UUID.
         (t/is (= "newuser" (:fullname profile)))
         (t/is (= (::session/profile-id @captured) (:id profile)))))))
 

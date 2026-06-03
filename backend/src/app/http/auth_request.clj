@@ -150,15 +150,18 @@
         (handler request)
 
         :else
-        (let [local-part (first (str/split email-claim #"@"))
-              email      (resolve-email email-claim)
-              profile    (try
-                           (get-or-register-profile cfg email local-part)
-                           (catch Throwable cause
-                             (l/err :hint "x-auth-request: error resolving profile"
-                                    :email email
-                                    :cause cause)
-                             nil))]
+        ;; Pass nil for the display name: get-or-register-profile is the single
+        ;; place that derives it from the resolved email local-part. We never
+        ;; trust an upstream-supplied name (oauth2-proxy put the Cognito sub
+        ;; UUID in x-auth-request-user), so there is nothing to forward here.
+        (let [email   (resolve-email email-claim)
+              profile (try
+                        (get-or-register-profile cfg email nil)
+                        (catch Throwable cause
+                          (l/err :hint "x-auth-request: error resolving profile"
+                                 :email email
+                                 :cause cause)
+                          nil))]
           (cond
             (nil? profile)
             ;; Header email doesn't resolve to a profile (and auto-register
