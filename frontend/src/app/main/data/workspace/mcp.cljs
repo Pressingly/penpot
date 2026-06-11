@@ -33,9 +33,14 @@
    :description "This plugin enables interaction with the Penpot MCP server"
    :allow-background true
    :permissions
+   ;; user:read added in the Moneta fork: the plugins runtime gates
+   ;; penpot.currentUser / penpot.activeUsers on it, and MCP clients
+   ;; routinely ask about users. Keep in sync with
+   ;; mcp/packages/plugin/public/manifest.json.
    #{"library:read" "library:write"
      "comment:read" "comment:write"
-     "content:write" "content:read"}})
+     "content:write" "content:read"
+     "user:read"}})
 
 (defonce interval-sub (atom nil))
 

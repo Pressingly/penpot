@@ -13,6 +13,7 @@ import { ExportShapeTool } from "./tools/ExportShapeTool";
 import { ImportImageTool } from "./tools/ImportImageTool";
 import { ReplServer } from "./ReplServer";
 import { ApiDocs } from "./ApiDocs";
+import { installMonetaAuth, monetaAuthEnabled } from "./moneta";
 
 /**
  * Session context for request-scoped data.
@@ -320,6 +321,11 @@ export class PenpotMcpServer {
         const { default: express } = await import("express");
         this.app = express();
         this.app.use(express.json());
+
+        // Moneta fork: Cognito OAuth gate (no-op unless COGNITO_USER_POOL_ID is set)
+        if (monetaAuthEnabled()) {
+            await installMonetaAuth(this.app, this.logger);
+        }
 
         this.setupHttpEndpoints();
 
