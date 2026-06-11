@@ -128,6 +128,16 @@ function identityAsUserTokenMiddleware() {
  */
 export async function installMonetaAuth(app: ExpressApp, logger: Logger): Promise<void> {
     const config = loadMonetaAuthConfig();
+    if (config.allowedClientRedirectUris === null && config.isProduction) {
+        // Matches the FastMCP siblings' default, but in production an open
+        // allow-list lets any DCR client register any callback — the Cognito
+        // login + PKCE still gate token issuance, yet a phished user could be
+        // walked through authorizing a malicious client. Warn, don't fail.
+        logger.warn(
+            "MCP_ALLOWED_CLIENT_REDIRECT_URIS is unset — dynamic client registration accepts any " +
+                "redirect_uri. Set an allow-list for production deployments."
+        );
+    }
     const storage = await buildOAuthStorage(config, logger);
     const cognito = new CognitoClient(config, logger);
     const provider = new CognitoProxyProvider(config, cognito, storage, logger);

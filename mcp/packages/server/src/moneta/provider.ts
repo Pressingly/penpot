@@ -83,12 +83,32 @@ function base64url(buffer: Buffer): string {
     return buffer.toString("base64url");
 }
 
-/** Matches an allow-list entry: exact, or prefix when the entry ends with '*'. */
+/**
+ * Matches an allow-list entry: exact, or prefix when the entry ends with '*'.
+ * Wildcard matching is URL-aware: the candidate must share the entry's exact
+ * origin (scheme + host + port) before the prefix test, so a too-broad entry
+ * like "https://example.com*" can never match a host-extension such as
+ * "https://example.com.evil/cb". Unparseable values never match.
+ */
 function redirectUriAllowed(uri: string, allowList: string[] | null): boolean {
     if (allowList === null) {
         return true;
     }
-    return allowList.some((entry) => (entry.endsWith("*") ? uri.startsWith(entry.slice(0, -1)) : uri === entry));
+    return allowList.some((entry) => {
+        if (!entry.endsWith("*")) {
+            return uri === entry;
+        }
+        const prefix = entry.slice(0, -1);
+        let entryOrigin: string;
+        let uriOrigin: string;
+        try {
+            entryOrigin = new URL(prefix).origin;
+            uriOrigin = new URL(uri).origin;
+        } catch {
+            return false;
+        }
+        return uriOrigin === entryOrigin && uri.startsWith(prefix);
+    });
 }
 
 /**

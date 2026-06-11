@@ -39,6 +39,11 @@ function headerValue(request: http.IncomingMessage, name: string): string | null
     return trimmed ? trimmed : null;
 }
 
+/** Short non-reversible marker for log correlation — never the full identifier. */
+function fingerprint(value: string | null): string {
+    return value ? `${value.slice(0, 8)}…` : "<unset>";
+}
+
 export function monetaIdentityFromUpgrade(request: http.IncomingMessage): string | null {
     if (!monetaAuthEnabled()) {
         return null;
@@ -46,9 +51,18 @@ export function monetaIdentityFromUpgrade(request: http.IncomingMessage): string
     const emailHeader = headerValue(request, "x-auth-request-email");
     const userHeader = headerValue(request, "x-auth-request-user");
     const identity = usablePairingEmail(emailHeader) ?? userHeader;
+    // Fingerprints only at info — full identifiers would leak PII into
+    // production logs. Raw header values are available at debug for pairing
+    // diagnosis (the dev overlay runs with PENPOT_MCP_LOG_LEVEL=debug).
     logger.info(
         "Plugin connection identity: %s (email header=%s, user header=%s)",
-        identity ?? "<none — falling back to ?userToken>",
+        identity ? fingerprint(identity) : "<none — falling back to ?userToken>",
+        fingerprint(emailHeader),
+        fingerprint(userHeader)
+    );
+    logger.debug(
+        "Plugin connection identity (full): %s (email header=%s, user header=%s)",
+        identity ?? "<none>",
         emailHeader ?? "<unset>",
         userHeader ?? "<unset>"
     );
