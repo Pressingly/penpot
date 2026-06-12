@@ -2,6 +2,7 @@
 
 import { PenpotMcpServer } from "./PenpotMcpServer";
 import { createLogger, logActiveTransports } from "./logger";
+import { monetaAuthEnabled } from "./moneta";
 
 /**
  * Entry point for Penpot MCP Server
@@ -37,7 +38,9 @@ async function main(): Promise<void> {
             }
         }
 
-        const server = new PenpotMcpServer(multiUser);
+        // Moneta fork: Cognito auth implies multiple users — never route tools
+        // through the single-user "any connected plugin" fallback.
+        const server = new PenpotMcpServer(multiUser || monetaAuthEnabled());
         await server.start();
 
         // keep the process alive
