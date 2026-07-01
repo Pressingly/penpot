@@ -226,6 +226,17 @@ export class PenpotMcpServer {
 
     private setupHttpEndpoints(): void {
         /**
+         * Health check endpoint used by Docker/orchestration to determine liveness.
+         *
+         * Intentionally cheap: it does not exercise any downstream dependencies
+         * (Penpot API, plugin bridge, etc.), it simply confirms that the HTTP
+         * server is up and able to respond.
+         */
+        this.app.get("/healthz", (_req: any, res: any) => {
+            res.status(200).json({ status: "ok" });
+        });
+
+        /**
          * Modern Streamable HTTP connection endpoint.
          *
          * New sessions are created on initialize requests (no mcp-session-id header).
