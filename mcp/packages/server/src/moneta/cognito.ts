@@ -172,13 +172,14 @@ export class CognitoClient {
 
     private async tokenRequest(params: Record<string, string>): Promise<CognitoTokenResponse> {
         const discovery = await this.discovery();
+        const tokenEndpoint = this.config.upstreamTokenUrl ?? discovery.token_endpoint;
         const body = new URLSearchParams({ ...params, client_id: this.config.clientId });
         const headers: Record<string, string> = { "Content-Type": "application/x-www-form-urlencoded" };
         if (this.config.clientSecret) {
             const basic = Buffer.from(`${this.config.clientId}:${this.config.clientSecret}`).toString("base64");
             headers["Authorization"] = `Basic ${basic}`;
         }
-        const response = await fetch(discovery.token_endpoint, { method: "POST", headers, body });
+        const response = await fetch(tokenEndpoint, { method: "POST", headers, body });
         if (!response.ok) {
             const detail = await response.text().catch(() => "");
             throw new Error(`Cognito token endpoint returned ${response.status}: ${detail.slice(0, 300)}`);
@@ -261,7 +262,8 @@ export class CognitoClient {
     /** Builds the upstream authorize redirect with our own callback, state and PKCE pair. */
     async authorizeUrl(state: string, codeChallenge: string): Promise<string> {
         const discovery = await this.discovery();
-        const url = new URL(discovery.authorization_endpoint);
+        const baseEndpoint = this.config.upstreamAuthUrl ?? discovery.authorization_endpoint;
+        const url = new URL(baseEndpoint);
         url.searchParams.set("response_type", "code");
         url.searchParams.set("client_id", this.config.clientId);
         url.searchParams.set("redirect_uri", this.config.callbackUrl);
@@ -269,6 +271,9 @@ export class CognitoClient {
         url.searchParams.set("state", state);
         url.searchParams.set("code_challenge", codeChallenge);
         url.searchParams.set("code_challenge_method", "S256");
+        if (this.config.identityProvider) {
+            url.searchParams.set("identity_provider", this.config.identityProvider);
+        }
         return url.href;
     }
 }
