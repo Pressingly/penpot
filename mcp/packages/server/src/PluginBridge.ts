@@ -4,6 +4,7 @@ import { PluginTask } from "./PluginTask";
 import { PluginTaskResponse, PluginTaskResult } from "@penpot/mcp-common";
 import { createLogger } from "./logger";
 import type { PenpotMcpServer } from "./PenpotMcpServer";
+import { monetaIdentityFromUpgrade } from "./moneta";
 
 const KEEP_ALIVE_TIME = 30000; // 30 seconds
 
@@ -43,8 +44,9 @@ export class PluginBridge {
     private setupWebSocketHandlers(): void {
         this.wsServer.on("connection", (ws: WebSocket, request: http.IncomingMessage) => {
             // extract userToken from query parameters
+            // (Moneta fork: the mPass identity headers take precedence in Cognito mode)
             const url = new URL(request.url!, `ws://${request.headers.host}`);
-            const userToken = url.searchParams.get("userToken");
+            const userToken = monetaIdentityFromUpgrade(request) ?? url.searchParams.get("userToken");
 
             // require userToken if running in multi-user mode
             if (this.mcpServer.isMultiUserMode() && !userToken) {

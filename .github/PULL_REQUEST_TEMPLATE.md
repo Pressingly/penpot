@@ -1,20 +1,27 @@
-### Related Ticket
+## Related Ticket
+<!-- Link the Plane ticket: https://foss-pm.local.moneta.dev/... -->
 
-<!-- Reference the related GitHub/Taiga ticket. -->
+## Description
+<!-- What changed and why? Link related issues: FIX #123 -->
 
-### Summary
+## Type of Change
+- [ ] Bug fix
+- [ ] New feature
+- [ ] Improvement / Enhancement
+- [ ] Refactoring
+- [ ] Performance improvement
+- [ ] Documentation
+- [ ] Infrastructure / CI
 
-### Steps to reproduce 
+## Testing
+<!-- How did you verify the change? -->
+- [ ] Tested locally
+- [ ] New / updated tests included
 
-### Checklist
+## Screenshots
+<!-- If applicable, add before/after screenshots -->
 
-- [ ] Choose the correct target branch; use `develop` by default.
-- [ ] Provide a brief summary of the changes introduced.
-- [ ] Add a detailed explanation of how to reproduce the issue and/or verify the fix, if applicable.
-- [ ] Include screenshots or videos, if applicable.
-- [ ] Add or modify existing integration tests in case of bugs or new features, if applicable.
-- [ ] Refactor any modified SCSS files following the refactor guide.
-- [ ] Check CI passes successfully.
-- [ ] Update the `CHANGES.md` file, referencing the related GitHub issue, if applicable.
-
-<!-- For more details, check the contribution guidelines: https://github.com/penpot/penpot/blob/develop/CONTRIBUTING.md -->
+## Checklist
+- [ ] No lint or build errors
+- [ ] All existing tests pass
+- [ ] Documentation updated (if needed)

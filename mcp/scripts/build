@@ -36,6 +36,18 @@ cp -a packages/server/dist/. ./dist/;
 cp packages/server/package.json ./dist/;
 cp pnpm-lock.yaml ./dist/;
 
+# Strip the workspace self-reference ("penpot-mcp": "file:..") from the
+# shipped package.json: inside the docker image it resolves to /opt/penpot —
+# the install's own parent directory — and pnpm packs that tree while mutating
+# its cache under the same path, failing with ERR_PNPM_ENOENT. The runtime
+# bundle only needs the esbuild-external dependencies.
+node -e '
+const fs = require("fs");
+const pkg = JSON.parse(fs.readFileSync("./dist/package.json", "utf8"));
+delete pkg.dependencies["penpot-mcp"];
+fs.writeFileSync("./dist/package.json", JSON.stringify(pkg, null, 4) + "\n");
+';
+
 touch ./dist/pnpm-workspace.yaml;
 
 cat <<EOF | tee ./dist/setup
