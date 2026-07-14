@@ -13,6 +13,7 @@ import { ExportShapeTool } from "./tools/ExportShapeTool";
 import { ImportImageTool } from "./tools/ImportImageTool";
 import { ReplServer } from "./ReplServer";
 import { ApiDocs } from "./ApiDocs";
+import { installMonetaAuth, monetaAuthEnabled } from "./moneta";
 
 /**
  * Session context for request-scoped data.
@@ -225,6 +226,17 @@ export class PenpotMcpServer {
 
     private setupHttpEndpoints(): void {
         /**
+         * Health check endpoint used by Docker/orchestration to determine liveness.
+         *
+         * Intentionally cheap: it does not exercise any downstream dependencies
+         * (Penpot API, plugin bridge, etc.), it simply confirms that the HTTP
+         * server is up and able to respond.
+         */
+        this.app.get("/healthz", (_req: any, res: any) => {
+            res.status(200).json({ status: "ok" });
+        });
+
+        /**
          * Modern Streamable HTTP connection endpoint.
          *
          * New sessions are created on initialize requests (no mcp-session-id header).
@@ -320,6 +332,11 @@ export class PenpotMcpServer {
         const { default: express } = await import("express");
         this.app = express();
         this.app.use(express.json());
+
+        // Moneta fork: Cognito OAuth gate (no-op unless COGNITO_USER_POOL_ID is set)
+        if (monetaAuthEnabled()) {
+            await installMonetaAuth(this.app, this.logger);
+        }
 
         this.setupHttpEndpoints();
 
