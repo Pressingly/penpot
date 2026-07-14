@@ -172,13 +172,14 @@ export class CognitoClient {
 
     private async tokenRequest(params: Record<string, string>): Promise<CognitoTokenResponse> {
         const discovery = await this.discovery();
+        const tokenEndpoint = this.config.upstreamTokenUrl ?? discovery.token_endpoint;
         const body = new URLSearchParams({ ...params, client_id: this.config.clientId });
         const headers: Record<string, string> = { "Content-Type": "application/x-www-form-urlencoded" };
         if (this.config.clientSecret) {
             const basic = Buffer.from(`${this.config.clientId}:${this.config.clientSecret}`).toString("base64");
             headers["Authorization"] = `Basic ${basic}`;
         }
-        const response = await fetch(discovery.token_endpoint, { method: "POST", headers, body });
+        const response = await fetch(tokenEndpoint, { method: "POST", headers, body });
         if (!response.ok) {
             const detail = await response.text().catch(() => "");
             throw new Error(`Cognito token endpoint returned ${response.status}: ${detail.slice(0, 300)}`);
