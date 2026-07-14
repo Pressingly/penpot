@@ -261,7 +261,8 @@ export class CognitoClient {
     /** Builds the upstream authorize redirect with our own callback, state and PKCE pair. */
     async authorizeUrl(state: string, codeChallenge: string): Promise<string> {
         const discovery = await this.discovery();
-        const url = new URL(discovery.authorization_endpoint);
+        const baseEndpoint = this.config.upstreamAuthUrl ?? discovery.authorization_endpoint;
+        const url = new URL(baseEndpoint);
         url.searchParams.set("response_type", "code");
         url.searchParams.set("client_id", this.config.clientId);
         url.searchParams.set("redirect_uri", this.config.callbackUrl);

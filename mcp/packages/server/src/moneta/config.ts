@@ -48,8 +48,8 @@ export interface MonetaAuthConfig {
     storageUrl: string | undefined;
     /** Key material for at-rest encryption of OAuth state in Valkey. */
     encryptionSecret: string | undefined;
-    /** Federated IdP name (e.g. "mPass") — when set, /authorize passes identity_provider to bypass Cognito's hosted UI. */
-    identityProvider: string | undefined;
+    /** Override Cognito's authorization_endpoint with a custom auth proxy URL (e.g. mpass-auth-proxy). */
+    upstreamAuthUrl: string | undefined;
     isProduction: boolean;
 }
 
@@ -98,7 +98,7 @@ export function loadMonetaAuthConfig(): MonetaAuthConfig {
         );
     }
 
-    const identityProvider = (process.env.COGNITO_IDENTITY_PROVIDER ?? "").trim() || undefined;
+    const upstreamAuthUrl = (process.env.COGNITO_UPSTREAM_AUTH_URL ?? "").trim() || undefined;
 
     const origins = csv(process.env.MCP_ALLOWED_ORIGINS);
     const redirectUris = csv(process.env.MCP_ALLOWED_CLIENT_REDIRECT_URIS);
@@ -115,7 +115,7 @@ export function loadMonetaAuthConfig(): MonetaAuthConfig {
         allowedClientRedirectUris: redirectUris.length > 0 ? redirectUris : null,
         storageUrl,
         encryptionSecret,
-        identityProvider,
+        upstreamAuthUrl,
         isProduction: (process.env.MCP_ENV ?? "production") === "production",
     };
 }
