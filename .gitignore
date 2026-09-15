@@ -84,3 +84,6 @@
 /**/node_modules
 /**/.yarn/*
 /.pnpm-store
+
+# graphify knowledge graph (generated locally; rebuilt on commit via post-commit hook)
+graphify-out/
