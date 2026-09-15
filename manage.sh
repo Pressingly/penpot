@@ -30,7 +30,10 @@ fi
 
 
 function print-current-version {
-    echo -n "$(git describe --tags --match "*.*.*")";
+    # Drop a leading `v`: Moneta fork releases are tagged vYY.MM.PATCH (ADR-0021)
+    # while upstream penpot tags are bare. This value becomes a Docker image tag
+    # and a bundle version.txt, so it stays prefix-free whichever tag is nearest.
+    echo -n "$(git describe --tags --match "*.*.*" | sed 's/^v//')";
 }
 
 function setup-buildx {

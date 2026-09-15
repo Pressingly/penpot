@@ -16,8 +16,12 @@ set -euo pipefail
 
 raw=$(git describe --tags --match "*.*.*")
 
-# Parse: <major>.<minor>.<patch>[-<label><n>][-<commits>-g<hash>]
-if [[ "$raw" =~ ^([0-9]+\.[0-9]+\.[0-9]+)(-([A-Za-z]+)([0-9]*))?(-([0-9]+)-g[0-9a-f]+)?$ ]]; then
+# Parse: [v]<major>.<minor>.<patch>[-<label><n>][-<commits>-g<hash>]
+#
+# The leading `v` is optional and dropped: Moneta fork releases are tagged
+# vYY.MM.PATCH (ADR-0021) while upstream penpot tags are bare, and an npm
+# version carries no prefix either way.
+if [[ "$raw" =~ ^v?([0-9]+\.[0-9]+\.[0-9]+)(-([A-Za-z]+)([0-9]*))?(-([0-9]+)-g[0-9a-f]+)?$ ]]; then
     base="${BASH_REMATCH[1]}"
     label="${BASH_REMATCH[3]}"        # e.g. RC
     label_num="${BASH_REMATCH[4]}"    # e.g. 1
