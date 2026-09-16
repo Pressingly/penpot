@@ -1,7 +1,24 @@
 #!/usr/bin/env bash
 
 export ORGANIZATION="penpotapp";
-export DEVENV_IMGNAME="$ORGANIZATION/devenv";
+export DEVENV_IMGNAME="${DEVENV_IMGNAME:-$ORGANIZATION/devenv}";
+
+# The build toolchain image, pinned by digest.
+#
+# Upstream republishes :latest in place, and a 2026-09 republish added zstd layers
+# (10 of 40) that older Docker daemons cannot extract -- "invalid tar header". That
+# broke Cloud Build while every local machine kept working, because manage.sh only
+# pulls devenv when it is absent, so caches held a months-old gzip copy and nobody
+# noticed upstream had moved.
+#
+# A digest is immutable, so the toolchain stops being a moving target and builds
+# stop depending on what happens to be in each machine's cache. This one is
+# gzip-only and is what every Penpot artifact we have shipped was built with.
+#
+# To move the toolchain: pull the new digest, run a full penpot build, update this
+# line. Override DEVENV_IMAGE to point at a registry mirror or a locally built
+# image (see build-devenv).
+export DEVENV_IMAGE="${DEVENV_IMAGE:-$DEVENV_IMGNAME@sha256:e0b0fddcc36a8c04e87ffa6ae2541984a36502fb6085e7df928997f328c3f0e1}";
 export DEVENV_PNAME="penpotdev";
 
 export CURRENT_USER_ID=$(id -u);
@@ -70,15 +87,24 @@ function build-devenv {
     fi
 
     popd;
+
+    # Consumption is digest-pinned, so a freshly built :latest is not picked up
+    # until it is pointed at explicitly.
+    echo "";
+    echo "Built $DEVENV_IMGNAME:latest. To build against it:";
+    echo "  export DEVENV_IMAGE=$DEVENV_IMGNAME:latest";
+    echo "To make it the default for everyone, push it and update DEVENV_IMAGE at the top of this file.";
 }
 
 function pull-devenv {
     set -ex
-    docker pull $DEVENV_IMGNAME:latest
+    docker pull $DEVENV_IMAGE
 }
 
 function pull-devenv-if-not-exists {
-    if [[ ! $(docker images $DEVENV_IMGNAME:latest -q) ]]; then
+    # image inspect, not `docker images -q`: the latter matches on tag and a
+    # digest-pinned image carries none.
+    if ! docker image inspect $DEVENV_IMAGE > /dev/null 2>&1; then
         pull-devenv $@
     fi
 }
@@ -141,7 +167,7 @@ function run-devenv-isolated-shell {
            -e SHADOWCLJS_EXTRA_PARAMS=$SHADOWCLJS_EXTRA_PARAMS \
            -e JAVA_OPTS="$JAVA_OPTS" \
            -w /home/penpot/penpot/$1 \
-           $DEVENV_IMGNAME:latest sudo -EH -u penpot $@
+           $DEVENV_IMAGE sudo -EH -u penpot $@
 }
 
 function build-imagemagick-docker-image {
@@ -186,7 +212,7 @@ function build {
            -e SHADOWCLJS_EXTRA_PARAMS=$SHADOWCLJS_EXTRA_PARAMS \
            -e JAVA_OPTS="$JAVA_OPTS" \
            -w /home/penpot/penpot/$1 \
-           $DEVENV_IMGNAME:latest sudo -EH -u penpot ./scripts/$script $version
+           $DEVENV_IMAGE sudo -EH -u penpot ./scripts/$script $version
 
     echo ">> build end: $1"
 }
