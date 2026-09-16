@@ -14,7 +14,10 @@ volumes:
 services:
   main:
     privileged: true
-    image: "penpotapp/devenv:latest"
+    # Same toolchain reference manage.sh uses, so start-devenv and create-devenv
+    # cannot pull a different image than the build path. Default matches the pin
+    # in manage.sh; see ADR-0021 and the zstd incident that motivated it.
+    image: "${DEVENV_IMAGE:-penpotapp/devenv@sha256:e0b0fddcc36a8c04e87ffa6ae2541984a36502fb6085e7df928997f328c3f0e1}"
     build:
       context: "."
     container_name: "penpot-devenv-main"
