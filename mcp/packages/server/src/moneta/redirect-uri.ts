@@ -18,7 +18,7 @@
  * so http://localhost@evil.com cannot satisfy a localhost pattern. Unparseable
  * URIs and patterns never match and never throw. The URI path is compared
  * after WHATWG normalisation, so dot segments cannot walk out of a path
- * prefix (FastMCP compares the raw path, which is looser).
+ * prefix (FastMCP before 3.3 compares the raw path; 3.3+ rejects dot segments).
  */
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
@@ -30,50 +30,102 @@ interface PatternParts {
     path: string;
 }
 
-function escapeRegExp(value: string): string {
-    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+type GlobToken =
+    | { kind: "star" }
+    | { kind: "any" }
+    | { kind: "literal"; char: string }
+    | { kind: "class"; negated: boolean; ranges: Array<[string, string]> };
+
+function classRanges(members: string): Array<[string, string]> {
+    const ranges: Array<[string, string]> = [];
+    let i = 0;
+    while (i < members.length) {
+        const isRange = members[i + 1] === "-" && i + 2 < members.length;
+        const [lo, hi] = isRange ? [members[i], members[i + 2]] : [members[i], members[i]];
+        if (lo <= hi) {
+            ranges.push([lo, hi]);
+        }
+        i += isRange ? 3 : 1;
+    }
+    return ranges;
 }
 
-function translateBracket(pattern: string, open: number): { source: string; next: number } | null {
-    let i = open + 1;
-    if (pattern[i] === "!") {
-        i++;
-    }
-    if (pattern[i] === "]") {
-        i++;
-    }
-    const close = pattern.indexOf("]", i);
+function bracketToken(pattern: string, open: number): { token: GlobToken; next: number } | null {
+    const negated = pattern[open + 1] === "!";
+    const bodyStart = open + (negated ? 2 : 1);
+    const close = pattern.indexOf("]", pattern[bodyStart] === "]" ? bodyStart + 1 : bodyStart);
     if (close === -1) {
         return null;
     }
-    const body = pattern.slice(open + 1, close).replace(/\\/g, "\\\\");
-    const negated = body.startsWith("!");
-    const members = (negated ? body.slice(1) : body).replace(/^\^/, "\\^");
-    return { source: `[${negated ? "^" : ""}${members}]`, next: close + 1 };
+    return {
+        token: { kind: "class", negated, ranges: classRanges(pattern.slice(bodyStart, close)) },
+        next: close + 1,
+    };
 }
 
-/** fnmatch.translate equivalent: `*` any run, `?` one char, `[...]` / `[!...]` a class. */
-export function globToRegExp(pattern: string): RegExp {
-    let source = "";
+function tokenizeGlob(pattern: string): GlobToken[] {
+    const tokens: GlobToken[] = [];
     let i = 0;
     while (i < pattern.length) {
         const char = pattern[i];
-        if (char === "*") {
-            source += ".*";
-            i++;
-        } else if (char === "?") {
-            source += ".";
-            i++;
-        } else if (char === "[") {
-            const bracket = translateBracket(pattern, i);
-            source += bracket ? bracket.source : "\\[";
-            i = bracket ? bracket.next : i + 1;
+        const bracket = char === "[" ? bracketToken(pattern, i) : null;
+        if (bracket) {
+            tokens.push(bracket.token);
+            i = bracket.next;
+            continue;
+        }
+        tokens.push(char === "*" ? { kind: "star" } : char === "?" ? { kind: "any" } : { kind: "literal", char });
+        i++;
+    }
+    return tokens;
+}
+
+function tokenMatchesChar(token: GlobToken, char: string): boolean {
+    switch (token.kind) {
+        case "any":
+            return true;
+        case "literal":
+            return token.char === char;
+        case "class":
+            return token.ranges.some(([lo, hi]) => lo <= char && char <= hi) !== token.negated;
+        case "star":
+            return false;
+    }
+}
+
+/**
+ * fnmatch semantics (`*` any run, `?` one char, `[...]` / `[!...]` a class,
+ * reversed ranges dropped) without a regex: a greedy single-backtrack scan,
+ * O(value × pattern) on attacker-supplied URIs, so it cannot be driven into
+ * catastrophic backtracking and never throws on a malformed class.
+ */
+export function globMatch(value: string, pattern: string): boolean {
+    const tokens = tokenizeGlob(pattern);
+    let ti = 0;
+    let vi = 0;
+    let starTi = -1;
+    let starVi = 0;
+    while (vi < value.length) {
+        const token = tokens[ti];
+        if (token && token.kind === "star") {
+            starTi = ti;
+            starVi = vi;
+            ti++;
+        } else if (token && tokenMatchesChar(token, value[vi])) {
+            ti++;
+            vi++;
+        } else if (starTi !== -1) {
+            ti = starTi + 1;
+            starVi++;
+            vi = starVi;
         } else {
-            source += escapeRegExp(char);
-            i++;
+            return false;
         }
     }
-    return new RegExp(`^${source}$`, "s");
+    while (tokens[ti]?.kind === "star") {
+        ti++;
+    }
+    return ti === tokens.length;
 }
 
 function splitHostPort(netloc: string): { host: string; port: string | null } | null {
@@ -112,7 +164,7 @@ export function parsePattern(pattern: string): PatternParts | null {
     return {
         scheme: schemeMatch[1].toLowerCase(),
         host: hostPort.host.toLowerCase(),
-        port: hostPort.port || null,
+        port: hostPort.port,
         path,
     };
 }
@@ -134,7 +186,7 @@ function matchPort(uriPort: string, pattern: PatternParts, scheme: string): bool
     if (loopbackAnyPort || pattern.port === "*") {
         return true;
     }
-    return (uriPort || defaultPort(scheme)) === (pattern.port ?? defaultPort(scheme));
+    return (uriPort || defaultPort(scheme)) === (pattern.port || defaultPort(scheme));
 }
 
 function matchPath(uriPath: string, patternPath: string): boolean {
@@ -142,7 +194,7 @@ function matchPath(uriPath: string, patternPath: string): boolean {
     if (pattern === "/") {
         return true;
     }
-    return globToRegExp(pattern).test(uriPath || "/");
+    return globMatch(uriPath || "/", pattern);
 }
 
 function parseUri(uri: string): URL | null {
@@ -180,8 +232,9 @@ export function redirectUriAllowed(uri: string, allowList: readonly string[] | n
 /**
  * Narrows a stored client's redirect URIs to those the current allow-list
  * accepts. Returns `undefined` when none survive, so a client registered while
- * the list was empty (or wider) stops working instead of keeping a disallowed
- * callback for the rest of its storage TTL.
+ * the list was empty (or wider) stops working, refresh included, instead of
+ * keeping a disallowed callback for the rest of its storage TTL. Stricter than
+ * FastMCP, which keeps the client and only refuses the redirect at /authorize.
  */
 export function restrictToAllowedRedirectUris<T extends { redirect_uris?: readonly string[] }>(
     client: T,

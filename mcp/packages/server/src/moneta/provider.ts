@@ -89,7 +89,7 @@ function base64url(buffer: Buffer): string {
  * we validate redirect URIs against MCP_ALLOWED_CLIENT_REDIRECT_URIS (unset =
  * allow all, matching the FastMCP servers' default) both at registration and
  * on every lookup, so tightening the list also applies to clients that
- * registered before it, as FastMCP's get_client back-fill does.
+ * registered before it (see restrictToAllowedRedirectUris).
  */
 export class MonetaClientsStore implements OAuthRegisteredClientsStore {
     constructor(

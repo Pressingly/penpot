@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
-    globToRegExp,
+    globMatch,
     matchesAllowedPattern,
     parsePattern,
     redirectUriAllowed,
@@ -44,6 +44,9 @@ describe("matchesAllowedPattern", () => {
     it("treats an empty pattern port as the default port", () => {
         expectMatch("http://example.com/cb", "http://example.com:/cb", true);
         expectMatch("http://example.com:81/cb", "http://example.com:/cb", false);
+        expectMatch("http://localhost/cb", "http://localhost:/cb", true);
+        expectMatch("http://localhost:3000/cb", "http://localhost:/cb", false);
+        expectMatch("http://[::1]:3000/cb", "http://[::1]:/cb", false);
     });
 
     it("matches custom schemes component-wise", () => {
@@ -146,14 +149,42 @@ describe("parsePattern", () => {
     });
 });
 
-describe("globToRegExp", () => {
+describe("globMatch", () => {
     it("treats an unterminated bracket as a literal", () => {
-        assert.equal(globToRegExp("/a[b").test("/a[b"), true);
+        assert.equal(globMatch("/a[b", "/a[b"), true);
     });
 
-    it("escapes regex metacharacters", () => {
-        assert.equal(globToRegExp("/a.b").test("/axb"), false);
-        assert.equal(globToRegExp("/a+b").test("/a+b"), true);
+    it("treats regex metacharacters as literals", () => {
+        assert.equal(globMatch("/axb", "/a.b"), false);
+        assert.equal(globMatch("/a+b", "/a+b"), true);
+        assert.equal(globMatch("/a(b", "/a(b"), true);
+    });
+
+    it("drops a reversed range instead of throwing", () => {
+        assert.equal(globMatch("/v1/cb", "/v[z-a]/cb"), false);
+        assert.equal(globMatch("/v1/cb", "/v[!z-a]/cb"), true);
+        assert.equal(matchesAllowedPattern("https://a.example.com/v1/cb", "https://a.example.com/v[z-a]/cb"), false);
+    });
+
+    it("reads a leading ] as a class member", () => {
+        assert.equal(globMatch("/v]/cb", "/v[]x]/cb"), true);
+        assert.equal(globMatch("/vy/cb", "/v[!]x]/cb"), true);
+        assert.equal(globMatch("/v]/cb", "/v[!]x]/cb"), false);
+        assert.equal(globMatch("/vxx]/cb", "/v[!]x]/cb"), false);
+    });
+
+    it("lets * span path separators and match the empty string", () => {
+        assert.equal(globMatch("/a/b/c", "/a*"), true);
+        assert.equal(globMatch("/a", "/a*"), true);
+        assert.equal(globMatch("/a/end", "/*/*/end"), false);
+        assert.equal(globMatch("/a/b/end", "/*/*/end"), true);
+    });
+
+    it("stays fast on a long hostile path against a multi-star pattern", () => {
+        const started = Date.now();
+        const path = `/cb/${"x/".repeat(50_000)}`;
+        assert.equal(globMatch(path, "/cb/*/*/*/end"), false);
+        assert.ok(Date.now() - started < 1000, `took ${Date.now() - started}ms`);
     });
 });
 
