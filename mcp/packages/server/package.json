@@ -13,6 +13,7 @@
     "start:dev": "node --import ts-node/register src/index.ts",
     "start:dev:multi-user": "node --loader ts-node/esm src/index.ts --multi-user",
     "types:check": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test src/moneta/*.test.ts",
     "clean": "rm -rf dist/"
   },
   "keywords": [

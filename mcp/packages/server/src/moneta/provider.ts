@@ -43,6 +43,7 @@ import {
 } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import { CognitoClient, identityFromIdToken, pickPairingIdentity, type CognitoIdentity } from "./cognito";
 import type { MonetaAuthConfig } from "./config";
+import { redirectUriAllowed, restrictToAllowedRedirectUris } from "./redirect-uri";
 import type { KeyValueStore } from "./storage";
 
 const COLLECTION_CLIENTS = "clients";
@@ -84,132 +85,11 @@ function base64url(buffer: Buffer): string {
 }
 
 /**
- * FastMCP-compatible redirect-URI pattern matching, so the one
- * MCP_ALLOWED_CLIENT_REDIRECT_URIS value shared across the stack parses the
- * same way here as it does for surfsense-mcp / plane-mcp:
- *
- *   http://localhost:*               any localhost port, any path (RFC 8252 loopback)
- *   https://claude.ai/*              exact host, any path
- *   https://*.example.com/*          any true subdomain (not the apex), any path
- *   https://app.example.com/auth/*   exact host, glob path
- *
- * Components are compared one at a time — scheme exactly, host with the
- * subdomain wildcard, port with a "*" wildcard (a loopback pattern without an
- * explicit port matches any port), path as a glob — and URIs carrying
- * userinfo are rejected outright, so http://localhost@evil.com can never
- * satisfy a localhost pattern and a host can never be extended past a
- * too-broad entry. Unparseable values never match.
- */
-const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
-
-function escapeRegExp(value: string): string {
-    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-/** fnmatch-style glob: '*' matches anything, including path separators. */
-function globMatch(value: string, pattern: string): boolean {
-    const regex = pattern.split("*").map(escapeRegExp).join(".*");
-    return new RegExp(`^${regex}$`).test(value);
-}
-
-interface PatternParts {
-    scheme: string;
-    host: string;
-    port: string | null;
-    path: string;
-}
-
-/**
- * Patterns can carry "*" in the port, which WHATWG URL refuses to parse —
- * split scheme/host/port/path by hand. Userinfo in a pattern is rejected.
- */
-function parsePattern(pattern: string): PatternParts | null {
-    const schemeMatch = /^([a-z][a-z0-9+.-]*):\/\//i.exec(pattern);
-    if (!schemeMatch) {
-        return null;
-    }
-    const rest = pattern.slice(schemeMatch[0].length);
-    const slash = rest.indexOf("/");
-    const netloc = slash === -1 ? rest : rest.slice(0, slash);
-    const path = slash === -1 ? "" : rest.slice(slash);
-    if (!netloc || netloc.includes("@")) {
-        return null;
-    }
-    let host = netloc;
-    let port: string | null = null;
-    if (netloc.startsWith("[")) {
-        const end = netloc.indexOf("]");
-        if (end === -1) {
-            return null;
-        }
-        host = netloc.slice(1, end);
-        const after = netloc.slice(end + 1);
-        port = after.startsWith(":") ? after.slice(1) : null;
-    } else if (netloc.includes(":")) {
-        const i = netloc.lastIndexOf(":");
-        host = netloc.slice(0, i);
-        port = netloc.slice(i + 1);
-    }
-    return { scheme: schemeMatch[1].toLowerCase(), host: host.toLowerCase(), port, path };
-}
-
-function matchHost(uriHost: string, patternHost: string): boolean {
-    if (patternHost.startsWith("*.")) {
-        const suffix = patternHost.slice(1); // ".example.com"
-        // Only true subdomains — the apex itself must be listed explicitly.
-        return uriHost.endsWith(suffix) && uriHost !== patternHost.slice(2);
-    }
-    return uriHost === patternHost;
-}
-
-function matchesAllowedPattern(uri: string, pattern: string): boolean {
-    let parsedUri: URL;
-    try {
-        parsedUri = new URL(uri);
-    } catch {
-        return false;
-    }
-    if (parsedUri.username || parsedUri.password) {
-        return false;
-    }
-    const parts = parsePattern(pattern);
-    if (!parts) {
-        return false;
-    }
-    const uriScheme = parsedUri.protocol.replace(/:$/, "").toLowerCase();
-    if (uriScheme !== parts.scheme) {
-        return false;
-    }
-    const uriHost = parsedUri.hostname.toLowerCase().replace(/^\[|\]$/g, "");
-    if (!matchHost(uriHost, parts.host)) {
-        return false;
-    }
-    const loopbackAnyPort = LOOPBACK_HOSTS.has(parts.host) && parts.port === null;
-    if (!loopbackAnyPort && parts.port !== "*") {
-        const defaultPort = uriScheme === "https" ? "443" : "80";
-        if ((parsedUri.port || defaultPort) !== (parts.port ?? defaultPort)) {
-            return false;
-        }
-    }
-    const patternPath = parts.path || "/";
-    if (patternPath === "/") {
-        return true;
-    }
-    return globMatch(parsedUri.pathname || "/", patternPath);
-}
-
-function redirectUriAllowed(uri: string, allowList: string[] | null): boolean {
-    if (allowList === null) {
-        return true;
-    }
-    return allowList.some((entry) => matchesAllowedPattern(uri, entry));
-}
-
-/**
  * DCR client store. The SDK's /register handler generates client_id/secret;
- * we only validate redirect URIs against MCP_ALLOWED_CLIENT_REDIRECT_URIS
- * (unset = allow all, matching the FastMCP servers' default — the real gate
- * is the Cognito login plus PKCE, not the registration).
+ * we validate redirect URIs against MCP_ALLOWED_CLIENT_REDIRECT_URIS (unset =
+ * allow all, matching the FastMCP servers' default) both at registration and
+ * on every lookup, so tightening the list also applies to clients that
+ * registered before it, as FastMCP's get_client back-fill does.
  */
 export class MonetaClientsStore implements OAuthRegisteredClientsStore {
     constructor(
@@ -220,7 +100,17 @@ export class MonetaClientsStore implements OAuthRegisteredClientsStore {
 
     async getClient(clientId: string): Promise<OAuthClientInformationFull | undefined> {
         const stored = await this.storage.get(COLLECTION_CLIENTS, clientId);
-        return stored ? (JSON.parse(stored) as OAuthClientInformationFull) : undefined;
+        if (!stored) {
+            return undefined;
+        }
+        const client = restrictToAllowedRedirectUris(
+            JSON.parse(stored) as OAuthClientInformationFull,
+            this.allowedRedirectUris
+        );
+        if (!client) {
+            this.logger.warn("MCP client %s has no redirect_uri allowed by this server; ignoring it", clientId);
+        }
+        return client;
     }
 
     async registerClient(
