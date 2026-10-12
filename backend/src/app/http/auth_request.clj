@@ -112,12 +112,12 @@
                                       LIMIT 1"
                                      preferred])]
         (db/insert! conn :team-profile-rel
-                     {:team-id    (:id team)
-                      :profile-id id
-                      :is-owner   false
-                      :is-admin   false
-                      :can-edit   true}
-                     {::db/on-conflict-do-nothing? true})
+                    {:team-id    (:id team)
+                     :profile-id id
+                     :is-owner   false
+                     :is-admin   false
+                     :can-edit   true}
+                    {::db/on-conflict-do-nothing? true})
         (l/inf :hint "x-auth-request: ensured SMB shared team membership"
                :profile-id (str id)
                :team-id    (str (:id team)))))))

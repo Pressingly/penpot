@@ -379,7 +379,7 @@
         ;; Lower than (t1 - t0) so the seeded cookie is always due for renewal.
         renewal-threshold (ct/duration {:seconds 1})
         middleware     (-> (fn [req] {::yres/status 200
-                                       :seen-profile-id (::session/profile-id req)})
+                                      :seen-profile-id (::session/profile-id req)})
                            (#'app.http.auth-request/wrap-authz cfg)
                            (#'session/wrap-authz cfg)
                            (#'mw/wrap-auth {:bearer (partial session/decode-token cfg)
@@ -468,7 +468,7 @@
           ;; :fullname from the email local-part — sending it here proves it is
           ;; not trusted for the display name.
           response (handler (th/make-dummy-request {:headers {"x-auth-request-email" email
-                                             "x-auth-request-user" "892ae5ac-0021-7000-8000-000000000000"}}))]
+                                                              "x-auth-request-user" "892ae5ac-0021-7000-8000-000000000000"}}))]
       ;; Profile must be injected into the downstream request
       (t/is (uuid? (::session/profile-id @captured)))
       ;; A session cookie must be set so the browser is authenticated
