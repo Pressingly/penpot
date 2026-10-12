@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 #_:clj-kondo/ignore
 (ns app.common.uuid
@@ -60,14 +60,29 @@
      :cljs (uuid (impl/v4))))
 
 (defn custom
-  ([a] #?(:clj (UUID. 0 a) :cljs (uuid (impl/custom 0 a))))
-  ([b a] #?(:clj (UUID. b a) :cljs (uuid (impl/custom b a)))))
+  "Generate a uuid using directly the given number (specified as one or two long integers)"
+  ([low] #?(:clj (UUID. 0 low) :cljs (uuid (impl/custom 0 low))))
+  ([high low] #?(:clj (UUID. high low) :cljs (uuid (impl/custom high low)))))
 
 (def zero (uuid "00000000-0000-0000-0000-000000000000"))
 
 (defn zero?
   [v]
   (= zero v))
+
+(def ^:private user-provided-regex
+  #"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[478][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+
+(defn user-provided?
+  "Returns true when `v` is a UUID instance penpot can accept when
+  it is provided by the user (v4 random, v7 time-ordered or v8 penpot
+  time-ordered). Anything else, including UUID strings, returns false;
+  strings are meant to be decoded into UUID instances first, mirroring
+  how ::sm/uuid behaves."
+  [v]
+  (boolean
+   (and (uuid? v)
+        (re-matches user-provided-regex (str v)))))
 
 (defn get-word-high
   [id]
@@ -137,6 +152,22 @@
        (+ (clojure.lang.Murmur3/hashLong a)
           (clojure.lang.Murmur3/hashLong b)))))
 
+;; Fake uuids generator
+(def ^:private fake-ids (atom 0))
+
+(defn reset-fake!
+  "Reset the fake uuid counter to 0, for reproducible results across tests."
+  []
+  (reset! fake-ids 0))
+
+(defn next-fake
+  "When you need predictable uuids, for example when debugging a failing test, wrap the code with
+     (with-redefs [uuid/next uuid/next-fake]
+       ...tested code...)"
+  []
+  (-> (swap! fake-ids inc)
+      (custom)))
+
 ;; Commented code used for debug
 ;; #?(:cljs
 ;;    (defn ^:export test-uuid
@@ -166,3 +197,8 @@
 ;;          (js/console.log "RES:  " res))
 ;;
 ;;        )))
+
+
+(defn coerce [v]
+  (cond (uuid? v) v
+        (string? v) (parse* v)))

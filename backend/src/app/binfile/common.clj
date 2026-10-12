@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.binfile.common
   "A binfile related file processing common code, used for different
@@ -15,6 +15,7 @@
    [app.common.files.migrations :as fmg]
    [app.common.files.validate :as fval]
    [app.common.logging :as l]
+   [app.common.media :as cm]
    [app.common.schema :as sm]
    [app.common.time :as ct]
    [app.common.types.file :as ctf]
@@ -27,6 +28,7 @@
    [app.features.file-migrations :as fmigr]
    [app.loggers.audit :as-alias audit]
    [app.loggers.webhooks :as-alias webhooks]
+   [app.media.svg :as svg]
    [app.storage :as sto]
    [app.util.blob :as blob]
    [app.util.pointer-map :as pmap]
@@ -315,8 +317,8 @@
 (defn get-file
   "Get file, resolve all features and apply migrations.
 
-  Usefull when you have plan to apply massive or not cirurgical
-  operations on file, because it removes the ovehead of lazy fetching
+  Useful when you have plan to apply massive or not surgical
+  operations on file, because it removes the overhead of lazy fetching
   and decoding."
   [cfg file-id & {:as opts}]
   (db/run! cfg get-file* file-id opts))
@@ -344,8 +346,13 @@
           fpr.can_edit
      from file_profile_rel as fpr
     inner join file as f on (f.id = fpr.file_id)
+    inner join project as p on (p.id = f.project_id)
     where fpr.file_id = ?
       and fpr.profile_id = ?
+      and exists (select 1
+                    from team_profile_rel as tpr
+                   where tpr.team_id = p.team_id
+                     and tpr.profile_id = fpr.profile_id)
    union all
    select tpr.is_owner,
           tpr.is_admin,
@@ -361,8 +368,13 @@
           ppr.can_edit
      from project_profile_rel as ppr
     inner join file as f on (f.project_id = ppr.project_id)
+    inner join project as p on (p.id = ppr.project_id)
     where f.id = ?
-      and ppr.profile_id = ?")
+      and ppr.profile_id = ?
+      and exists (select 1
+                    from team_profile_rel as tpr
+                   where tpr.team_id = p.team_id
+                     and tpr.profile_id = ppr.profile_id)")
 
 (defn- get-file-permissions*
   [conn profile-id file-id]
@@ -440,10 +452,27 @@
 
   (db/run! cfg (fn [{:keys [::db/conn]}]
                  (let [ids (db/create-array conn "uuid" ids)
-                       sql (str "SELECT flr.* FROM file_library_rel AS flr "
-                                "  JOIN file AS l ON (flr.library_file_id = l.id) "
-                                " WHERE flr.file_id = ANY(?) AND l.deleted_at IS NULL")]
+                       sql (str "SELECT flr.*,"
+                                "	   fls.synced_at"
+                                "  FROM file_library_rel AS flr"
+                                "  JOIN file AS l"
+                                "    ON flr.library_file_id = l.id"
+                                "  LEFT JOIN file_library_sync AS fls"
+                                "    ON fls.file_id = flr.file_id"
+                                "   AND fls.library_file_id = flr.library_file_id"
+                                " WHERE flr.file_id = ANY(?)"
+                                "   AND l.deleted_at IS NULL;")]
                    (db/exec! conn [sql ids])))))
+
+(def ^:private sql:upsert-file-library-sync
+  "INSERT INTO file_library_sync (file_id, library_file_id, synced_at)
+   VALUES (?::uuid, ?::uuid, ?::timestamptz)
+   ON CONFLICT (file_id, library_file_id)
+   DO UPDATE SET synced_at = EXCLUDED.synced_at;")
+
+(defn upsert-file-library-sync!
+  [conn {:keys [file-id library-file-id synced-at]}]
+  (db/exec-one! conn [sql:upsert-file-library-sync file-id library-file-id synced-at]))
 
 (def ^:private sql:get-libraries
   "WITH RECURSIVE libs AS (
@@ -706,6 +735,7 @@
   (-> (select-keys file file-attrs)
       (assoc :data nil)
       (dissoc :team-id)
+      (dissoc :metadata)
       (dissoc :migrations)))
 
 (defn- file->file-data-params
@@ -731,9 +761,17 @@
     (fmigr/upsert-migrations! conn file))
 
   (let [file (encode-file cfg file)]
-    (db/insert! conn :file
-                (file->params file)
-                (assoc opts ::db/return-keys false))
+    (try
+      (db/insert! conn :file
+                  (file->params file)
+                  (assoc opts ::db/return-keys false))
+      (catch org.postgresql.util.PSQLException cause
+        (if (db/duplicate-key-error? cause)
+          (ex/raise :type :not-found
+                    :code :object-not-found
+                    :hint "file already exists"
+                    :cause cause)
+          (throw cause))))
 
     (->> (file->file-data-params file)
          (fdata/upsert! cfg))
@@ -799,42 +837,52 @@
 
 (def ^:private sql:get-file-libraries
   "WITH RECURSIVE libs AS (
-     SELECT fl.*, flr.synced_at
-       FROM file AS fl
-       JOIN file_library_rel AS flr ON (flr.library_file_id = fl.id)
-      WHERE flr.file_id = ?::uuid
-    UNION
-     SELECT fl.*, flr.synced_at
-       FROM file AS fl
-       JOIN file_library_rel AS flr ON (flr.library_file_id = fl.id)
-       JOIN libs AS l ON (flr.file_id = l.id)
-   )
-   SELECT l.id,
-          l.features,
-          l.project_id,
-          p.team_id,
-          l.created_at,
-          l.modified_at,
-          l.deleted_at,
-          l.name,
-          l.revn,
-          l.vern,
-          l.synced_at,
-          l.is_shared,
-          l.version
-     FROM libs AS l
-    INNER JOIN project AS p ON (p.id = l.project_id)
-    WHERE l.deleted_at IS NULL;")
+		SELECT fl.*
+		FROM file AS fl
+		JOIN file_library_rel AS flr
+		  ON flr.library_file_id = fl.id
+		WHERE flr.file_id = ?::uuid
+
+		UNION
+
+		SELECT fl.*
+		FROM file AS fl
+		JOIN file_library_rel AS flr
+		  ON flr.library_file_id = fl.id
+		JOIN libs AS l
+		  ON flr.file_id = l.id
+	)
+	SELECT l.id,
+		   l.features,
+		   l.project_id,
+		   p.team_id,
+		   l.created_at,
+		   l.modified_at,
+		   l.deleted_at,
+		   l.name,
+		   l.revn,
+		   l.vern,
+		   l.is_shared,
+		   l.version,
+		   fls.synced_at,
+		   NOT EXISTS (
+		     SELECT 1 FROM file_library_rel AS direct
+		      WHERE direct.file_id = ?::uuid
+		        AND direct.library_file_id = l.id
+		   ) AS is_indirect
+	FROM libs AS l
+	JOIN project AS p
+	  ON p.id = l.project_id
+	LEFT JOIN file_library_sync AS fls
+	  ON fls.file_id = ?::uuid
+	 AND fls.library_file_id = l.id
+	WHERE l.deleted_at IS NULL;")
 
 (defn get-file-libraries
   [conn file-id]
   (into []
-        (comp
-         ;; FIXME: :is-indirect set to false to all rows looks
-         ;; completly useless
-         (map #(assoc % :is-indirect false))
-         (map decode-row-features))
-        (db/exec! conn [sql:get-file-libraries file-id])))
+        (map decode-row-features)
+        (db/exec! conn [sql:get-file-libraries file-id file-id file-id])))
 
 (defn get-resolved-file-libraries
   "Get all file libraries including itself. Returns an instance of
@@ -852,3 +900,74 @@
                          (cons (:id file)))
         load-fn     #(get-file cfg % :migrate? false)]
     (weak/loadable-weak-value-map library-ids load-fn {id file})))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; SVG IMPORT SANITIZATION
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(def svg-content-type
+  "Canonical content type of SVG media objects."
+  "image/svg+xml")
+
+(defn normalize-content-type
+  "Canonicalize a stored content-type: lowercase, trimmed,
+  parameters after `;` dropped. Returns nil for missing or unusable
+  values so ancient bundle entries without content-type keep passing
+  through untouched."
+  [ctype]
+  (when (string? ctype)
+    (let [clean (-> ctype
+                    (str/split #";" 2)
+                    (first)
+                    (str/trim)
+                    (str/lower))]
+      (when-not (str/empty? clean)
+        clean))))
+
+(defn svg-object?
+  "True when the storage `object` claims the canonical SVG content
+  type. Expects an already normalized object (see
+  `normalize-content-type`): every import path normalizes the
+  metadata right after reading it, so the comparison stays an exact
+  match in a single place."
+  [object]
+  (= svg-content-type (:content-type object)))
+
+(def schema:content-type
+  "Typed content-type for binfile storage objects: a member of
+  `cm/storage-object-types`. Values are canonicalized with
+  `normalize-content-type` before validation, so legacy spellings
+  keep importing while unknown types are rejected."
+  [::sm/one-of {:format :string} cm/storage-object-types])
+
+(defn check-storage-content-type
+  "Check an imported storage `object` (already normalized, see
+  `normalize-content-type`) against `cm/storage-object-types`.
+  Returns nil when the type is allowed; raises `:type :validation`
+  with `:code :media-type-not-allowed` (same as the upload path)
+  when it is missing or unknown, so crafted bundles fail closed."
+  [object]
+  (when-not (contains? cm/storage-object-types (:content-type object))
+    (ex/raise :type :validation
+              :code :media-type-not-allowed
+              :hint "storage object declares an unknown content-type"
+              :content-type (:content-type object))))
+
+(defn sanitize-imported-svg
+  "Sanitize the raw `bytes` of an imported storage `object` when it
+  holds an SVG document. Expects an already normalized object (see
+  `normalize-content-type`); returns nil when the object is not an
+  SVG.
+
+  Otherwise returns a map with the sanitized `:bytes`, their `:size`
+  and their blake2b `:hash`, ready to persist with `sto/put-object!`.
+
+  Raises a `:validation` exception when the SVG cannot be parsed, the
+  same error the upload path reports."
+  [object ^bytes raw]
+  (when (svg-object? object)
+    (let [sanitized (svg/sanitize-svg (String. ^bytes raw "UTF-8"))
+          bytes     (.getBytes ^String sanitized "UTF-8")]
+      {:bytes bytes
+       :size  (alength ^bytes bytes)
+       :hash  (sto/calculate-hash (java.io.ByteArrayInputStream. bytes))})))

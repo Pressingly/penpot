@@ -2,16 +2,18 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns backend-tests.http-middleware-test
   (:require
+   [app.common.exceptions :as ex]
    [app.common.time :as ct]
    [app.config :as cf]
    [app.db :as db]
    [app.http :as-alias http]
    [app.http.access-token :as access-token]
    [app.http.auth-request]
+   [app.http.errors :as http-errors]
    [app.http.middleware :as mw]
    [app.http.session :as session]
    [app.main :as-alias main]
@@ -20,22 +22,16 @@
    [app.rpc.commands.profile :as profile]
    [app.tokens :as tokens]
    [backend-tests.helpers :as th]
+   [clojure.string :as str]
    [clojure.test :as t]
    [mockery.core :refer [with-mocks]]
    [yetti.request :as yreq]
-   [yetti.response :as yres]))
+   [yetti.response :as yres])
+  (:import
+   io.undertow.server.RequestTooBigException))
 
 (t/use-fixtures :once th/state-init)
 (t/use-fixtures :each th/database-reset)
-
-(defrecord DummyRequest [headers cookies]
-  yreq/IRequestCookies
-  (get-cookie [_ name]
-    {:value (get cookies name)})
-
-  yreq/IRequest
-  (get-header [_ name]
-    (get headers name)))
 
 (t/deftest auth-middleware-1
   (let [request (volatile! nil)
@@ -43,11 +39,11 @@
                  (fn [req] (vreset! request req))
                  {})]
 
-    (handler (->DummyRequest {} {}))
+    (handler (th/make-dummy-request {}))
 
     (t/is (nil? (::http/auth-data @request)))
 
-    (handler (->DummyRequest {"authorization" "Token aaaa"} {}))
+    (handler (th/make-dummy-request {:headers {"authorization" "Token aaaa"}}))
 
     (let [{:keys [token claims] token-type :type} (get @request ::http/auth-data)]
       (t/is (= :token token-type))
@@ -60,10 +56,10 @@
                  (fn [req] (vreset! request req))
                  {})]
 
-    (handler (->DummyRequest {} {}))
+    (handler (th/make-dummy-request {}))
     (t/is (nil? (::http/auth-data @request)))
 
-    (handler (->DummyRequest {"authorization" "Bearer aaaa"} {}))
+    (handler (th/make-dummy-request {:headers {"authorization" "Bearer aaaa"}}))
 
     (let [{:keys [token claims] token-type :type} (get @request ::http/auth-data)]
       (t/is (= :bearer token-type))
@@ -76,10 +72,10 @@
                  (fn [req] (vreset! request req))
                  {})]
 
-    (handler (->DummyRequest {} {}))
+    (handler (th/make-dummy-request {}))
     (t/is (nil? (::http/auth-data @request)))
 
-    (handler (->DummyRequest {} {"auth-token" "foobar"}))
+    (handler (th/make-dummy-request {:cookies {"auth-token" "foobar"}}))
 
     (let [{:keys [token claims] token-type :type} (get @request ::http/auth-data)]
       (t/is (= :cookie token-type))
@@ -91,16 +87,16 @@
                  (fn [req] {::yres/status 200})
                  {:test1 "secret-key"})]
 
-    (let [response (handler (->DummyRequest {} {}))]
+    (let [response (handler (th/make-dummy-request {}))]
       (t/is (= 403 (::yres/status response))))
 
-    (let [response (handler (->DummyRequest {"x-shared-key" "secret-key2"} {}))]
+    (let [response (handler (th/make-dummy-request {:headers {"x-shared-key" "secret-key2"}}))]
       (t/is (= 403 (::yres/status response))))
 
-    (let [response (handler (->DummyRequest {"x-shared-key" "secret-key"} {}))]
+    (let [response (handler (th/make-dummy-request {:headers {"x-shared-key" "secret-key"}}))]
       (t/is (= 403 (::yres/status response))))
 
-    (let [response (handler (->DummyRequest {"x-shared-key" "test1 secret-key"} {}))]
+    (let [response (handler (th/make-dummy-request {:headers {"x-shared-key" "test1 secret-key"}}))]
       (t/is (= 200 (::yres/status response))))))
 
 (t/deftest access-token-authz
@@ -115,6 +111,89 @@
       (t/is (= #{} (:app.http.access-token/perms response)))
       (t/is (= (:id profile) (:app.http.access-token/profile-id response))))))
 
+(t/deftest access-token-authz-sets-token-id-and-type
+  (let [profile (th/create-profile* 1)
+        token   (db/tx-run! th/*system* app.rpc.commands.access-token/create-access-token
+                            (:id profile) "test" nil "mcp")
+        handler (#'app.http.access-token/wrap-authz identity th/*system*)
+        request {::http/auth-data {:type :token :token "foobar" :claims {:tid (:id token)}}}
+        response (handler request)]
+    ;; Must set ::actoken/id from claims :tid
+    (t/is (= (:id token) (:app.http.access-token/id response)))
+    ;; Must set ::actoken/type from database
+    (t/is (= "mcp" (:app.http.access-token/type response)))
+    ;; Existing assertions still pass
+    (t/is (= #{} (:app.http.access-token/perms response)))
+    (t/is (= (:id profile) (:app.http.access-token/profile-id response)))))
+
+(defrecord MethodAwareDummyRequest [req-method headers]
+  yreq/IRequest
+  (method [_] req-method)
+  (get-header [_ name] (get headers name)))
+
+(t/deftest cors-middleware-allowlisted-origin
+  (let [handler (#'app.http.middleware/wrap-cors
+                 (fn [_] {::yres/status 200 ::yres/headers {}})
+                 #{"https://trusted.example"})
+        resp    (handler (->MethodAwareDummyRequest :get {"origin" "https://trusted.example"}))
+        headers (::yres/headers resp)]
+
+    (t/is (= 200 (::yres/status resp)))
+    (t/is (= "https://trusted.example" (get headers "access-control-allow-origin")))
+    (t/is (= "true" (get headers "access-control-allow-credentials")))
+    (t/is (= "Origin" (get headers "vary")))
+    (t/is (= "content-type" (get headers "access-control-expose-headers")))
+    (t/is (not (str/includes?
+                (get headers "access-control-allow-headers" "")
+                "cookie")))))
+
+(t/deftest cors-middleware-non-allowlisted-origin
+  (let [handler (#'app.http.middleware/wrap-cors
+                 (fn [_] {::yres/status 200 ::yres/headers {}})
+                 #{"https://trusted.example"})
+        resp    (handler (->MethodAwareDummyRequest :get {"origin" "https://attacker.example"}))
+        headers (::yres/headers resp)]
+
+    (t/is (= 200 (::yres/status resp)))
+    (t/is (nil? (get headers "access-control-allow-origin")))
+    (t/is (nil? (get headers "access-control-allow-credentials")))
+    (t/is (nil? (get headers "access-control-allow-headers")))
+    (t/is (nil? (get headers "access-control-expose-headers")))
+    (t/is (= "Origin" (get headers "vary")))))
+
+(t/deftest cors-middleware-preflight-allowlisted
+  (let [handler (#'app.http.middleware/wrap-cors
+                 (fn [_] {::yres/status 200 ::yres/headers {}})
+                 #{"https://trusted.example"})
+        resp    (handler (->MethodAwareDummyRequest :options {"origin" "https://trusted.example"}))
+        headers (::yres/headers resp)]
+
+    (t/is (= 204 (::yres/status resp)))
+    (t/is (= "https://trusted.example" (get headers "access-control-allow-origin")))
+    (t/is (= "true" (get headers "access-control-allow-credentials")))))
+
+(t/deftest cors-middleware-preflight-non-allowlisted
+  (let [handler (#'app.http.middleware/wrap-cors
+                 (fn [_] {::yres/status 200 ::yres/headers {}})
+                 #{"https://trusted.example"})
+        resp    (handler (->MethodAwareDummyRequest :options {"origin" "https://attacker.example"}))
+        headers (::yres/headers resp)]
+
+    (t/is (= 204 (::yres/status resp)))
+    (t/is (nil? (get headers "access-control-allow-origin")))
+    (t/is (nil? (get headers "access-control-allow-credentials")))))
+
+(t/deftest cors-middleware-missing-origin
+  (let [handler (#'app.http.middleware/wrap-cors
+                 (fn [_] {::yres/status 200 ::yres/headers {}})
+                 #{"https://trusted.example"})
+        resp    (handler (->MethodAwareDummyRequest :get {}))
+        headers (::yres/headers resp)]
+
+    (t/is (= 200 (::yres/status resp)))
+    (t/is (nil? (get headers "access-control-allow-origin")))
+    (t/is (nil? (get headers "access-control-allow-credentials")))))
+
 (t/deftest session-authz
   (let [cfg      th/*system*
         manager  (session/inmemory-manager)
@@ -128,7 +207,7 @@
                                                        :user-agent "user agent"})
                       (#'session/assign-token cfg))
 
-        response (handler (->DummyRequest {} {"auth-token" (:token session)}))
+        response (handler (th/make-dummy-request {:cookies {"auth-token" (:token session)}}))
 
         {:keys [token claims] token-type :type}
         (get response ::http/auth-data)]
@@ -163,7 +242,7 @@
                          (#'session/assign-token cfg)))
         response  (binding [cf/config (assoc cf/config :auth-token-cookie-renewal-max-age threshold)
                             ct/*clock* (ct/fixed-clock t1)]
-                    (handler (->DummyRequest {} {"auth-token" (:token token)})))]
+                    (handler (th/make-dummy-request {:cookies {"auth-token" (:token token)}})))]
     (t/is (= 403 (::yres/status response)))
     (t/is (not (contains? (::yres/cookies response) "auth-token")))))
 
@@ -180,7 +259,7 @@
         handler  (#'app.http.auth-request/wrap-authz
                   (fn [req] (vreset! captured req) {::yres/status 200})
                   (make-xauth-cfg))]
-    (handler (->DummyRequest {} {}))
+    (handler (th/make-dummy-request {}))
     (t/is (nil? (::session/profile-id @captured)))))
 
 (t/deftest x-auth-request-preserves-session-when-header-email-unresolvable
@@ -193,7 +272,7 @@
         handler    (#'app.http.auth-request/wrap-authz
                     (fn [req] req)
                     (make-xauth-cfg))
-        request    (-> (->DummyRequest {"x-auth-request-email" "user@example.com"} {})
+        request    (-> (th/make-dummy-request {:headers {"x-auth-request-email" "user@example.com"}})
                        (assoc ::session/profile-id profile-id))
         result     (handler request)]
     (t/is (= profile-id (::session/profile-id result)))))
@@ -211,7 +290,7 @@
         handler  (#'app.http.auth-request/wrap-authz
                   (fn [req] (vreset! captured req) {::yres/status 200})
                   cfg)
-        request  (-> (->DummyRequest {"x-auth-request-email" (:email bob)} {})
+        request  (-> (th/make-dummy-request {:headers {"x-auth-request-email" (:email bob)}})
                      (assoc ::session/profile-id (:id alice)))
         response (handler request)]
     ;; Downstream handler sees bob's profile-id, not alice's.
@@ -229,7 +308,7 @@
         handler  (#'app.http.auth-request/wrap-authz
                   (fn [req] (vreset! captured req) {::yres/status 200})
                   cfg)
-        request  (-> (->DummyRequest {"x-auth-request-email" (:email profile)} {})
+        request  (-> (th/make-dummy-request {:headers {"x-auth-request-email" (:email profile)}})
                      (assoc ::session/profile-id (:id profile)))
         response (handler request)]
     (t/is (= (:id profile) (::session/profile-id @captured)))
@@ -249,7 +328,7 @@
         handler  (#'app.http.auth-request/wrap-authz
                   (fn [req] (vreset! captured req) {::yres/status 200})
                   cfg)
-        request  (-> (->DummyRequest {"x-auth-request-email" (:email bob)} {})
+        request  (-> (th/make-dummy-request {:headers {"x-auth-request-email" (:email bob)}})
                      (assoc ::session/profile-id (:id alice))
                      (assoc ::http/auth-data {:type :cookie
                                               :claims {:uid (:id alice)
@@ -274,7 +353,7 @@
         handler       (#'app.http.auth-request/wrap-authz
                        (fn [req] (vreset! captured req) {::yres/status 200})
                        cfg)
-        request       (-> (->DummyRequest {"x-auth-request-email" (:email bob)} {})
+        request       (-> (th/make-dummy-request {:headers {"x-auth-request-email" (:email bob)}})
                           (assoc ::session/profile-id (:id alice))
                           (assoc ::session/session alice-session))]
     (handler request)
@@ -307,17 +386,17 @@
                                             :cookie (partial session/decode-token cfg)}))
         seeded-token   (binding [ct/*clock* (ct/fixed-clock t0)]
                          (get-in ((session/create-fn cfg alice)
-                                  (->DummyRequest {} {})
+                                  (th/make-dummy-request {})
                                   {::yres/status 200})
                                  [::yres/cookies "auth-token" :value]))
         response       (binding [cf/config (assoc cf/config
                                                   :auth-token-cookie-renewal-max-age
                                                   renewal-threshold)
                                  ct/*clock* (ct/fixed-clock t1)]
-                         (middleware (->DummyRequest {"x-auth-request-email" (:email bob)}
-                                                     {"auth-token" seeded-token})))
+                         (middleware (th/make-dummy-request {:headers {"x-auth-request-email" (:email bob)}
+                                                             :cookies {"auth-token" seeded-token}})))
         rekeyed-token  (get-in response [::yres/cookies "auth-token" :value])
-        followup       (middleware (->DummyRequest {} {"auth-token" rekeyed-token}))]
+        followup       (middleware (th/make-dummy-request {:cookies {"auth-token" rekeyed-token}}))]
     ;; Cookie was re-keyed (not just renewed): the new token differs.
     (t/is (some? rekeyed-token))
     (t/is (not= seeded-token rekeyed-token))
@@ -333,7 +412,7 @@
         handler    (#'app.http.auth-request/wrap-authz
                     (fn [req] req)
                     (make-xauth-cfg))
-        request    (-> (->DummyRequest {"x-auth-request-email" "user@example.com"} {})
+        request    (-> (th/make-dummy-request {:headers {"x-auth-request-email" "user@example.com"}})
                        (assoc ::access-token/profile-id profile-id))
         result     (handler request)]
     (t/is (= profile-id (::access-token/profile-id result)))))
@@ -345,7 +424,7 @@
         handler  (#'app.http.auth-request/wrap-authz
                   (fn [req] (vreset! captured req) {::yres/status 200})
                   cfg)
-        response (handler (->DummyRequest {"x-auth-request-email" (:email profile)} {}))]
+        response (handler (th/make-dummy-request {:headers {"x-auth-request-email" (:email profile)}}))]
     ;; The profile-id must be injected into the request seen by the downstream handler
     (t/is (= (:id profile) (::session/profile-id @captured)))
     ;; A session cookie must be set on the response
@@ -357,7 +436,7 @@
         handler  (#'app.http.auth-request/wrap-authz
                   (fn [_] {::yres/status 200})
                   (make-xauth-cfg))
-        response (handler (->DummyRequest {"x-auth-request-email" (:email profile)} {}))]
+        response (handler (th/make-dummy-request {:headers {"x-auth-request-email" (:email profile)}}))]
     (t/is (= 403 (::yres/status response)))))
 
 (t/deftest x-auth-request-inactive-profile-returns-403
@@ -365,7 +444,7 @@
         handler  (#'app.http.auth-request/wrap-authz
                   (fn [_] {::yres/status 200})
                   (make-xauth-cfg))
-        response (handler (->DummyRequest {"x-auth-request-email" (:email profile)} {}))]
+        response (handler (th/make-dummy-request {:headers {"x-auth-request-email" (:email profile)}}))]
     (t/is (= 403 (::yres/status response)))))
 
 (t/deftest x-auth-request-unknown-email-no-autoregister
@@ -373,7 +452,7 @@
         handler  (#'app.http.auth-request/wrap-authz
                   (fn [req] (vreset! captured req) {::yres/status 200})
                   (make-xauth-cfg))]
-    (handler (->DummyRequest {"x-auth-request-email" "nobody@example.com"} {}))
+    (handler (th/make-dummy-request {:headers {"x-auth-request-email" "nobody@example.com"}}))
     (t/is (nil? (::session/profile-id @captured)))))
 
 (t/deftest x-auth-request-auto-register-creates-active-profile
@@ -388,8 +467,8 @@
           ;; Cognito sub UUID. The middleware must IGNORE that header and derive
           ;; :fullname from the email local-part — sending it here proves it is
           ;; not trusted for the display name.
-          response (handler (->DummyRequest {"x-auth-request-email" email
-                                             "x-auth-request-user" "892ae5ac-0021-7000-8000-000000000000"} {}))]
+          response (handler (th/make-dummy-request {:headers {"x-auth-request-email" email
+                                             "x-auth-request-user" "892ae5ac-0021-7000-8000-000000000000"}}))]
       ;; Profile must be injected into the downstream request
       (t/is (uuid? (::session/profile-id @captured)))
       ;; A session cookie must be set so the browser is authenticated
@@ -423,7 +502,7 @@
             handler  (#'app.http.auth-request/wrap-authz
                       (fn [req] (vreset! captured req) {::yres/status 200})
                       cfg)
-            _        (handler (->DummyRequest {"x-auth-request-email" email} {}))
+            _        (handler (th/make-dummy-request {:headers {"x-auth-request-email" email}}))
             profile  (db/tx-run! cfg
                                  (fn [{:keys [::db/conn]}]
                                    (profile/get-profile-by-email conn email)))
@@ -431,3 +510,167 @@
         (t/is (uuid? (:id profile)))
         (t/is (some #(not= (:team-id %) (:default-team-id profile)) rels)
               "profile should have a membership on the provisioned SMB (shared) team")))))
+(t/deftest parse-request-illegal-argument-exception
+  ;; clojure.data.json raises IllegalArgumentException (case
+  ;; fall-through) on several kinds of malformed input. The
+  ;; parse-request middleware should convert any such IAE into a
+  ;; 400 :malformed-json validation error rather than letting it
+  ;; surface as a 500 internal error. Because the conversion is
+  ;; done by raising an ex-info (caught by the top-level error
+  ;; handler in app.http/router-handler), this test asserts on
+  ;; the ex-info thrown by wrap-parse-request directly.
+  (let [handler (#'app.http.middleware/wrap-parse-request
+                 (fn [_] {::yres/status 200 ::yres/body :ok}))
+        ;; Body contains the bytes for: {"x": "\}"}  -- a string
+        ;; value with a backslash followed by '}', which
+        ;; clojure.data.json v0.5.x cannot handle.
+        body    (.getBytes "{\"x\": \"\\}\"}" "UTF-8")
+        request (th/make-dummy-request
+                 {:method  :post
+                  :headers {"content-type" "application/json"}
+                  :body-bytes body})
+        ex      (try
+                  (handler request)
+                  (catch clojure.lang.ExceptionInfo e e))]
+    (t/is (instance? clojure.lang.ExceptionInfo ex))
+    (t/is (= :validation (-> ex ex-data :type)))
+    (t/is (= :malformed-json (-> ex ex-data :code)))
+    (t/is (= "invalid JSON in request body" (-> ex ex-data :hint)))))
+
+(t/deftest parse-request-request-too-big-exception
+  ;; When RequestTooBigException is raised (e.g. the request body
+  ;; exceeded the configured size limit), the middleware should
+  ;; convert it to a 413 :request-body-too-large validation
+  ;; error.
+  (let [handler (#'app.http.middleware/wrap-parse-request
+                 (fn [_] (throw (RequestTooBigException. "too large"))))
+        request (th/make-dummy-request
+                 {:method  :post
+                  :headers {"content-type" "application/json"}
+                  :body-bytes (.getBytes "{}" "UTF-8")})
+        ex      (try
+                  (handler request)
+                  (catch clojure.lang.ExceptionInfo e e))]
+    (t/is (instance? clojure.lang.ExceptionInfo ex))
+    (t/is (= :validation (-> ex ex-data :type)))
+    (t/is (= :request-body-too-large (-> ex ex-data :code)))
+    (t/is (= "request body exceeds size limit" (-> ex ex-data :hint)))))
+
+(t/deftest parse-request-eof-exception
+  ;; When java.io.EOFException is raised (e.g. the body stream
+  ;; was closed before the parser could read it), the middleware
+  ;; should convert it to a 400 :malformed-json validation error.
+  (let [handler (#'app.http.middleware/wrap-parse-request
+                 (fn [_] (throw (java.io.EOFException. "stream closed"))))
+        request (th/make-dummy-request
+                 {:method  :post
+                  :headers {"content-type" "application/json"}
+                  :body-bytes (.getBytes "{}" "UTF-8")})
+        ex      (try
+                  (handler request)
+                  (catch clojure.lang.ExceptionInfo e e))]
+    (t/is (instance? clojure.lang.ExceptionInfo ex))
+    (t/is (= :validation (-> ex ex-data :type)))
+    (t/is (= :malformed-json (-> ex ex-data :code)))
+    (t/is (= "unexpected end of request body" (-> ex ex-data :hint)))))
+
+(t/deftest parse-request-runtime-exception-with-cause
+  ;; When a RuntimeException with a non-nil ex-cause is raised,
+  ;; the middleware should recurse on the cause and dispatch
+  ;; through the specific-exception branches. Here we wrap an
+  ;; IllegalArgumentException in a RuntimeException and verify
+  ;; it surfaces as :malformed-json.
+  (let [iae     (IllegalArgumentException. "No matching clause: 99")
+        wrapped (doto (RuntimeException. "wrapped")
+                  (.initCause iae))
+        handler (#'app.http.middleware/wrap-parse-request
+                 (fn [_] (throw wrapped)))
+        request (th/make-dummy-request
+                 {:method  :post
+                  :headers {"content-type" "application/json"}
+                  :body-bytes (.getBytes "{}" "UTF-8")})
+        ex      (try
+                  (handler request)
+                  (catch clojure.lang.ExceptionInfo e e))]
+    (t/is (instance? clojure.lang.ExceptionInfo ex))
+    (t/is (= :validation (-> ex ex-data :type)))
+    (t/is (= :malformed-json (-> ex ex-data :code)))))
+
+(t/deftest parse-request-runtime-exception-without-cause
+  ;; When a bare RuntimeException (no ex-cause) is raised, the
+  ;; middleware should fall through to errors/handle's :default
+  ;; path and return a 500 with :type :server-error :code
+  ;; :unexpected. This is the "true internal error" path.
+  (let [handler  (#'app.http.middleware/wrap-parse-request
+                  (fn [_] (throw (RuntimeException. "boom"))))
+        request  (th/make-dummy-request
+                  {:method  :post
+                   :headers {"content-type" "application/json"}
+                   :body-bytes (.getBytes "{}" "UTF-8")})
+        response (handler request)
+        body     (::yres/body response)]
+    (t/is (= 500 (::yres/status response)))
+    (t/is (= :server-error (:type body)))
+    (t/is (= :unexpected (:code body)))
+    (t/is (nil? (:hint body)))))
+
+(t/deftest parse-request-non-runtime-throwable
+  ;; When a non-RuntimeException Throwable is raised (e.g. an
+  ;; Error subclass or a non-RuntimeException checked-style
+  ;; exception), the middleware should fall through to the
+  ;; :else branch and call errors/handle. java.io.IOException
+  ;; has a dedicated handle-exception method that returns 500
+  ;; with :code :io-exception.
+  (let [handler  (#'app.http.middleware/wrap-parse-request
+                  (fn [_] (throw (java.io.IOException. "network gone"))))
+        request  (th/make-dummy-request
+                  {:method  :post
+                   :headers {"content-type" "application/json"}
+                   :body-bytes (.getBytes "{}" "UTF-8")})
+        response (handler request)
+        body     (::yres/body response)]
+    (t/is (= 500 (::yres/status response)))
+    (t/is (= :server-error (:type body)))
+    (t/is (= :io-exception (:code body)))
+    (t/is (nil? (:hint body)))))
+
+(t/deftest internal-error-strips-sensitive-fields
+  ;; When an :internal error is raised with :state, :path, and
+  ;; :context, those fields must not appear in the response body.
+  ;; :hint is part of the error protocol and is preserved.
+  (let [cause    (ex-info "internal error"
+                          {:type :internal
+                           :code :test-error
+                           :hint "safe user-facing hint"
+                           :state "XX000"
+                           :path "/data/penpot/storage"
+                           :context {:backend :s3 :bucket "prod"}})
+        response (http-errors/handle cause {})
+        body     (::yres/body response)]
+    (t/is (= 500 (::yres/status response)))
+    (t/is (= :server-error (:type body)))
+    (t/is (= :test-error (:code body)))
+    (t/is (= "safe user-facing hint" (:hint body)))
+    (t/is (nil? (:state body)))
+    (t/is (nil? (:path body)))
+    (t/is (nil? (:context body)))))
+
+(t/deftest unhandled-exinfo-strips-sensitive-fields
+  ;; When an ex-info with an unregistered :type (dispatches through
+  ;; handle-exception :default :else) carries :state and :path,
+  ;; those fields must not appear in the response body.
+  ;; :hint is part of the error protocol and is preserved.
+  (let [cause    (ex-info "something broke"
+                          {:type :unregistered-type
+                           :code :custom-code
+                           :hint "safe user-facing hint"
+                           :state "internal-state"
+                           :path "/internal/path"})
+        response (http-errors/handle cause {})
+        body     (::yres/body response)]
+    (t/is (= 500 (::yres/status response)))
+    (t/is (= :server-error (:type body)))
+    (t/is (= :custom-code (:code body)))
+    (t/is (= "safe user-facing hint" (:hint body)))
+    (t/is (nil? (:state body)))
+    (t/is (nil? (:path body)))))

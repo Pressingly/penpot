@@ -6,7 +6,8 @@ import { dragHandler } from '../drag-handler.js';
 import modalCss from './plugin.modal.css?inline';
 import { resizeModal } from '../create-modal.js';
 
-const MIN_Z_INDEX = 3;
+const MIN_Z_INDEX = 300;
+const Z_INDEX_VAR = '--z-index-set';
 
 export class PluginModalElement extends HTMLElement {
   constructor() {
@@ -43,7 +44,19 @@ export class PluginModalElement extends HTMLElement {
         return Number(modal.style.zIndex);
       });
 
-    const maxZIndex = Math.max(...zIndexModals, MIN_Z_INDEX);
+    // Read the application z-index scale via the inherited CSS custom property
+    // `--z-index-set` (defined on :root). Custom properties pierce shadow DOM
+    // boundaries, so the value is available even though the modal uses a Shadow
+    // root. Falls back to MIN_Z_INDEX when the variable is unset or unparseable
+    // (e.g. when the runtime is used outside the Penpot app shell).
+    const declared = getComputedStyle(this)
+      .getPropertyValue(Z_INDEX_VAR)
+      .trim();
+    const parsed = Number(declared);
+    const baseZIndex =
+      Number.isFinite(parsed) && parsed > 0 ? parsed : MIN_Z_INDEX;
+
+    const maxZIndex = Math.max(...zIndexModals, baseZIndex);
 
     this.style.zIndex = (maxZIndex + 1).toString();
   }
@@ -52,6 +65,10 @@ export class PluginModalElement extends HTMLElement {
     const title = this.getAttribute('title');
     const iframeSrc = this.getAttribute('iframe-src');
     const allowDownloads = this.getAttribute('allow-downloads') || false;
+    const allowClipboardRead =
+      this.getAttribute('allow-clipboard-read') || false;
+    const allowClipboardWrite =
+      this.getAttribute('allow-clipboard-write') || false;
 
     if (!title || !iframeSrc) {
       throw new Error('title and iframe-src attributes are required');
@@ -66,11 +83,6 @@ export class PluginModalElement extends HTMLElement {
     this.wrapper.classList.add('wrapper');
     this.wrapper.style.maxInlineSize = '90vw';
     this.wrapper.style.maxBlockSize = '90vh';
-
-    // move modal to the top
-    this.#dragEvents = dragHandler(this.#inner, this.wrapper, () => {
-      this.calculateZIndex();
-    });
 
     const header = document.createElement('div');
     header.classList.add('header');
@@ -100,7 +112,12 @@ export class PluginModalElement extends HTMLElement {
 
     const iframe = document.createElement('iframe');
     iframe.src = iframeSrc;
-    iframe.allow = '';
+
+    const allowList: string[] = [];
+    if (allowClipboardRead) allowList.push('clipboard-read');
+    if (allowClipboardWrite) allowList.push('clipboard-write');
+    iframe.allow = allowList.join('; ');
+
     iframe.sandbox.add(
       'allow-scripts',
       'allow-forms',
@@ -123,6 +140,23 @@ export class PluginModalElement extends HTMLElement {
         }),
       );
     });
+
+    // move modal to the top
+    this.#dragEvents = dragHandler(
+      header,
+      this.wrapper,
+      () => {
+        this.calculateZIndex();
+      },
+      {
+        start: () => {
+          this.wrapper.classList.add('is-dragging');
+        },
+        end: () => {
+          this.wrapper.classList.remove('is-dragging');
+        },
+      },
+    );
 
     this.addEventListener('message', (e: Event) => {
       if (!iframe.contentWindow) {

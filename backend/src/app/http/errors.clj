@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.http.errors
   "A errors handling for the http server."
@@ -31,8 +31,14 @@
         (assoc :request/user-agent (yreq/get-header request "user-agent"))
         (assoc :request/ip-addr (inet/parse-request request))
         (assoc :request/profile-id (get claims :uid))
-        (assoc :request/auth-data auth)
+        (assoc :request/auth-data (dissoc auth :token))
         (assoc :frontend/version (or (yreq/get-header request "x-frontend-version") "unknown")))))
+
+(defn- strip-internal-fields
+  "Remove fields that leak internal implementation details from error
+  response data. Full context is preserved in server-side logs."
+  [data]
+  (dissoc data :state :path :context))
 
 (defmulti handle-error
   (fn [cause _ _]
@@ -54,7 +60,13 @@
 
 (defmethod handle-error :restriction
   [err request _]
-  (let [{:keys [code] :as data} (ex-data err)]
+  (let [data    (ex-data err)
+        code    (get data :code)
+        explain (ex/explain data)
+        data    (-> data
+                    (dissoc ::sm/explain)
+                    (cond-> explain (assoc :explain explain)))]
+
     (if (= code :method-not-allowed)
       {::yres/status 405
        ::yres/body data}
@@ -136,6 +148,7 @@
           (l/error :hint "assertion error" :cause cause)
           {::yres/status 500
            ::yres/body   (-> data
+                             (strip-internal-fields)
                              (assoc :type :server-error)
                              (assoc :code :assertion))})))))
 
@@ -143,6 +156,22 @@
   [err _ _]
   {::yres/status 404
    ::yres/body (ex-data err)})
+
+(defmethod handle-error :nitrate-unavailable
+  [err request _]
+  (binding [l/*context* (request->context request)]
+    (l/warn :hint "nitrate is unreachable; blocking request" :cause err)
+    ;; Do not leak Nitrate's internal URL/status to the client; the
+    ;; full context is already logged above for operators.
+    {::yres/status 503
+     ::yres/body {:type :nitrate-unavailable}}))
+
+(defmethod handle-error :nitrate-not-configured
+  [err request _]
+  (binding [l/*context* (request->context request)]
+    (l/warn :hint "nitrate is not configured; blocking request" :cause err)
+    {::yres/status 503
+     ::yres/body {:type :nitrate-not-configured}}))
 
 (defmethod handle-error :internal
   [error request parent-cause]
@@ -152,9 +181,9 @@
       (l/error :hint "internal error" :cause cause)
       {::yres/status 500
        ::yres/body (-> data
+                       (strip-internal-fields)
                        (assoc :type :server-error)
-                       (update :code #(or % :unhandled))
-                       (assoc :hint (ex-message error)))})))
+                       (update :code #(or % :unhandled)))})))
 
 (defmethod handle-error :default
   [error request parent-cause]
@@ -169,6 +198,20 @@
       (handle-exception (:handling edata) request error)
       (handle-exception error request parent-cause))))
 
+(defn- pgsql-state->message
+  "Map PostgreSQL SQLSTATE codes to safe, client-facing messages.
+  Returns a user-friendly string that conveys the nature of the error
+  without exposing table names, constraint names, or other internals."
+  [state]
+  (case state
+    "23505" "A conflicting entry already exists"
+    "23503" "The referenced item does not exist"
+    "23502" "A required field is missing"
+    "23514" "The value violates a data integrity constraint"
+    "57014" "The operation took too long and was cancelled"
+    "25P03" "The transaction was idle too long and was cancelled"
+    "A database error occurred"))
+
 (defmethod handle-exception org.postgresql.util.PSQLException
   [error request parent-cause]
   (let [state (.getSQLState ^java.sql.SQLException error)
@@ -181,20 +224,19 @@
         {::yres/status 504
          ::yres/body {:type :server-error
                       :code :statement-timeout
-                      :hint (ex-message error)}}
+                      :hint (pgsql-state->message state)}}
 
         (= state "25P03")
         {::yres/status 504
          ::yres/body {:type :server-error
                       :code :idle-in-transaction-timeout
-                      :hint (ex-message error)}}
+                      :hint (pgsql-state->message state)}}
 
         :else
         {::yres/status 500
          ::yres/body {:type :server-error
-                      :code :unexpected
-                      :hint (ex-message error)
-                      :state state}}))))
+                      :code :database-error
+                      :hint (pgsql-state->message state)}}))))
 
 (defmethod handle-exception :default
   [error request parent-cause]
@@ -207,17 +249,16 @@
         (l/error :hint "unexpected error" :cause cause)
         {::yres/status 500
          ::yres/body {:type :server-error
-                      :code :unexpected
-                      :hint (ex-message error)}})
+                      :code :unexpected}})
 
       :else
       (binding [l/*context* (request->context request)]
         (l/error :hint "unhandled error" :cause cause)
         {::yres/status 500
          ::yres/body (-> edata
+                         (strip-internal-fields)
                          (assoc :type :server-error)
-                         (update :code #(or % :unhandled))
-                         (assoc :hint (ex-message error)))}))))
+                         (update :code #(or % :unhandled)))}))))
 
 (defmethod handle-exception java.io.IOException
   [cause request _]
@@ -225,9 +266,7 @@
     (l/wrn :hint "io exception" :cause cause)
     {::yres/status 500
      ::yres/body {:type :server-error
-                  :code :io-exception
-                  :hint (ex-message cause)
-                  :path (:path request)}}))
+                  :code :io-exception}}))
 
 (defmethod handle-exception java.util.concurrent.CompletionException
   [cause request _]

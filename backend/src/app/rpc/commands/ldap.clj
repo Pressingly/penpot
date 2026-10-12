@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.rpc.commands.ldap
   (:require
@@ -42,7 +42,7 @@
   (when-not provider
     (ex/raise :type :restriction
               :code :ldap-not-initialized
-              :hide "ldap auth provider is not initialized"))
+              :hint "ldap auth provider is not initialized"))
 
   (let [info (ldap/authenticate provider params)]
     (when-not info
@@ -84,5 +84,5 @@
                              (profile/get-profile-by-email conn))
                     (->> (assoc info :is-active true :is-demo false)
                          (auth/create-profile cfg)
-                         (auth/create-profile-rels conn)
+                         (auth/create-profile-rels cfg)
                          (profile/strip-private-attrs))))))

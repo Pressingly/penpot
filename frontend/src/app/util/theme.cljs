@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.util.theme
   (:require
@@ -14,6 +14,9 @@
 (defonce ^:private color-scheme-media-query
   (.matchMedia globals/window "(prefers-color-scheme: dark)"))
 
+(defonce ^:private color-scheme-listeners*
+  (atom #{}))
+
 (def ^:const default "dark")
 
 (defn get-system-theme
@@ -22,6 +25,18 @@
     "dark"
     "light"))
 
+(defn- notify-color-scheme-listeners!
+  []
+  (doseq [f @color-scheme-listeners*]
+    (f)))
+
+(defn add-color-scheme-listener!
+  "Registers `f` to run after each `body` color-scheme update in
+   `use-initialize` (profile theme or OS preference). Returns a dispose fn."
+  [f]
+  (swap! color-scheme-listeners* conj f)
+  (fn [] (swap! color-scheme-listeners* disj f)))
+
 (defn- set-color-scheme
   [^string color]
 
@@ -29,6 +44,17 @@
         class (if (= color "dark") "default" "light")]
     (.removeAttribute node "class")
     (.add ^js (.-classList ^js node) class)))
+
+(defn resolve-theme
+  "Resolves the profile's theme setting to the effective UI theme ('dark' or
+  'light'): 'system' follows the given system theme, 'default' and an unset
+  theme mean dark, and any other value is taken as-is. Single source of truth
+  for the app's own theme and the theme reported to plugins."
+  [profile-theme system-theme]
+  (cond
+    (= profile-theme "system") system-theme
+    (= profile-theme "default") "dark"
+    :else (d/nilv profile-theme "dark")))
 
 (defn use-initialize
   [{profile-theme :theme}]
@@ -43,8 +69,5 @@
           (rx/dispose! s))))
 
     (mf/with-effect [system-theme profile-theme]
-      (set-color-scheme
-       (cond
-         (= profile-theme "system") system-theme
-         (= profile-theme "default") "dark"
-         :else (d/nilv profile-theme "dark"))))))
+      (set-color-scheme (resolve-theme profile-theme system-theme))
+      (notify-color-scheme-listeners!))))

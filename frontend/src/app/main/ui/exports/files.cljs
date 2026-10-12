@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.ui.exports.files
   "The files export dialog/modal"
@@ -45,8 +45,7 @@
      :files files}))
 
 (mf/defc export-entry*
-  {::mf/props :obj
-   ::mf/private true}
+  {::mf/private true}
   [{:keys [file]}]
   [:div {:class (stl/css-case
                  :file-entry true
@@ -174,15 +173,22 @@
                     :on-click on-accept}]]]]
 
         (= status :exporting)
-        [:*
-         [:div {:class (stl/css :modal-content)}
-          (for [file (:files state)]
-            [:> export-entry* {:file file :key (dm/str (:id file))}])]
+        (let [in-progress? (->> state :files (some :loading))]
+          [:*
+           [:div {:class (stl/css :modal-content)}
+            (for [file (:files state)]
+              [:> export-entry* {:file file :key (dm/str (:id file))}])
 
-         [:div {:class (stl/css :modal-footer)}
-          [:div {:class (stl/css :action-buttons)}
-           [:input {:class (stl/css :accept-btn)
-                    :type "button"
-                    :value (tr "labels.close")
-                    :disabled (->> state :files (some :loading))
-                    :on-click on-cancel}]]]])]]))
+            (when in-progress?
+              [:div {:class (stl/css :status-message)
+                     :role "status"
+                     :aria-live "polite"}
+               (tr "labels.downloading-file")])]
+
+           [:div {:class (stl/css :modal-footer)}
+            [:div {:class (stl/css :action-buttons)}
+             [:input {:class (stl/css :accept-btn)
+                      :type "button"
+                      :value (tr "labels.close")
+                      :disabled in-progress?
+                      :on-click on-cancel}]]]]))]]))

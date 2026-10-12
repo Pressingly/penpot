@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.worker.thumbnails
   (:require
@@ -170,8 +170,12 @@
                                  (render/calculate-dimensions objects thumbnail-aspect-ratio))
                        zoom    (/ width (:width vbox))]
 
+                   (reset! wasm/disable-request-render? true)
                    (wasm.api/initialize-viewport
-                    objects zoom vbox bgcolor
+                    objects zoom vbox
+                    :background bgcolor
+                    :force-sync true
+                    :on-render
                     (fn []
                       (if frame
                         (wasm.api/render-sync-shape (:id frame))

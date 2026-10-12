@@ -2,15 +2,16 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.rpc.management.exporter
   (:require
+   [app.common.media :as cm]
    [app.common.schema :as sm]
    [app.common.time :as ct]
    [app.common.uri :as u]
    [app.config :as cf]
-   [app.media :refer [schema:upload]]
+   [app.media.validation :as media.v]
    [app.rpc :as-alias rpc]
    [app.rpc.doc :as doc]
    [app.storage :as sto]
@@ -21,7 +22,7 @@
 (def ^:private
   schema:upload-tempfile-params
   [:map {:title "upload-templfile-params"}
-   [:content schema:upload]])
+   [:content media.v/schema:upload]])
 
 (def ^:private
   schema:upload-tempfile-result
@@ -32,16 +33,17 @@
    ::sm/params schema:upload-tempfile-params
    ::sm/result schema:upload-tempfile-result}
   [cfg {:keys [::rpc/profile-id content]}]
+  (media.v/validate-media-type! content cm/tempfile-types)
   (let [storage (sto/resolve cfg)
         hash    (sto/calculate-hash (:path content))
         data    (-> (sto/content (:path content))
                     (sto/wrap-with-hash hash))
         content {::sto/content data
-                 ::sto/deduplicate? true
+                 ::sto/deduplicate? false
                  ::sto/touched-at (ct/in-future {:minutes 10})
                  :profile-id profile-id
                  :content-type (:mtype content)
-                 :bucket "tempfile"}
+                 :bucket sto/tempfile-bucket}
         object (sto/put-object! storage content)]
     {:id (:id object)
      :uri (-> (cf/get :public-uri)

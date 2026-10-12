@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.util.text.content.to-dom
   (:require
@@ -94,9 +94,8 @@
 
 (defn get-text-span-styles
   [inline paragraph]
-  (let [node (if (= "" (:text inline)) paragraph inline)
-        styles (get-styles-from-attrs node txt/text-node-attrs txt/default-text-attrs)]
-    (dissoc styles :line-height)))
+  (let [node (if (= "" (:text inline)) paragraph inline)]
+    (get-styles-from-attrs node txt/text-span-attrs txt/default-text-attrs)))
 
 (defn normalize-spaces
   "Add zero-width spaces after forward slashes to enable word breaking"
@@ -133,7 +132,11 @@
   (create-element
    "div"
    {:id (or (:key paragraph) (create-random-key))
-    :data {:itype "paragraph"}
+    :data {:itype "paragraph"
+           ;; Save the real font size to be restored later in from-dom/get-paragraph-styles,
+           ;; because the function get-paragraph-styles here sets it to "0" in the css properties, 
+           ;; to avoid the browser affecting the height calculation.
+           :saved-font-size (:font-size paragraph)}
     :style (get-paragraph-styles paragraph)}
    (mapv #(create-text-span % paragraph) (:children paragraph))))
 

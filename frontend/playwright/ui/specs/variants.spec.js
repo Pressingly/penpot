@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { WasmWorkspacePage  } from "../pages/WasmWorkspacePage";
+import { WasmWorkspacePage } from "../pages/WasmWorkspacePage";
 import { BaseWebSocketPage } from "../pages/BaseWebSocketPage";
 import { Clipboard } from "../../helpers/Clipboard";
 
@@ -7,11 +7,11 @@ test.beforeEach(async ({ page, context }) => {
   await Clipboard.enable(context, Clipboard.Permission.ALL);
 
   await WasmWorkspacePage.init(page);
-  await BaseWebSocketPage.mockRPC(page, "get-teams", "get-teams-variants.json");
+  await WasmWorkspacePage.mockConfigFlags(page, ["enable-feature-variants"]);
 });
 
 test.afterEach(async ({ context }) => {
-  context.clearPermissions();
+  await context.clearPermissions();
 });
 
 const setupVariantsFile = async (workspacePage) => {
@@ -176,7 +176,7 @@ test("User duplicates a variant container", async ({ page }) => {
   await validateVariant(variant_duplicate);
 });
 
-test("User copy paste a variant container", async ({ page, context }) => {
+test("User copy paste a variant container", async ({ page }) => {
   const workspacePage = new WasmWorkspacePage(page);
   // Access to the read/write clipboard necesary for this functionality
   await setupVariantsFileWithVariant(workspacePage);
@@ -343,7 +343,9 @@ test("User drag and drop a variant outside the container", async ({ page }) => {
   // and use it to calculate the target position
   await workspacePage.clickWithDragViewportAt(600, 500, 0, 300);
 
-  await expect(workspacePage.layers.getByText("Rectangle / Value 1")).toBeVisible();
+  await expect(
+    workspacePage.layers.getByText("Rectangle / Value 1"),
+  ).toBeVisible();
 });
 
 test("User cut paste a component inside a variant", async ({ page }) => {
@@ -353,7 +355,10 @@ test("User cut paste a component inside a variant", async ({ page }) => {
   const variant = await findVariant(workspacePage, 0);
 
   //Create a component
-  await workspacePage.ellipseShapeButton.click();
+  await workspacePage.selectToolFromFlyout(workspacePage, {
+    triggerToolName: "Rectangle (R)",
+    targetToolName: "Ellipse (E)",
+  });
   await workspacePage.clickWithDragViewportAt(500, 500, 20, 20);
   await workspacePage.clickLeafLayer("Ellipse");
   await workspacePage.page.keyboard.press("ControlOrMeta+k");
@@ -383,24 +388,29 @@ test("User cut paste a component with path inside a variant", async ({
 
   const variant = await findVariant(workspacePage, 0);
 
-  //Create a component
-  await workspacePage.ellipseShapeButton.click();
+  // Create a component
+  await workspacePage.selectToolFromFlyout(workspacePage, {
+    triggerToolName: "Rectangle (R)",
+    targetToolName: "Ellipse (E)",
+  });
   await workspacePage.clickWithDragViewportAt(500, 500, 20, 20);
   await workspacePage.clickLeafLayer("Ellipse");
   await workspacePage.page.keyboard.press("ControlOrMeta+k");
+  await workspacePage.page.waitForTimeout(3000);
 
-  //Rename the component
+  // Rename the component
   await workspacePage.layers.getByText("Ellipse").dblclick();
   await workspacePage.page
     .getByTestId("layer-item")
     .getByRole("textbox")
     .pressSequentially("button / hover");
   await workspacePage.page.keyboard.press("Enter");
+  await workspacePage.page.waitForTimeout(3000);
 
-  //Cut the component
+  // Cut the component
   await workspacePage.cut("keyboard");
 
-  //Paste the component inside the variant
+  // Paste the component inside the variant
   await variant.container.click();
   await workspacePage.paste("keyboard");
 
@@ -423,10 +433,14 @@ test("User drag and drop a component with path inside a variant", async ({
   const variant = findVariantNoWait(workspacePage, 0);
 
   //Create a component
-  await workspacePage.ellipseShapeButton.click();
+  await workspacePage.selectToolFromFlyout(workspacePage, {
+    triggerToolName: "Rectangle (R)",
+    targetToolName: "Ellipse (E)",
+  });
   await workspacePage.clickWithDragViewportAt(500, 500, 20, 20);
   await workspacePage.clickLeafLayer("Ellipse");
   await workspacePage.page.keyboard.press("ControlOrMeta+k");
+  await workspacePage.page.waitForTimeout(3000);
 
   //Rename the component
   await workspacePage.layers.getByText("Ellipse").dblclick();
@@ -454,7 +468,10 @@ test("User cut paste a variant into another container", async ({ page }) => {
   await setupVariantsFileWithVariant(workspacePage);
 
   // Create anothe variant
-  await workspacePage.ellipseShapeButton.click();
+  await workspacePage.selectToolFromFlyout(workspacePage, {
+    triggerToolName: "Rectangle (R)",
+    targetToolName: "Ellipse (E)",
+  });
   await workspacePage.clickWithDragViewportAt(500, 500, 20, 20);
   await workspacePage.clickLeafLayer("Ellipse");
   await workspacePage.page.keyboard.press("ControlOrMeta+k");

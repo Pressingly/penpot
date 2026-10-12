@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.ui.modal
   (:require-macros [app.main.style :as stl])
@@ -46,8 +46,7 @@
       (st/emit! (modal/hide)))))
 
 (mf/defc modal-wrapper*
-  {::mf/props :obj
-   ::mf/wrap [mf/memo]}
+  {::mf/wrap [mf/memo]}
   [{:keys [data]}]
   (let [wrapper-ref    (mf/use-ref nil)
         components     (mf/deref modal/components)
@@ -82,7 +81,6 @@
   (l/derived ::modal/modal st/state))
 
 (mf/defc modal-container*
-  {::mf/props :obj}
   []
   (let [container (hooks/use-portal-container :modal)]
     (when-let [modal (mf/deref ref:modal)]

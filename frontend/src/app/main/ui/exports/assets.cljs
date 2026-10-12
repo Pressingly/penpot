@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 ;; FIXME: rename
 (ns app.main.ui.exports.assets
@@ -36,7 +36,7 @@
 
 (mf/defc export-multiple-dialog*
   {::mf/private true}
-  [{:keys [exports title cmd no-selection origin]}]
+  [{:keys [exports title cmd no-selection origin name]}]
   (let [lstate          (mf/deref refs/export)
         in-progress?    (:in-progress lstate)
         exports         (mf/use-state exports)
@@ -59,7 +59,7 @@
         (fn [event]
           (dom/prevent-default event)
           (st/emit! (modal/hide)
-                    (de/request-multiple-export {:exports enabled-exports :cmd cmd})
+                    (de/request-multiple-export {:exports enabled-exports :cmd cmd :name name})
                     (de/export-shapes-event enabled-exports origin)))
 
         on-toggle-enabled
@@ -185,25 +185,27 @@
 (mf/defc export-shapes-dialog
   {::mf/register modal/components
    ::mf/register-as :export-shapes}
-  [{:keys [exports origin]}]
+  [{:keys [exports origin name]}]
   (let [title (tr "dashboard.export-shapes.title")]
     [:> export-multiple-dialog*
      {:exports exports
       :title title
       :cmd :export-shapes
       :no-selection shapes-no-selection
-      :origin origin}]))
+      :origin origin
+      :name name}]))
 
 (mf/defc export-frames
   {::mf/register modal/components
    ::mf/register-as :export-frames}
-  [{:keys [exports origin]}]
+  [{:keys [exports origin name]}]
   (let [title (tr "dashboard.export-frames.title")]
     [:> export-multiple-dialog*
      {:exports exports
       :title title
       :cmd :export-frames
-      :origin origin}]))
+      :origin origin
+      :name name}]))
 
 ;; FIXME: deprecated, should be refactored in two components and use
 ;; the generic progress reporter

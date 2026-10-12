@@ -142,7 +142,7 @@
                                       (l/inf :hint "x-auth-request: auto-registered profile"
                                              :email email
                                              :profile-id (str (:id profile)))
-                                      (auth/create-profile-rels conn profile))))]
+                                      (auth/create-profile-rels cfg profile))))]
                   ;; Same semantics as Plane: join only provisioned SMB team by name — no fallback.
                   ;; Never fail auth if join fails (e.g. quotas, constraints).
                   (when profile

@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.ui.workspace.left-header
   (:require-macros [app.main.style :as stl])
@@ -34,8 +34,9 @@
         persistence
         (mf/deref refs/persistence)
 
+        ;; Nothing queued to save means the file is up to date.
         persistence-status
-        (get persistence :status)
+        (or (:status persistence) :saved)
 
         editing*    (mf/use-state false)
         editing?    (deref editing*)
@@ -109,7 +110,7 @@
          {:class (stl/css :file-name)
           :title file-name
           :on-double-click start-editing-name}
-         ;;-- Persistende state widget
+         ;; Persistence state widget
          [:div {:class (case persistence-status
                          :pending (stl/css :status-notification :pending-status)
                          :saving (stl/css :status-notification :saving-status)

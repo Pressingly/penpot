@@ -1,6 +1,5 @@
 import { test, expect } from "@playwright/test";
 import { WasmWorkspacePage } from "../pages/WasmWorkspacePage";
-import { presenceFixture } from "../../data/workspace/ws-notifications";
 
 test.beforeEach(async ({ page }) => {
   await WasmWorkspacePage.init(page);
@@ -88,6 +87,9 @@ test("Save and restore version", async ({ page }) => {
     "workspace/versions-restore-snapshot-1.json",
   );
 
+  await workspacePage.mockRPC(/get\-file\?/, "workspace/versions-init-2.json");
+
+
   await page.getByRole("button", { name: "Open version menu" }).click();
   await page.getByRole("button", { name: "Restore" }).click();
   await page.getByRole("button", { name: "Restore" }).click();
@@ -106,9 +108,62 @@ test("BUG 11006 - Fix history panel shortcut", async ({ page }) => {
 
   await workspacePage.goToWorkspace();
 
-  await page.keyboard.press("Control+Alt+h");
+  await page.keyboard.press("ControlOrMeta+Alt+h");
 
   await expect(
     workspacePage.rightSidebar.getByText("There are no versions yet"),
   ).toBeVisible();
+});
+
+test("BUG 13385 - Fix viewport not updating when restoring version", async ({ page }) => {
+  const workspacePage = new WasmWorkspacePage(page);
+  await workspacePage.setupEmptyFile();
+  await workspacePage.mockGetFile("workspace/get-file-13385.json");
+  await workspacePage.mockRPC("get-profiles-for-file-comments?file-id=*", "workspace/get-profiles-for-file-comments-13385.json");
+
+  await workspacePage.mockRPC(
+    "update-file?id=*",
+    "workspace/update-file-empty.json",
+  );
+
+  // navigate to workspace and check that the circle shape is not there
+  await workspacePage.goToWorkspace();
+  await expect(workspacePage.layers.getByText("Ellipse")).not.toBeVisible();
+
+  // mock network requests to restore the version
+  await workspacePage.mockGetFile("workspace/get-file-13385-2.json");
+  await workspacePage.mockRPC("get-file-snapshots?file-id=*", "workspace/get-file-snapshots-13385.json");
+  await workspacePage.mockRPC("restore-file-snapshot", "", {
+    status: 204,
+  });
+
+  // request to restore the version
+  await workspacePage.rightSidebar.getByRole("button", { name: "History" }).click();
+  await workspacePage.rightSidebar.getByRole("button", { name: "Open version menu" }).click();
+  await workspacePage.rightSidebar.getByRole("button", { name: "Restore" }).click();
+  // confirm modal
+  await workspacePage.page.getByRole("button", { name: /Restore/i }).click();
+
+  // assert that the circle shape exists
+  await expect(workspacePage.layers.getByText("Ellipse")).toBeVisible();
+});
+
+test("BUG 14289 - Fix WASM crash when restoring version directly without preview", async ({ page }) => {
+  const workspacePage = new WasmWorkspacePage(page);
+  await workspacePage.setupEmptyFile();
+  await workspacePage.mockGetFile("versions/get-file-14289.json");
+  await workspacePage.mockRPC("get-profiles-for-file-comments?file-id=*", "versions/get-profiles-for-file-comments-14289.json");
+  await workspacePage.mockRPC("get-file-snapshots?file-id=*", "versions/get-file-snapshots-14289.json");
+
+  await workspacePage.goToWorkspace();
+
+  await workspacePage.rightSidebar.getByRole("button", { name: "History" }).click();
+  await workspacePage.rightSidebar.getByRole("button", { name: "Open version menu" }).click();
+  await workspacePage.rightSidebar.getByRole("button", { name: "Restore" }).click();
+
+  const dismissButton = workspacePage.page.getByRole("button", { name: /Dismiss/i });
+  await dismissButton.click();
+
+  await expect(dismissButton).toBeHidden();
+  await expect(workspacePage.viewport).toBeVisible();
 });

@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns common-tests.data-test
   (:require
@@ -27,6 +27,51 @@
   (t/is (not (d/in-range? 5 5)))
   (t/is (not (d/in-range? 5 -1)))
   (t/is (not (d/in-range? 0 0))))
+
+(t/deftest get-initials-test
+  (t/is (= "JD" (d/get-initials "John Doe")))
+  (t/is (= "A" (d/get-initials "acme")))
+  (t/is (= "AB" (d/get-initials "123 Alpha ## beta")))
+  (t/is (= "PD" (d/get-initials "  penpot   design  tool ")))
+  (t/is (= "" (d/get-initials nil)))
+  (t/is (= "" (d/get-initials "!!! ???"))))
+
+(t/deftest normalize-string-test
+  ;; nil input returns empty string
+  (t/is (= "" (d/normalize-string nil)))
+  ;; empty string returns empty string
+  (t/is (= "" (d/normalize-string "")))
+  ;; leading whitespace is trimmed
+  (t/is (= "hello" (d/normalize-string "  hello")))
+  ;; trailing whitespace is trimmed
+  (t/is (= "hello" (d/normalize-string "hello  ")))
+  ;; both leading and trailing whitespace are trimmed
+  (t/is (= "hello" (d/normalize-string "  hello  ")))
+  ;; internal whitespace is preserved
+  (t/is (= "hello world" (d/normalize-string "  hello world  ")))
+  ;; non-string input is returned unchanged
+  (t/is (= 42 (d/normalize-string 42)))
+  (t/is (= :keyword (d/normalize-string :keyword)))
+  (t/is (= true (d/normalize-string true))))
+
+(t/deftest escape-markdown-test
+  (t/is (= "hello" (d/escape-markdown "hello")))
+  (t/is (= "" (d/escape-markdown nil)))
+  (t/is (= "" (d/escape-markdown "")))
+  (t/is (= "\\*bold\\*" (d/escape-markdown "*bold*")))
+  (t/is (= "\\_italic\\_" (d/escape-markdown "_italic_")))
+  (t/is (= "\\~strikethrough\\~" (d/escape-markdown "~strikethrough~")))
+  (t/is (= "\\`code\\`" (d/escape-markdown "`code`")))
+  (t/is (= "\\[link\\]\\(http://evil\\.com\\)" (d/escape-markdown "[link](http://evil.com)")))
+  (t/is (= "\\> quote" (d/escape-markdown "> quote")))
+  (t/is (= "\\# heading" (d/escape-markdown "# heading")))
+  (t/is (= "\\@channel" (d/escape-markdown "@channel")))
+  (t/is (= "\\!bang" (d/escape-markdown "!bang")))
+  (t/is (= "normal\\-text" (d/escape-markdown "normal-text")))
+  (t/is (= "a\\+b\\=c" (d/escape-markdown "a+b=c")))
+  (t/is (= "pipe\\|separated" (d/escape-markdown "pipe|separated")))
+  (t/is (= "curly\\{\\}braces" (d/escape-markdown "curly{}braces")))
+  (t/is (= "backslash\\\\slash" (d/escape-markdown "backslash\\slash"))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Ordered Data Structures
@@ -252,6 +297,72 @@
     (t/is (= (d/reorder v 5 -1) ["d" "a" "b" "c"]))
     (t/is (= (d/reorder v -1 5) ["b" "c" "d" "a"]))))
 
+(t/deftest nth-last-index-of-test
+  (t/is (= (d/nth-last-index-of "" "*" 1) nil))
+  (t/is (= (d/nth-last-index-of "*abc" "*" 1) 0))
+  (t/is (= (d/nth-last-index-of "**abc" "*" 2) 0))
+  (t/is (= (d/nth-last-index-of "abc*def*ghi" "*" 3) nil))
+  (t/is (= (d/nth-last-index-of "" "*" 2) nil))
+  (t/is (= (d/nth-last-index-of "abc*" "*" 1) 3))
+  (t/is (= (d/nth-last-index-of "abc*" "*" 2) nil))
+  (t/is (= (d/nth-last-index-of "*abc[*" "*" 1) 5))
+  (t/is (= (d/nth-last-index-of "abc*def*ghi" "*" 1) 7))
+  (t/is (= (d/nth-last-index-of "abc*def*ghi" "*" 2) 3)))
+
+(t/deftest nth-index-of-test
+  (t/is (= (d/nth-index-of "" "*" 1) nil))
+  (t/is (= (d/nth-index-of "" "*" 2) nil))
+  (t/is (= (d/nth-index-of "abc*" "*" 1) 3))
+  (t/is (= (d/nth-index-of "abc*" "*" 1) 3))
+  (t/is (= (d/nth-index-of "abc**" "*" 2) 4))
+  (t/is (= (d/nth-index-of "abc*" "*" 2) nil))
+  (t/is (= (d/nth-index-of "*abc[*" "*" 1) 0))
+  (t/is (= (d/nth-index-of "abc*def*ghi" "*" 1) 3))
+  (t/is (= (d/nth-index-of "abc*def*ghi" "*" 2) 7))
+  (t/is (= (d/nth-index-of "abc*def*ghi" "*" 3) nil)))
+
+(t/deftest natural-sort-by-test
+  (t/is (= (d/natural-sort-by identity ["10" "2" "1" "11" "3" "30"])
+           ["1" "2" "3" "10" "11" "30"]))
+  (t/is (= (d/natural-sort-by identity ["banana" "apple" "cherry"])
+           ["apple" "banana" "cherry"]))
+  (t/is (= (d/natural-sort-by identity ["size10" "size2" "size1" "size20" "size3"])
+           ["size1" "size2" "size3" "size10" "size20"]))
+  (t/is (= (d/natural-sort-by identity ["b1" "a2" "a10" "a1"])
+           ["a1" "a2" "a10" "b1"]))
+  (t/is (= (d/natural-sort-by identity []) []))
+  (t/is (= (d/natural-sort-by identity ["solo"]) ["solo"]))
+  (t/is (= (d/natural-sort-by identity ["b" "a" "a" "c"])
+           ["a" "a" "b" "c"]))
+  (t/is (= (d/natural-sort-by :name
+                              [{:name "big"} {:name "small"} {:name "medium"}])
+           [{:name "big"} {:name "medium"} {:name "small"}]))
+  (t/is (= (d/natural-sort-by :name
+                              [{:name "size10"} {:name "size2"} {:name "size1"}])
+           [{:name "size1"} {:name "size2"} {:name "size10"}]))
+  (t/is (= (d/natural-sort-by :name
+                              [{:name "border-radius-10"}
+                               {:name "border-radius-2"}
+                               {:name "border-radius-1"}])
+           [{:name "border-radius-1"}
+            {:name "border-radius-2"}
+            {:name "border-radius-10"}]))
+  (t/is (= (d/natural-sort-by :name
+                              [{:name "border-10-radius"}
+                               {:name "border-2-radius"}
+                               {:name "border-1-radius"}])
+           [{:name "border-1-radius"}
+            {:name "border-2-radius"}
+            {:name "border-10-radius"}]))
+  (t/is (= (d/natural-sort-by :name
+                              [{:name "border-10-radius"}
+                               {:name "border-2-extra"}
+                               {:name "border-2-radius"}
+                               {:name "border-1-radius"}])
+           [{:name "border-1-radius"}
+            {:name "border-2-extra"}
+            {:name "border-2-radius"}
+            {:name "border-10-radius"}])))
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Lazy / sequence helpers
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -458,7 +569,12 @@
   (t/is (= {nil 0 :b 2} (d/patch-object {nil 0 :a 1 :b 2} {:a nil})))
   ;; transducer arity (1-arg returns a fn)
   (let [f (d/patch-object {:a 99})]
-    (t/is (= {:a 99 :b 2} (f {:a 1 :b 2})))))
+    (t/is (= {:a 99 :b 2} (f {:a 1 :b 2}))))
+  ;; when object is nil, nil values in changes are stripped (not preserved)
+  (t/is (= {} (d/patch-object nil {:a nil})))
+  (t/is (= {:a 1} (d/patch-object nil {:a 1 :b nil})))
+  ;; nested path: patching a key that doesn't exist creates a new map without nils
+  (t/is (= {:b {:y 2}} (d/patch-object {:b nil} {:b {:x nil :y 2}}))))
 
 (t/deftest without-obj-test
   (t/is (= [1 3] (d/without-obj [1 2 3] 2)))
@@ -809,7 +925,7 @@
   (t/is (not (d/editable-collection? "hello")))
   (t/is (not (d/editable-collection? 42))))
 
-(t/deftest num-predicate
+(t/deftest num-predicate-2
   (t/is (d/num? 1))
   (t/is (d/num? 0))
   (t/is (d/num? -3.14))

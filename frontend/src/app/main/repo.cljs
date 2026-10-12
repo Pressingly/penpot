@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.repo
   (:require
@@ -85,6 +85,14 @@
 
     (= 502 status)
     (rx/throw (ex-info "http error" {:type :bad-gateway}))
+
+    (and (= 503 status)
+         (= :nitrate-unavailable (:type body)))
+    (rx/throw (ex-info "http error" {:type :nitrate-unavailable}))
+
+    (and (= 503 status)
+         (= :nitrate-not-configured (:type body)))
+    (rx/throw (ex-info "http error" {:type :nitrate-not-configured}))
 
     (= 503 status)
     (rx/throw (ex-info "http error" {:type :service-unavailable}))
@@ -272,12 +280,7 @@
   (let [default {:wait false :blob? false}]
     (send-export (merge default params))))
 
-(derive :upload-file-media-object ::multipart-upload)
-(derive :upload-chunk ::multipart-upload)
-(derive :update-profile-photo ::multipart-upload)
-(derive :update-team-photo ::multipart-upload)
-
-(defmethod cmd! ::multipart-upload
+(defn- multipart-upload
   [id params]
   (->> (http/send! {:method :post
                     :uri  (u/join cf/public-uri "api/main/methods/" (name id))
@@ -287,3 +290,8 @@
                     :body (http/form-data params)})
        (rx/map http/conditional-decode-transit)
        (rx/mapcat handle-response)))
+
+(defmethod cmd! :upload-file-media-object [id params] (multipart-upload id params))
+(defmethod cmd! :upload-chunk [id params] (multipart-upload id params))
+(defmethod cmd! :update-profile-photo [id params] (multipart-upload id params))
+(defmethod cmd! :update-team-photo [id params] (multipart-upload id params))

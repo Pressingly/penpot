@@ -1,5 +1,6 @@
 import * as esbuild from "esbuild";
 import { readFile } from "node:fs/promises";
+import { execSync } from "node:child_process";
 
 /**
  * esbuild plugin to watch a directory recursively

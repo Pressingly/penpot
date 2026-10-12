@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.common.types.path
   (:require
@@ -82,6 +82,19 @@
   content as PathData instance"
   [content]
   (-> (subpath/close-subpaths content)
+      (impl/from-plain)))
+
+(defn merge-touching-subpaths
+  "Given a content, fold consecutive subpaths whose endpoints coincide
+  into a single continuous subpath, returning a PathData instance.
+
+  Conservative counterpart of `close-subpaths`: only adjacent subpaths
+  are merged and none are reversed, so fill rules and stroke-dasharray
+  semantics are preserved. Used at SVG-import time on stroke-only paths
+  to recover the `stroke-linejoin` rendering when authoring tools split
+  a continuous polyline into adjacent `M..L M..L` subpaths."
+  [content]
+  (-> (subpath/merge-touching-subpaths content)
       (impl/from-plain)))
 
 (defn apply-content-modifiers
@@ -379,7 +392,9 @@
   ([shape]
    (convert-to-path shape {}))
   ([shape objects]
-   (-> (stp/convert-to-path shape objects)
-       (update :content impl/path-data))))
+   (let [shape' (stp/convert-to-path shape objects)]
+     (if (identical? shape shape')
+       shape'
+       (update shape' :content impl/path-data)))))
 
 (dm/export impl/decode-segments)

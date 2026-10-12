@@ -2,14 +2,16 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.rpc.commands.projects
   (:require
+   [app.common.data :as d]
    [app.common.data.macros :as dm]
    [app.common.exceptions :as ex]
    [app.common.schema :as sm]
    [app.common.time :as ct]
+   [app.common.uuid :as uuid]
    [app.db :as db]
    [app.db.sql :as-alias sql]
    [app.features.logical-deletion :as ldel]
@@ -39,8 +41,13 @@
           ppr.is_admin,
           ppr.can_edit
      from project_profile_rel as ppr
+    inner join project as p on (p.id = ppr.project_id)
     where ppr.project_id = ?
-      and ppr.profile_id = ?")
+      and ppr.profile_id = ?
+      and exists (select 1
+                    from team_profile_rel as tpr
+                   where tpr.team_id = p.team_id
+                     and tpr.profile_id = ppr.profile_id)")
 
 (defn- get-permissions
   [conn profile-id project-id]
@@ -56,11 +63,16 @@
        :can-edit (or is-owner is-admin can-edit)
        :can-read true})))
 
+(defn- get-read-permissions
+  [cfg profile-id project-id]
+  (or (get-permissions cfg profile-id project-id)
+      (perms/get-organization-owner-permissions cfg profile-id :project-id project-id)))
+
 (def has-edit-permissions?
   (perms/make-edition-predicate-fn get-permissions))
 
 (def has-read-permissions?
-  (perms/make-read-predicate-fn get-permissions))
+  (perms/make-read-predicate-fn get-read-permissions))
 
 (def check-edition-permissions!
   (perms/make-check-fn has-edit-permissions?))
@@ -136,7 +148,12 @@
     inner join team as t on (t.id = p2.team_id)
     where p2.id in (select project_id
                      from project_profile_rel as ppr
+                    inner join project as p on (p.id = ppr.project_id)
                     where ppr.profile_id = ?
+                      and exists (select 1
+                                    from team_profile_rel as tpr
+                                   where tpr.team_id = p.team_id
+                                     and tpr.profile_id = ppr.profile_id)
                       and (ppr.can_edit = true or
                            ppr.is_owner = true or
                            ppr.is_admin = true))
@@ -157,11 +174,12 @@
 
 (sv/defmethod ::get-project
   {::doc/added "1.18"
+   ::rpc/id-type :project
    ::sm/params schema:get-project}
-  [{:keys [::db/pool]} {:keys [::rpc/profile-id id]}]
+  [{:keys [::db/pool] :as cfg} {:keys [::rpc/profile-id id]}]
   (dm/with-open [conn (db/open pool)]
     (let [project (db/get-by-id conn :project id)]
-      (check-read-permissions! conn profile-id id)
+      (check-read-permissions! cfg profile-id id)
       project)))
 
 
@@ -178,7 +196,8 @@
         timestamp (::rpc/request-at params)]
     (teams/create-project-role conn profile-id (:id project) :owner)
     (db/insert! conn :team-project-profile-rel
-                {:project-id (:id project)
+                {:id (uuid/next)
+                 :project-id (:id project)
                  :profile-id profile-id
                  :created-at timestamp
                  :modified-at timestamp
@@ -190,7 +209,7 @@
   [:map {:title "create-project"}
    [:team-id ::sm/uuid]
    [:name [:string {:max 250 :min 1}]]
-   [:id {:optional true} ::sm/uuid]])
+   [:id {:optional true} ::sm/user-provided-uuid]])
 
 (sv/defmethod ::create-project
   {::doc/added "1.18"
@@ -223,13 +242,14 @@
 
 (sv/defmethod ::update-project-pin
   {::doc/added "1.18"
+   ::rpc/id-type :project
    ::sm/params schema:update-project-pin
    ::webhooks/batch-timeout (ct/duration "5s")
    ::webhooks/batch-key (webhooks/key-fn ::rpc/profile-id :id)
    ::webhooks/event? true
    ::db/transaction true}
-  [{:keys [::db/conn]} {:keys [::rpc/profile-id id team-id is-pinned] :as params}]
-  (check-read-permissions! conn profile-id id)
+  [{:keys [::db/conn] :as cfg} {:keys [::rpc/profile-id id team-id is-pinned] :as params}]
+  (check-read-permissions! cfg profile-id id)
   (db/exec-one! conn [sql:update-project-pin team-id id profile-id is-pinned is-pinned])
   nil)
 
@@ -244,12 +264,14 @@
 
 (sv/defmethod ::rename-project
   {::doc/added "1.18"
+   ::rpc/id-type :project
    ::sm/params schema:rename-project
    ::webhooks/event? true
    ::db/transaction true}
   [{:keys [::db/conn]} {:keys [::rpc/profile-id id name] :as params}]
   (check-edition-permissions! conn profile-id id)
-  (let [project (db/get-by-id conn :project id ::sql/for-update true)]
+  (let [project (db/get-by-id conn :project id ::sql/for-update true)
+        name    (d/normalize-string name)]
     (db/update! conn :project
                 {:name name}
                 {:id id})
@@ -286,6 +308,7 @@
 
 (sv/defmethod ::delete-project
   {::doc/added "1.18"
+   ::rpc/id-type :project
    ::sm/params schema:delete-project
    ::webhooks/event? true
    ::db/transaction true}

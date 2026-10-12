@@ -2,13 +2,14 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.data.viewer
   (:require
    [app.common.data :as d]
    [app.common.data.macros :as dm]
    [app.common.features :as cfeat]
+   [app.common.files.changes :as cpc]
    [app.common.files.helpers :as cfh]
    [app.common.geom.point :as gpt]
    [app.common.schema :as sm]
@@ -16,13 +17,16 @@
    [app.common.types.shape-tree :as ctt]
    [app.common.types.shape.interactions :as ctsi]
    [app.common.uuid :as uuid]
+   [app.config :as cf]
    [app.main.data.comments :as dcmt]
    [app.main.data.common :as dcm]
    [app.main.data.event :as ev]
    [app.main.data.fonts :as df]
+   [app.main.data.helpers :as dsh]
    [app.main.features :as features]
    [app.main.repo :as rp]
    [app.main.router :as rt]
+   [app.render-wasm.api :as wasm.api]
    [app.util.globals :as ug]
    [beicon.v2.core :as rx]
    [potok.v2.core :as ptk]))
@@ -40,8 +44,7 @@
    :selected #{}
    :collapsed #{}
    :hover nil
-   :share-id ""
-   :file-comments-users []})
+   :share-id ""})
 
 (declare fetch-comment-threads)
 (declare fetch-bundle)
@@ -91,14 +94,21 @@
       ;; browser just focus the opened tab instead of creating new
       ;; tab.
       (let [name (str "viewer-" file-id)]
-        (unchecked-set ug/global "name" name)))))
+        (unchecked-set ug/global "name" name))
+      ;; Make every `cf/resolve-file-media` call (inspector, code panel,
+      ;; image previews, ...) share-link aware for the lifetime of this
+      ;; viewer. Cleared by `finalize` below.
+      (cf/set-current-share-id! share-id))))
 
 (defn finalize
   [_]
   (ptk/reify ::finalize
     ptk/UpdateEvent
     (update [_ state]
-      (dissoc state :viewer))))
+      (dissoc state :viewer))
+    ptk/EffectEvent
+    (effect [_ _ _]
+      (cf/set-current-share-id! nil))))
 
 ;; --- Data Fetching
 
@@ -171,6 +181,93 @@
 (declare go-to-frame-by-index)
 (declare go-to-frame-auto)
 
+;; Applies to the viewer the changes passed as parameters
+;; will not save the data but just modify the data localy
+(defn- apply-changes-viewer
+  [changes]
+  (ptk/reify ::apply-changes-viewer
+    ptk/UpdateEvent
+    (update [_ state]
+      (let [file (-> (dm/get-in state [:viewer :file])
+                     (update :data cpc/process-changes changes false))
+
+            pages
+            (->> (dm/get-in file [:data :pages])
+                 (map (fn [page-id]
+                        (let [data (get-in file [:data :pages-index page-id])]
+                          [page-id (assoc data
+                                          :frames (ctt/get-viewer-frames (:objects data))
+                                          :all-frames (ctt/get-viewer-frames (:objects data) {:all-frames? true}))])))
+                 (into {}))]
+
+        (-> state
+            (assoc-in [:viewer :file] file)
+            (assoc-in [:viewer :pages] pages))))))
+
+(defn- generate-update-position-data-changes
+  [shapes page-id]
+  (reduce
+   (fn [result shape]
+     (conj result
+           {:type :mod-obj
+            :id (:id shape)
+            :page-id page-id
+            :operations
+            [{:type :set
+              :attr :position-data
+              :val (wasm.api/calculate-position-data shape)
+              :ignore-touched true
+              :ignore-geometry true}]}))
+   []
+   shapes))
+
+(defn update-page-position-data
+  [file-id page-id]
+  (ptk/reify ::update-page-position-data
+    ptk/WatchEvent
+    (watch [_ state _]
+      (if (and (features/active-feature? state "render-wasm/v1")
+               (contains? cf/flags :available-viewer-wasm))
+        ;; Fallback matches the viewer UI when the URL omits page-id.
+        (let [page-id (or page-id
+                          (-> (dsh/lookup-file-data state file-id)
+                              :pages
+                              first))
+              objects (dsh/lookup-page-objects state file-id page-id)
+
+              shapes
+              (reduce-kv
+               (fn [result _ shape]
+                 (cond-> result
+                   (and (cfh/text-shape? shape) (nil? (:position-data shape)))
+                   (conj shape)))
+               []
+               objects)
+
+              ;; Positive size required: OffscreenCanvas(0, 0) crashes
+              ;; `_set_render_options` on some browsers.
+              set-objects-stream
+              (rx/create
+               (fn [subs]
+                 (wasm.api/init-canvas-context (js/OffscreenCanvas. 64 64))
+                 (wasm.api/set-objects-callback shapes #(rx/push! subs :done))
+                 nil))]
+
+          (if (d/not-empty? shapes)
+            (->> (rx/from @wasm.api/module)
+                 (rx/mapcat (constantly set-objects-stream))
+                 (rx/mapcat
+                  (fn []
+                    (let [changes (generate-update-position-data-changes shapes page-id)
+                          _ (wasm.api/clear-canvas)]
+                      (if (d/not-empty? changes)
+                        (rx/of (apply-changes-viewer changes))
+                        (rx/empty))))))
+            (rx/empty)))
+
+        ;; Render wasm disabled, we do nothing
+        (rx/empty)))))
+
 (defn bundle-fetched
   [{:keys [project file team share-links libraries users permissions thumbnails] :as bundle}]
   (let [pages (->> (dm/get-in file [:data :pages])
@@ -205,13 +302,17 @@
         (let [route    (:route state)
               qparams  (:query-params route)
               index    (some-> (rt/get-query-param qparams :index) parse-long)
-              frame-id (some-> (:frame-id qparams) uuid/parse)]
+              frame-id (some-> (:frame-id qparams) uuid/parse)
+              page-id (some-> (rt/get-query-param qparams :page-id) uuid/parse)
+              file-id (some-> (rt/get-query-param qparams :file-id) uuid/parse)]
+
           (rx/merge
            (rx/of (case (:zoom qparams)
                     "fit" zoom-to-fit
                     "fill" zoom-to-fill
                     nil))
            (rx/of
+            (update-page-position-data file-id page-id)
             (cond
               (some? frame-id) (go-to-frame frame-id)
               (some? index) (go-to-frame-by-index index)
@@ -224,11 +325,12 @@
                  (filter #(= page-id (:page-id %)))
                  (d/index-by :id)
                  (assoc state :comment-threads)))
-          (on-error [{:keys [type] :as err}]
-            (if (or (= :authentication type)
-                    (= :not-found type))
-              (rx/empty)
-              (rx/throw err)))]
+          (on-error [cause]
+            (let [{:keys [type]} (ex-data cause)]
+              (if (or (= :authentication type)
+                      (= :not-found type))
+                (rx/empty)
+                (rx/throw cause))))]
 
     (ptk/reify ::fetch-comment-threads
       ptk/WatchEvent
@@ -265,9 +367,17 @@
     ptk/WatchEvent
     (watch [_ state _]
       (let [zoom-type (get-in state [:viewer-local :zoom-type])
-            params    (rt/get-params state)]
-
-        (rx/of (rt/nav :viewer (assoc params :zoom zoom-type)))))))
+            params    (rt/get-params state)
+            current   (rt/get-query-param params :zoom)
+            expected  (some-> zoom-type name)]
+        ;; Zoom is view state: mirror it into the URL, replacing the history
+        ;; entry, only when the query string does not already describe it.
+        (when (not= current expected)
+          (rx/of (rt/nav :viewer
+                         (if (some? zoom-type)
+                           (assoc params :zoom zoom-type)
+                           (dissoc params :zoom))
+                         {::rt/replace true})))))))
 
 (def increase-zoom
   (ptk/reify ::increase-zoom
@@ -491,6 +601,13 @@
     ptk/UpdateEvent
     (update [_ state]
       (d/dissoc-in state [:viewer-local :nav-scroll]))))
+
+(defn update-exports-cache
+  [shapes-key exports]
+  (ptk/reify ::update-exports-cache
+    ptk/UpdateEvent
+    (update [_ state]
+      (assoc-in state [:inspect-exports-cache shapes-key] exports))))
 
 (defn complete-animation
   []

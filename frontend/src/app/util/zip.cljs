@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.util.zip
   "Helpers for make zip file."
@@ -82,6 +82,10 @@
 
 (defn read-as-text
   [entry]
+  (when (nil? entry)
+    (ex/raise :type :assertion
+              :code :invalid-entry
+              :hint "cannot read zip entry: entry is nil"))
   (let [writer (new zip/TextWriter)]
     (.getData entry writer)))
 

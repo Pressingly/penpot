@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.migrations
   (:require
@@ -468,17 +468,41 @@
    {:name "0145-mod-audit-log-table"
     :fn (mg/resource "app/migrations/sql/0145-mod-audit-log-table.sql")}
 
-   {:name "0145-mod-audit-log-table"
-    :fn (mg/resource "app/migrations/sql/0145-mod-audit-log-table.sql")}
-
    {:name "0146-mod-audit-log-table"
     :fn (mg/resource "app/migrations/sql/0146-mod-audit-log-table.sql")}
 
    {:name "0146-mod-access-token-table"
     :fn (mg/resource "app/migrations/sql/0146-mod-access-token-table.sql")}
 
+   {:name "0147-mod-team-invitation-table"
+    :fn (mg/resource "app/migrations/sql/0147-mod-team-invitation-table.sql")}
+
    {:name "0147-add-upload-session-table"
-    :fn (mg/resource "app/migrations/sql/0147-add-upload-session-table.sql")}])
+    :fn (mg/resource "app/migrations/sql/0147-add-upload-session-table.sql")}
+
+   {:name "0148-add-variant-name-team-font-variant"
+    :fn (mg/resource "app/migrations/sql/0148-add-variant-name-team-font-variant.sql")}
+
+   {:name "0149-mod-file-library-rel-synced-at"
+    :fn (mg/resource "app/migrations/sql/0149-mod-file-library-rel-synced-at.sql")}
+
+   {:name "0150-mod-http-session-v2"
+    :fn (mg/resource "app/migrations/sql/0150-mod-http-session-v2.sql")}
+
+   {:name "0150-mod-storage-object-table"
+    :fn (mg/resource "app/migrations/sql/0150-mod-storage-object-table.sql")}
+
+   {:name "0151-mod-file-tagged-object-thumbnail-table"
+    :fn (mg/resource "app/migrations/sql/0151-mod-file-tagged-object-thumbnail-table.sql")}
+
+   {:name "0152-improve-uuid-defaults-and-drop-extension"
+    :fn (mg/resource "app/migrations/sql/0152-improve-uuid-defaults-and-drop-extension.sql")}
+
+   {:name "0152-rename-version-and-add-indexes-to-server-error-report"
+    :fn (mg/resource "app/migrations/sql/0152-rename-version-and-add-indexes-to-server-error-report.sql")}
+
+   {:name "0153-del-orphan-profile-rels-after-team-leave"
+    :fn (mg/resource "app/migrations/sql/0153-del-orphan-profile-rels-after-team-leave.sql")}])
 
 (defn apply-migrations!
   [pool name migrations]

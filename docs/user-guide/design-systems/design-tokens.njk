@@ -31,6 +31,7 @@ desc: Learn how to create, manage and apply Penpot Design Tokens using W3C DTCG 
     <li><strong>Description:</strong> You can also choose to add a description to your token.</li>
 </ul>
 <p>Once you have named the token and assigned it a value, click <strong>Save</strong> to store the token and start referencing it.</p>
+<p>Token value fields suggest existing tokens as you type. Pick a suggestion to insert a reference, or keep typing a custom value.</p>
 
 <h2 id="design-tokens-aliases">Referencing tokens into values (aliases)</h2>
 <p>When assigning a value to a token, you can reference existing tokens - these are called aliases at the <a href="https://www.designtokens.org/glossary/" target="_blank">DTCG Glossary</a>.</p>
@@ -111,7 +112,7 @@ desc: Learn how to create, manage and apply Penpot Design Tokens using W3C DTCG 
 <p>This ensures the spacing is at least 8, even if the base token is smaller.</p>
 
 <h2 id="design-tokens-edit">Editing a token</h2>
-<p>Tokens can be edited by right-clicking the token and selecting <strong>Edit token</strong>. This will allow you to change the tokens name, value and description. Once the changes are made, click <strong>Save</strong>.</p>
+<p>Tokens can be edited by right-clicking the token and selecting <strong>Edit token</strong>. This will allow you to change the tokens name, value and description. Value fields offer the same token suggestions as when creating a token. Once the changes are made, click <strong>Save</strong>.</p>
 <figure>
   <img src="/img/design-tokens/05-tokens-edit.webp" alt="Tokens edit" />
 </figure>
@@ -133,6 +134,27 @@ desc: Learn how to create, manage and apply Penpot Design Tokens using W3C DTCG 
   <li>Left-click on tokens to apply the assumtion. Assumptions can vary across different token types. For example, for the <strong>color</strong> type the assumtion is that you want to apply the token as a <strong>fill</strong>.</li>
 </ul>
 <p>Tokens can be applied to multiple selected elements, but not to groups.</p>
+
+<h3 id="design-tokens-design-tab">Applying tokens from the Design tab</h3>
+<p>Besides applying tokens from the Tokens panel, you can bind tokens from numeric and color fields in the Design sidebar.</p>
+<p>Token selection is available for:</p>
+<ul>
+  <li><strong>Size and position:</strong> width, height, x, y</li>
+  <li><strong>Rotation and border radius</strong></li>
+  <li><strong>Layout spacing:</strong> gaps, paddings, margins, min and max widths and heights</li>
+  <li><strong>Typography:</strong> letter spacing, line height, and composite typography tokens on text layers</li>
+  <li><strong>Stroke width</strong></li>
+  <li><strong>Shadows:</strong> x, y, blur, spread</li>
+  <li><strong>Blur</strong> amount</li>
+</ul>
+<p>Click the token control on a field to open a list of applicable tokens from your active sets and themes. Select a token to apply it; a token pill shows the bound token. Use the pill menu to detach the token when you need a custom value again.</p>
+<p>On text layers, the Typography section shows a composite typography token row when one is applied. Open the token list from the section header to pick or switch tokens without going to the Tokens panel. Hover a token name to see its resolved values (font family, size, weight, and the rest).</p>
+<p>When you multi-select text layers that share typography tokens, the Typography section shows the applied token. If the selection mixes different tokens, detach them from there or apply a new one to the whole selection.</p>
+<p>Typography options in the dropdown list show resolved values on hover, so you can tell styles apart before applying them.</p>
+<p class="advice">When a numeric field has a token applied, drag-to-change is disabled for that field. Edit the token or detach it first.</p>
+<figure>
+  <img src="/img/design-tokens/41-design-tab-token-dropdown.webp" alt="Token list on a numeric field in the Design sidebar">
+</figure>
 
 <h3 id="design-tokens-radius">Border radius</h3>
 <p>Border radius tokens allow you to define specific values for border-radius properties, offering flexibility in how you style the corners of elements.</p>
@@ -276,9 +298,6 @@ desc: Learn how to create, manage and apply Penpot Design Tokens using W3C DTCG 
 
 <h3 id="design-tokens-sizing">Sizing</h3>
 <p>Sizing tokens can define various size-related design properties, namely the height and width of design elements.The sizing token supports numeric values, which include negative values.</p>
-<figure>
-  <img src="/img/design-tokens/11-tokens-spacing.webp" alt="Tokens spacing" />
-</figure>
 <h4>Applying Sizing Tokens</h4>
 <p>To apply the sizing token to an element, select the element and choose the token from the list:</p>
 <ul>
@@ -302,6 +321,9 @@ desc: Learn how to create, manage and apply Penpot Design Tokens using W3C DTCG 
 
 <h3 id="design-tokens-spacing">Spacing</h3>
 <p>The spacing token defines the distance between design elements and supports numeric values, which include negative values. Spacing tokens must be applied to Flex Layout boards. </p>
+<figure>
+  <img src="/img/design-tokens/11-tokens-spacing.webp" alt="Tokens spacing" />
+</figure>
 <p class="advice">If you apply the token to a board before flex-layout is applied to it, you may have to remove and re-apply the token for it to take effect.</p>
 <h4>Applying Spacing Tokens</h4>
 <p>To apply the spacing token to an element, select the element and choose the token from the list:</p>
@@ -510,6 +532,7 @@ ExtraBold Italic
 
 <h4 id="apply-typography-token">Apply a Typography token</h4>
 <p>A <strong>Typography composite token</strong> can be applied to a full text layer to set all typography properties at once. This lets you manage complete text styles using a single token instead of combining multiple individual ones.</p>
+<p>Apply it from the Tokens panel, or from the Typography section in the Design sidebar when a text layer is selected.</p>
 <p>When applying a Typography composite token to a layer, any previously applied <em>Typography composite token</em> or <em>style</em> will be detached. The same happens in reverse. Only one of them can be active at a time.</p>
 
 <h3 id="design-tokens-shadow">Shadow</h3>
@@ -654,6 +677,7 @@ ExtraBold Italic
 
 <h2 id="design-tokens-import-export">Importing and Exporting Tokens</h2>
 <p>You can export Tokens from Penpot and import them from your computer to a Penpot file. Tokens can be imported from the <strong>Tools</strong> option at the bottom of the <strong>Tokens</strong> tab.</p>
+<p>You can also <a href="/user-guide/design-systems/libraries/#import-tokens-from-library">import tokens from a connected shared library</a> using the Libraries modal. That import uses the library's full token definition (sets and themes included) and replaces the tokens already in your file.</p>
 <p>The <strong>Import</strong> functionality allows you to upload and replace the global token set using a single file or a folder with multiple files in it.</p>
 <p>These features support JSON files formatted according to specific guidelines and preserve the ability to undo changes if needed.</p>
 <figure>

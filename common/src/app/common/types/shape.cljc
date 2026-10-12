@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.common.types.shape
   (:require
@@ -24,12 +24,14 @@
    [app.common.types.path :as path]
    [app.common.types.plugins :as ctpg]
    [app.common.types.shape.attrs :refer [default-color]]
+   [app.common.types.shape.background-blur :as ctsbb]
    [app.common.types.shape.blur :as ctsb]
    [app.common.types.shape.export :as ctse]
    [app.common.types.shape.interactions :as ctsi]
    [app.common.types.shape.layout :as ctsl]
    [app.common.types.shape.shadow :as ctss]
    [app.common.types.shape.text :as ctsx]
+   [app.common.types.stroke :as stroke]
    [app.common.types.text :as txt]
    [app.common.types.token :as cto]
    [app.common.types.variant :as ctv]
@@ -61,8 +63,8 @@
              (map->Shape attrs))
      :clj  (map->Shape attrs)))
 
-(def stroke-caps-line #{:round :square})
-(def stroke-caps-marker #{:line-arrow :triangle-arrow :square-marker :circle-marker :diamond-marker})
+(def stroke-caps-line stroke/stroke-caps-line)
+(def stroke-caps-marker stroke/stroke-caps-marker)
 (def stroke-caps (conj (set/union stroke-caps-line stroke-caps-marker) nil))
 
 (def shape-types
@@ -137,6 +139,14 @@
    [:stroke-style {:optional true}
     [::sm/one-of #{:solid :dotted :dashed :mixed}]]
    [:stroke-width {:optional true} ::sm/safe-number]
+   ;; wasm-render only, backwards compatible
+   [:stroke-per-side {:optional true} :boolean]
+   [:stroke-width-top {:optional true} ::sm/safe-number]
+   [:stroke-width-right {:optional true} ::sm/safe-number]
+   [:stroke-width-bottom {:optional true} ::sm/safe-number]
+   [:stroke-width-left {:optional true} ::sm/safe-number]
+   [:stroke-dash {:optional true} ::sm/safe-number]
+   [:stroke-gap {:optional true} ::sm/safe-number]
    [:stroke-alignment {:optional true}
     [::sm/one-of #{:center :inner :outer}]]
    [:stroke-cap-start {:optional true}
@@ -145,7 +155,8 @@
     [::sm/one-of stroke-caps]]
    [:stroke-color {:optional true} clr/schema:hex-color]
    [:stroke-color-gradient {:optional true} clr/schema:gradient]
-   [:stroke-image {:optional true} clr/schema:image]])
+   [:stroke-image {:optional true} clr/schema:image]
+   [:hidden {:optional true} :boolean]])
 
 (def stroke-attrs
   "A set of attrs that corresponds to stroke data type"
@@ -218,6 +229,7 @@
    [:shadow {:optional true}
     [:vector {:gen/max 1} ctss/schema:shadow]]
    [:blur {:optional true} ctsb/schema:blur]
+   [:background-blur {:optional true} ctsbb/schema:background-blur]
    [:grow-type {:optional true}
     [::sm/one-of grow-types]]
    [:applied-tokens {:optional true} cto/schema:applied-tokens]
@@ -247,7 +259,14 @@
   [:map {:title "CircleAttrs"}])
 
 (def ^:private schema:svg-raw-attrs
-  [:map {:title "SvgRawAttrs"}])
+  [:map {:title "SvgRawAttrs"}
+   ;; An svg-raw shape can be a container: importing an SVG builds a
+   ;; tree of svg-raw shapes, and `cfh/group-like-shape?` treats an
+   ;; svg-raw with children as group-like. Declaring `:shapes` here
+   ;; keeps the child ids typed as uuid, so a JSON round trip (binfile
+   ;; export/import) decodes them back to uuids instead of leaving
+   ;; strings that no longer resolve against the objects map.
+   [:shapes {:optional true} [:vector {:gen/max 10} ::sm/uuid]]])
 
 (def schema:image-attrs
   [:map {:title "ImageAttrs"}
@@ -411,7 +430,7 @@
     :remote-synced :shape-ref :touched :blocked :collapsed :locked
     :hidden :masked-group :fills :proportion :proportion-lock :constraints-h
     :constraints-v :fixed-scroll :r1 :r2 :r3 :r4 :rotation :opacity :grids :exports
-    :strokes :blend-mode :interactions :shadow :blur :grow-type :applied-tokens
+    :strokes :blend-mode :interactions :shadow :blur :background-blur :grow-type :applied-tokens
     :plugin-data})
 
 (def ^:private allowed-shape-geom-attrs #{:x :y :width :height})
@@ -522,7 +541,7 @@
    :fills []
    :strokes [{:stroke-style :solid
               :stroke-alignment :inner
-              :stroke-width 2
+              :stroke-width 1
               :stroke-color clr/black
               :stroke-opacity 1}]})
 
@@ -653,6 +672,7 @@
 ;;  - Contraints
 ;;  - Shadow
 ;;  - Blur
+;;  - Background blur
 ;;  - Border radius
 (def ^:private basic-extract-props
   #{:fills
@@ -677,12 +697,38 @@
 
     :shadow
     :blur
+    :background-blur
 
     ;; Radius
     :r1
     :r2
     :r3
     :r4})
+
+(def ^:private text-extract-props
+  (into #{} cat [txt/root-attrs txt/paragraph-attrs txt/text-node-attrs]))
+
+(def ^:private layout-extract-props
+  (set ctsl/layout-attrs))
+
+;; Token attrs are not shape attrs (:fill token vs :fills attr, :m1..:m4 vs
+;; :layout-item-margin). A token may only travel with the value it resolves to,
+;; so its domain is derived from the props that are actually written. The attrs
+;; holding a map of edges are patched edge by edge, so only the edges present
+;; in the map are written.
+(defn- token-attrs
+  [props]
+  (reduce-kv (fn [result attr value]
+               (let [sub-attrs (when (map? value)
+                                 (not-empty (set (keys value))))]
+                 (into result
+                       (if (= :layout-gap attr)
+                         (if (some? sub-attrs)
+                           (filter cto/spacing-gap-keys sub-attrs)
+                           cto/spacing-gap-keys)
+                         (cto/shape-attr->token-attrs attr sub-attrs)))))
+             #{}
+             props))
 
 (defn extract-props
   "Retrieves an object with the 'pasteable' properties for a shape."
@@ -715,7 +761,15 @@
                   props)))
 
           (extract-layout-attrs [props shape]
-            (d/patch-object props (select-keys shape ctsl/layout-attrs)))]
+            (d/patch-object props (select-keys shape ctsl/layout-attrs)))
+
+          (extract-token-props [props shape]
+            (let [tokens (-> (:applied-tokens shape)
+                             (select-keys (token-attrs props))
+                             (not-empty))]
+              (cond-> props
+                (some? tokens)
+                (assoc :applied-tokens tokens))))]
 
     (let [;; For texts we don't extract the fill
           extract-props
@@ -723,10 +777,11 @@
       (-> shape
           (select-keys extract-props)
           (cond-> (cfh/text-shape? shape) (extract-text-props shape))
-          (cond-> (ctsl/any-layout? shape) (extract-layout-attrs shape))))))
+          (cond-> (ctsl/any-layout? shape) (extract-layout-attrs shape))
+          (extract-token-props shape)))))
 
 (defn patch-props
-  "Given the object of `extract-props` applies it to a shape. Adapt the shape if necesary"
+  "Given the object of `extract-props` applies it to a shape. Adapt the shape if necessary"
   [shape props objects]
 
   (letfn [(patch-text-props [shape props]
@@ -751,12 +806,33 @@
             (let [shape (d/patch-object shape (select-keys props ctsl/layout-attrs))]
               (cond-> shape
                 (ctsl/grid-layout? shape)
-                (ctsl/assign-cells objects))))]
+                (ctsl/assign-cells objects))))
+
+          (patched-props [shape props]
+            (let [text?  (cfh/text-shape? shape)
+                  frame? (cfh/frame-shape? shape)]
+              (select-keys props
+                           (filter (fn [attr]
+                                     (or (contains? basic-extract-props attr)
+                                         (and text? (contains? text-extract-props attr))
+                                         (and frame? (contains? layout-extract-props attr))))
+                                   (keys props)))))
+
+          (patch-token-props [shape props]
+            (let [attrs  (token-attrs (patched-props shape props))
+                  tokens (-> (:applied-tokens shape)
+                             (d/without-keys attrs)
+                             (merge (select-keys (:applied-tokens props) attrs))
+                             (not-empty))]
+              (if (some? tokens)
+                (assoc shape :applied-tokens tokens)
+                (dissoc shape :applied-tokens))))]
 
     (-> shape
         (d/patch-object (select-keys props basic-extract-props))
         (cond-> (cfh/text-shape? shape) (patch-text-props props))
-        (cond-> (cfh/frame-shape? shape) (patch-layout-props props)))))
+        (cond-> (cfh/frame-shape? shape) (patch-layout-props props))
+        (patch-token-props props))))
 
 
 

@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.ui.workspace.viewport.actions
   (:require
@@ -19,14 +19,10 @@
    [app.main.data.workspace.media :as dwm]
    [app.main.data.workspace.path :as dwdp]
    [app.main.data.workspace.specialized-panel :as-alias dwsp]
-   [app.main.data.workspace.texts :as dwt]
-   [app.main.features :as features]
    [app.main.refs :as refs]
    [app.main.store :as st]
    [app.main.ui.workspace.sidebar.assets.components :as wsac]
    [app.main.ui.workspace.viewport.viewport-ref :as uwvv]
-   [app.render-wasm.api :as wasm.api]
-   [app.render-wasm.wasm :as wasm.wasm]
    [app.util.dom :as dom]
    [app.util.dom.dnd :as dnd]
    [app.util.dom.normalize-wheel :as nw]
@@ -50,41 +46,41 @@
    (mf/deps id blocked hidden type selected edition drawing-tool text-editing?
             node-editing? grid-editing? drawing-path? create-comment? @z? @space?
             panning read-only?)
-   (fn [bevent]
+   (fn [event]
      ;; We need to handle editor related stuff here because
      ;; handling on editor dom node does not works properly.
-     (let [target  (dom/get-target bevent)
+     (let [target  (dom/get-target event)
            editor  (txu/closest-text-editor-content target)]
        ;; Capture mouse pointer to detect the movements even if cursor
        ;; leaves the viewport or the browser itself
        ;; https://developer.mozilla.org/en-US/docs/Web/API/Element/setPointerCapture
        (if editor
-         (.setPointerCapture editor (.-pointerId bevent))
-         (.setPointerCapture target (.-pointerId bevent))))
+         (.setPointerCapture editor (.-pointerId event))
+         (.setPointerCapture target (.-pointerId event))))
 
-     (when (or (dom/class? (dom/get-target bevent) "viewport-controls")
-               (dom/class? (dom/get-target bevent) "viewport-selrect")
-               (dom/child? (dom/get-target bevent) (dom/query ".grid-layout-editor")))
+     (when (or (dom/class? (dom/get-target event) "viewport-controls")
+               (dom/class? (dom/get-target event) "viewport-selrect")
+               (dom/child? (dom/get-target event) (dom/query ".grid-layout-editor")))
 
-       (dom/stop-propagation bevent)
+       (dom/stop-propagation event)
 
        (when-not @z?
-         (let [event  (dom/event->native-event bevent)
-               ctrl?  (kbd/ctrl? event)
-               meta?  (kbd/meta? event)
-               shift? (kbd/shift? event)
-               alt?   (kbd/alt? event)
-               mod?   (kbd/mod? event)
+         (let [native-event  (dom/event->native-event event)
+               ctrl?  (kbd/ctrl? native-event)
+               meta?  (kbd/meta? native-event)
+               shift? (kbd/shift? native-event)
+               alt?   (kbd/alt? native-event)
+               mod?   (kbd/mod? native-event)
 
-               left-click?   (and (not panning) (dom/left-mouse? bevent))
-               middle-click? (and (not panning) (dom/middle-mouse? bevent))]
+               left-click?   (and (not panning) (dom/left-mouse? event))
+               middle-click? (and (not panning) (dom/middle-mouse? event))]
 
            (cond
              (or middle-click? (and left-click? @space?))
              (do
-               (dom/prevent-default bevent)
+               (dom/prevent-default event)
                (if mod?
-                 (let [raw-pt   (dom/get-client-position event)
+                 (let [raw-pt   (dom/get-client-position native-event)
                        pt       (uwvv/point->viewport raw-pt)]
                    (st/emit! (dw/start-zooming pt)))
                  (st/emit! (dw/start-panning))))
@@ -95,17 +91,7 @@
                          ::dwsp/interrupt)
 
                (when (and (not= edition id) (or text-editing? grid-editing?))
-                 (st/emit! (dw/clear-edition-mode))
-                 ;; Sync and stop WASM text editor when exiting edit mode
-                 (when (and text-editing?
-                            (features/active-feature? @st/state "render-wasm/v1")
-                            wasm.wasm/context-initialized?)
-                   (when-let [{:keys [shape-id content]} (wasm.api/text-editor-sync-content)]
-                     (st/emit! (dwt/v2-update-text-shape-content
-                                shape-id content
-                                :update-name? true
-                                :finalize? true)))
-                   (wasm.api/text-editor-stop)))
+                 (st/emit! (dw/clear-edition-mode)))
 
                (when (and (not text-editing?)
                           (not blocked)
@@ -191,26 +177,14 @@
              pt     (uwvv/point->viewport raw-pt)]
          (st/emit! (mse/->MouseEvent :click ctrl? shift? alt? meta?))
 
+         ;; FIXME: Maybe we can transform this into a cond instead
+         ;; of multiple (when)s.
          (when (and hovering?
                     (not @space?)
                     (not edition)
                     (not drawing-path?)
                     (not drawing-tool))
            (st/emit! (dw/select-shape (:id @hover) shift?)))
-
-         ;; If clicking on a text shape and wasm render is enabled, forward cursor position
-         (when (and hovering?
-                    (not @space?)
-                    edition  ;; Only when already in edit mode
-                    (not drawing-path?)
-                    (not drawing-tool))
-           (let [hover-shape @hover]
-             (when (and (= :text (:type hover-shape))
-                        (features/active-feature? @st/state "text-editor-wasm/v1")
-                        wasm.wasm/context-initialized?)
-               (let [raw-pt (dom/get-client-position event)]
-                 ;; FIXME
-                 (wasm.api/text-editor-set-cursor-from-point (.-x raw-pt) (.-y raw-pt))))))
 
          (when (and @z?
                     (not @space?)
@@ -222,10 +196,10 @@
              (st/emit! (dw/increase-zoom pt)))))))))
 
 (defn on-double-click
-  [hover hover-ids hover-top-frame-id drawing-path? objects edition drawing-tool z? read-only?]
+  [hover hover-ids selected hover-top-frame-id drawing-path? objects edition drawing-tool z? read-only?]
 
   (mf/use-callback
-   (mf/deps @hover @hover-ids @hover-top-frame-id drawing-path? edition drawing-tool @z? read-only?)
+   (mf/deps @hover @hover-ids selected @hover-top-frame-id drawing-path? edition drawing-tool @z? read-only?)
    (fn [event]
      (dom/stop-propagation event)
      (when-not @z?
@@ -234,7 +208,16 @@
              alt? (kbd/alt? event)
              meta? (kbd/meta? event)
 
-             {:keys [id type] :as shape} (or @hover (get objects (first @hover-ids)))
+             selected-id-under-cursor
+             (->> @hover-ids
+                  (filter selected)
+                  last)
+
+             {:keys [id type] :as shape}
+             (or (when selected-id-under-cursor
+                   (get objects selected-id-under-cursor))
+                 @hover
+                 (get objects (first @hover-ids)))
 
              editable? (contains? #{:text :rect :path :image :circle} type)
 
@@ -253,13 +236,7 @@
                 (and editable? (not= id edition) (not read-only?))
                 (do
                   (st/emit! (dw/select-shape id)
-                            (dw/start-editing-selected))
-                  ;; If using wasm text-editor, notify WASM to start editing this shape
-                  ;; and set cursor position from the double-click location
-                  (when (and (= type :text)
-                             (features/active-feature? @st/state "text-editor-wasm/v1")
-                             wasm.wasm/context-initialized?)
-                    (wasm.api/text-editor-start id)))
+                            (dw/start-editing-selected)))
 
                 (some? selected-shape)
                 (do
@@ -310,20 +287,20 @@
        ;; Release pointer on mouse up
        (.releasePointerCapture target (.-pointerId event)))
 
-     (let [event (dom/event->native-event event)
-           ctrl? (kbd/ctrl? event)
-           shift? (kbd/shift? event)
-           alt? (kbd/alt? event)
-           meta? (kbd/meta? event)
+     (let [native-event (dom/event->native-event event)
+           ctrl? (kbd/ctrl? native-event)
+           shift? (kbd/shift? native-event)
+           alt? (kbd/alt? native-event)
+           meta? (kbd/meta? native-event)
 
-           left-click? (= 1 (.-which event))
-           middle-click? (= 2 (.-which event))]
+           left-click? (= 1 (.-which native-event))
+           middle-click? (= 2 (.-which native-event))]
 
        (when left-click?
          (st/emit! (mse/->MouseEvent :up ctrl? shift? alt? meta?)))
 
        (when middle-click?
-         (dom/prevent-default event)
+         (dom/prevent-default native-event)
 
          ;; We store this so in Firefox the middle button won't do a paste of the content
          (mf/set-ref-val! disable-paste-ref true)
@@ -355,7 +332,8 @@
            editing? (or (txu/some-text-editor-content? target)
                         (= "rich-text" (obj/get target "className"))
                         (= "INPUT" (obj/get target "tagName"))
-                        (= "TEXTAREA" (obj/get target "tagName")))]
+                        (= "TEXTAREA" (obj/get target "tagName"))
+                        (true? (.-isContentEditable target)))]
 
        (when-not (.-repeat bevent)
          (st/emit! (kbd/->KeyboardEvent :down key shift? ctrl? alt? meta? mod? editing? event)))))))
@@ -374,7 +352,8 @@
            editing? (or (txu/some-text-editor-content? target)
                         (= "rich-text" (obj/get target "className"))
                         (= "INPUT" (obj/get target "tagName"))
-                        (= "TEXTAREA" (obj/get target "tagName")))]
+                        (= "TEXTAREA" (obj/get target "tagName"))
+                        (true? (.-isContentEditable target)))]
        (st/emit! (kbd/->KeyboardEvent :up key shift? ctrl? alt? meta? mod? editing? event))))))
 
 (defn on-pointer-move [move-stream]
@@ -392,16 +371,14 @@
 
          (rx/push! move-stream pt)
          (reset! last-position raw-pt)
-         (st/emit! (mse/->PointerEvent :delta delta
-                                       (kbd/ctrl? event)
-                                       (kbd/shift? event)
-                                       (kbd/alt? event)
-                                       (kbd/meta? event)))
+         ;; Single store emit per move: viewport `pt` + `movement` (old :delta `pt`) avoids
+         ;; doubling Potok + `st/stream` work on every pointermove.
          (st/emit! (mse/->PointerEvent :viewport pt
                                        (kbd/ctrl? event)
                                        (kbd/shift? event)
                                        (kbd/alt? event)
-                                       (kbd/meta? event))))))))
+                                       (kbd/meta? event)
+                                       delta)))))))
 
 (defn- schedule-zoom!
   "Accumulate a compound zoom scale and a cursor point into `state`, scheduling

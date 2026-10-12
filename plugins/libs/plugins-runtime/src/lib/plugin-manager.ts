@@ -7,6 +7,7 @@ import { openUIApi } from './api/openUI.api.js';
 import { OpenUIOptions } from './models/open-ui-options.model.js';
 import { RegisterListener } from './models/plugin.model.js';
 import { openUISchema } from './models/open-ui-options.schema.js';
+import { validateUIUrl } from './validate-url.js';
 
 export async function createPluginManager(
   context: Context,
@@ -25,6 +26,14 @@ export async function createPluginManager(
 
   const allowDownloads = !!manifest.permissions.find(
     (s) => s === 'allow:downloads',
+  );
+
+  const allowClipboardRead = !!manifest.permissions.find(
+    (s) => s === 'clipboard:read',
+  );
+
+  const allowClipboardWrite = !!manifest.permissions.find(
+    (s) => s === 'clipboard:write',
   );
 
   const themeChangeId = context.addListener('themechange', (theme: Theme) => {
@@ -86,12 +95,21 @@ export async function createPluginManager(
   const openModal = (name: string, url: string, options?: OpenUIOptions) => {
     const theme = context.theme as Theme;
     const modalUrl = prepareUrl(manifest, url, { theme });
+    validateUIUrl(modalUrl, manifest.host);
 
     if (modal?.getAttribute('iframe-src') === modalUrl) {
       return;
     }
 
-    modal = openUIApi(name, modalUrl, theme, options, allowDownloads);
+    modal = openUIApi(
+      name,
+      modalUrl,
+      theme,
+      options,
+      allowDownloads,
+      allowClipboardRead,
+      allowClipboardWrite,
+    );
 
     modal.setTheme(theme);
 

@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 
 (ns app.util.code-gen.style-css-values
@@ -35,13 +35,25 @@
 
           parent-value (dm/get-in parent [:selrect coord])
 
+          ;; In CSS an absolutely positioned element is placed relative to the
+          ;; parent's padding box (i.e. inside its border), but Penpot
+          ;; coordinates are relative to the border box. We discount the parent
+          ;; border width so the element keeps its position when the parent has
+          ;; a border.
+          parent-stroke (first (:strokes parent))
+          border-width  (if (and (some? parent-stroke)
+                                 (not= :none (:stroke-style parent-stroke))
+                                 (not (cgc/svg-markup? parent)))
+                          (d/nilv (:stroke-width parent-stroke) 0)
+                          0)
+
           [selrect _ _]
           (-> (:points shape)
               (gsh/transform-points (gsh/shape->center parent) (:transform-inverse parent (gmt/matrix)))
               (gsh/calculate-geometry))
 
           shape-value (get selrect coord)]
-      (- shape-value parent-value))))
+      (- shape-value parent-value border-width))))
 
 (defn get-shape-size
   [shape objects type]
@@ -62,8 +74,13 @@
       (and (ctl/flex-layout-immediate-child? objects shape) (= sizing :fill))
       nil
 
-      (or (and (ctl/any-layout? shape) (= sizing :auto) (not (cgc/svg-markup? shape)))
-          (and (ctl/grid-layout-immediate-child? objects shape) (= sizing :fill)))
+      ;; Grid fill children stretch to fill their cell (minus margins) via
+      ;; justify-self/align-self: stretch, so we avoid emitting an explicit
+      ;; 100% size that would overflow the track when a margin is present.
+      (and (ctl/grid-layout-immediate-child? objects shape) (= sizing :fill))
+      nil
+
+      (and (ctl/any-layout? shape) (= sizing :auto) (not (cgc/svg-markup? shape)))
       sizing
 
       (some? (:selrect shape))
@@ -196,10 +213,31 @@
     (when (and (not (cgc/svg-markup? shape)) (not (cfh/group-shape? shape)) single-fill?)
       (fill->color (first fills)))))
 
+(defn stroke-per-side-widths
+  "Returns [top right bottom left] when the stroke has per-side widths
+  enabled and the sides actually differ; nil otherwise."
+  [stroke]
+  (when (:stroke-per-side stroke)
+    (let [width  (:stroke-width stroke)
+          top    (d/nilv (:stroke-width-top stroke) width)
+          right  (d/nilv (:stroke-width-right stroke) width)
+          bottom (d/nilv (:stroke-width-bottom stroke) width)
+          left   (d/nilv (:stroke-width-left stroke) width)]
+      (when-not (= top right bottom left)
+        [top right bottom left]))))
+
 (defn- get-border
   [shape]
   (when-not (cgc/svg-markup? shape)
     (get-stroke-data (first (:strokes shape)))))
+
+(defn- get-border-side-width
+  [shape-or-stroke index]
+  (let [stroke (if (contains? shape-or-stroke :strokes)
+                 (first (:strokes shape-or-stroke))
+                 shape-or-stroke)]
+    (when-let [widths (stroke-per-side-widths stroke)]
+      {:width (nth widths index)})))
 
 (defn- get-border-radius
   [{:keys [rx r1 r2 r3 r4] :as shape}]
@@ -257,6 +295,11 @@
   [shape]
   (when-not (cgc/svg-markup? shape)
     (get-in shape [:blur :value])))
+
+(defn- get-backdrop-filter
+  [shape]
+  (when-not (cgc/svg-markup? shape)
+    (get-in shape [:background-blur :value])))
 
 (defn- get-display
   [shape]
@@ -407,8 +450,10 @@
 
 (defn- get-margin
   [{:keys [layout-item-margin] :as shape} objects]
-
-  (when (ctl/any-layout-immediate-child? objects shape)
+  ;; Absolutely positioned children are out of the layout flow, so their
+  ;; margin must not be emitted.
+  (when (and (ctl/any-layout-immediate-child? objects shape)
+             (not (ctl/position-absolute? shape)))
     (let [default-margin {:m1 0 :m2 0 :m3 0 :m4 0}
           {:keys [m1 m2 m3 m4]} (merge default-margin layout-item-margin)]
       (when (or (not= m1 0) (not= m2 0) (not= m3 0) (not= m4 0))
@@ -416,22 +461,22 @@
 
 (defn- get-margin-block-start
   [{:keys [layout-item-margin] :as shape} objects]
-  (when (and (ctl/any-layout-immediate-child? objects shape) (:m1 layout-item-margin) (not= (:m1 layout-item-margin) 0))
+  (when (and (ctl/any-layout-immediate-child? objects shape) (not (ctl/position-absolute? shape)) (:m1 layout-item-margin) (not= (:m1 layout-item-margin) 0))
     [(:m1 layout-item-margin)]))
 
 (defn- get-margin-inline-end
   [{:keys [layout-item-margin] :as shape} objects]
-  (when (and (ctl/any-layout-immediate-child? objects shape) (:m2 layout-item-margin) (not= (:m2 layout-item-margin) 0))
+  (when (and (ctl/any-layout-immediate-child? objects shape) (not (ctl/position-absolute? shape)) (:m2 layout-item-margin) (not= (:m2 layout-item-margin) 0))
     [(:m2 layout-item-margin)]))
 
 (defn- get-margin-block-end
   [{:keys [layout-item-margin] :as shape} objects]
-  (when (and (ctl/any-layout-immediate-child? objects shape) (:m3 layout-item-margin) (not= (:m3 layout-item-margin) 0))
+  (when (and (ctl/any-layout-immediate-child? objects shape) (not (ctl/position-absolute? shape)) (:m3 layout-item-margin) (not= (:m3 layout-item-margin) 0))
     [(:m3 layout-item-margin)]))
 
 (defn- get-margin-inline-start
   [{:keys [layout-item-margin] :as shape} objects]
-  (when (and (ctl/any-layout-immediate-child? objects shape) (:m4 layout-item-margin) (not= (:m4 layout-item-margin) 0))
+  (when (and (ctl/any-layout-immediate-child? objects shape) (not (ctl/position-absolute? shape)) (:m4 layout-item-margin) (not= (:m4 layout-item-margin) 0))
     [(:m4 layout-item-margin)]))
 
 
@@ -483,7 +528,10 @@
     (let [parent (get objects (:parent-id shape))
           cell (ctl/get-cell-by-shape-id parent (:id shape))
           align-self (:align-self cell)]
-      (when (not= align-self :auto) align-self))))
+      (cond
+        (not= align-self :auto) align-self
+        ;; Fill children rely on stretch to fill the cell minus their margins.
+        (= :fill (:layout-item-v-sizing shape)) :stretch))))
 
 (defn- get-justify-self
   [shape objects]
@@ -492,7 +540,10 @@
     (let [parent (get objects (:parent-id shape))
           cell (ctl/get-cell-by-shape-id parent (:id shape))
           justify-self (:justify-self cell)]
-      (when (not= justify-self :auto) justify-self))))
+      (cond
+        (not= justify-self :auto) justify-self
+        ;; Fill children rely on stretch to fill the cell minus their margins.
+        (= :fill (:layout-item-h-sizing shape)) :stretch))))
 
 (defn- get-grid-auto-flow
   [shape]
@@ -535,6 +586,10 @@
     :border-style (get-border-style shape)
     :border-width (get-border-width shape)
     :border-color (get-border-color shape)
+    :border-block-start-width (get-border-side-width shape 0)
+    :border-inline-end-width (get-border-side-width shape 1)
+    :border-block-end-width (get-border-side-width shape 2)
+    :border-inline-start-width (get-border-side-width shape 3)
     :border-radius (get-border-radius shape)
     :border-start-start-radius (get-border-start-start-radius shape)
     :border-start-end-radius (get-border-start-end-radius shape)
@@ -546,6 +601,7 @@
     :opacity (get-opacity shape)
     :box-shadow (get-box-shadow shape)
     :filter (get-filter shape)
+    :backdrop-filter (get-backdrop-filter shape)
     :overflow (get-overflow shape)
 
     ;; Display

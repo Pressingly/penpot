@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.srepl.helpers
   "A  main namespace for server repl."
@@ -15,7 +15,7 @@
    [app.common.time :as ct]
    [app.db :as db]
    [app.features.file-snapshots :as fsnap]
-   [app.main :as main]))
+   [app.system :as sys]))
 
 (def ^:dynamic *system* nil)
 
@@ -37,13 +37,13 @@
 (defn get-file
   "Get the migrated data of one file."
   ([id]
-   (get-file (or *system* main/system) id))
+   (get-file (or *system* sys/system) id))
   ([system id]
    (db/run! system bfc/get-file id)))
 
 (defn get-raw-file
   "Get the migrated data of one file."
-  ([id] (get-raw-file (or *system* main/system) id))
+  ([id] (get-raw-file (or *system* sys/system) id))
   ([system id]
    (db/run! system
             (fn [system]
@@ -153,7 +153,7 @@
 
 (defn process-file!
   [system file-id update-fn
-   & {:keys [::snapshot-label ::validate? ::with-libraries?]
+   & {:keys [::profile-id ::snapshot-label ::validate? ::with-libraries?]
       :or {validate? true} :as opts}]
   (let [file  (bfc/get-file system file-id
                             :lock-for-update? true
@@ -177,8 +177,9 @@
       (when (string? snapshot-label)
         (fsnap/create! system file
                        {:label snapshot-label
+                        :profile-id profile-id
                         :deleted-at (ct/in-future {:days 30})
-                        :created-by "admin"}))
+                        :created-by "system"}))
 
       (let [file' (update file' :revn inc)]
         (bfc/update-file! system file' opts)

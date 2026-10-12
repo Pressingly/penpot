@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.ui.workspace.colorpicker.gradients
   (:require-macros [app.main.style :as stl])
@@ -13,7 +13,7 @@
    [app.common.types.color :as cc]
    [app.common.types.fills :as types.fills]
    [app.main.features :as features]
-   [app.main.ui.components.numeric-input :refer [numeric-input*]]
+   [app.main.ui.components.numeric-input :as deprecated-input]
    [app.main.ui.components.reorder-handler :refer [reorder-handler*]]
    [app.main.ui.components.select :refer [select]]
    [app.main.ui.ds.buttons.icon-button :refer [icon-button*]]
@@ -147,7 +147,7 @@
 
      [:div {:class (stl/css :offset-input-wrapper)}
       [:span {:class (stl/css :icon-text)} "%"]
-      [:> numeric-input*
+      [:> deprecated-input/numeric-input*
        {:value (-> offset offset->string)
         :on-change handle-change-offset
         :default 100
@@ -233,6 +233,7 @@
          (mf/deps on-add-stop-preview)
          (fn [^js e]
            (let [offset (-> (event->offset e)
+                            (mth/clamp 0 1)
                             (mth/precision 2))]
              (when on-add-stop-preview
                (on-add-stop-preview offset)))))

@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.common.schema
   (:refer-clojure :exclude [deref merge parse-uuid parse-long parse-double parse-boolean type keys select-keys])
@@ -448,18 +448,37 @@
    ::oapi/type "string"
    ::oapi/format "uuid"}})
 
-(def email-re #"[a-zA-Z0-9_.+-\\\\]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+")
+(register!
+ {:type ::user-provided-uuid
+  :pred uuid/user-provided?
+  :type-properties
+  {:title "user-provided-uuid"
+   :description "UUID provided by the user (v4, v7 or v8)"
+   :error/message "should be a user provided uuid (v4, v7 or v8)"
+   :gen/gen (sg/uuid)
+   :decode/string parse-uuid
+   :decode/json parse-uuid
+   :encode/string encode-uuid
+   :encode/json encode-uuid
+   ::oapi/type "string"
+   ::oapi/format "uuid"}})
+
+;; Strict email regex aligned with app.common.spec/email-re.
+;; Local part: valid RFC chars, no leading/trailing dot, no consecutive dots.
+;; Domain: labels can't start/end with hyphen, no empty labels.
+;; TLD: at least 2 alphabetic chars.
+(def email-re
+  #"[a-zA-Z0-9!#$%&'*+/=?^_`{|}~-]+(\.[a-zA-Z0-9!#$%&'*+/=?^_`{|}~-]+)*@[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,63}")
 
 (defn parse-email
   [s]
-  (if (string? s)
-    (first (re-seq email-re s))
-    nil))
+  (when (and (string? s) (re-matches email-re s))
+    s))
 
 (defn email-string?
   [s]
   (and (string? s)
-       (re-seq email-re s)))
+       (some? (re-matches email-re s))))
 
 (register!
  {:type ::email
@@ -868,7 +887,7 @@
 (defn parse-boolean
   [v]
   (if (string? v)
-    (case v
+    (case (str/lower v)
       ("true" "t" "1") true
       ("false" "f" "0") false
       v)

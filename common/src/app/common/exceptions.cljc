@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.common.exceptions
   "A helpers for work with exceptions."
@@ -245,7 +245,6 @@
    (defn format-throwable
      [cause & {:as opts}]
      (with-out-str
-       (println "====================")
        (when-let [exdata (ex-data cause)]
          (when-let [hint (or (get exdata :hint)
                              (ex-message cause))]
@@ -275,9 +274,7 @@
        (when-let [trace (.-stack cause)]
          (println "Trace:")
          (println "--------------------")
-         (println (.-stack cause)))
-
-       (println "===================="))))
+         (println (.-stack cause))))))
 
 (defn first-line
   [s]

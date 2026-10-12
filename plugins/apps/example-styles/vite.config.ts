@@ -1,9 +1,7 @@
 /// <reference types="vitest/config" />
 import { defineConfig } from 'vite';
-import tsconfigPaths from 'vite-tsconfig-paths';
-
 export default defineConfig({
-  root: __dirname,
+  root: import.meta.dirname,
   server: {
     port: 4202,
     host: '0.0.0.0',
@@ -14,7 +12,9 @@ export default defineConfig({
     host: '0.0.0.0',
   },
 
-  plugins: [tsconfigPaths()],
+  resolve: {
+    tsconfigPaths: true,
+  },
 
   build: {
     outDir: '../../dist/apps/example-styles',

@@ -45,12 +45,194 @@ This is an incomplete list of devenv related subcommands found on
 manage.sh script:
 
 ```bash
-./manage.sh build-devenv-local # builds the local devenv docker image (called by run-devenv automatically when needed)
-./manage.sh start-devenv       # starts background running containers
-./manage.sh run-devenv         # enters to new tmux session inside of one of the running containers
-./manage.sh stop-devenv        # stops background running containers
-./manage.sh drop-devenv        # removes all the containers, volumes and networks used by the devenv
+./manage.sh build-devenv --local            # builds the local devenv docker image
+./manage.sh start-devenv                    # brings up the shared infra + ws0 in background
+./manage.sh run-devenv --attach             # bring up main devenv instance and attach to its tmux session
+./manage.sh run-devenv --agentic --attach   # bring up main devenv instance in agentic mode and attach tmux
+./manage.sh attach-devenv                   # re-attaches to the tmux session of a running instance
+./manage.sh stop-devenv                     # stops one instance (or --all); infra stops with the last
+./manage.sh drop-devenv                     # removes containers (data volumes preserved)
 ```
+
+### Agentic Mode
+
+The `--agentic` flag enables additional features for AI-assisted development.
+See the dedicated section [Agentic Dev Environment](../agentic-devenv/) for details.
+
+### Parallel workspaces
+
+The devenv runs as separate compose projects:
+  * shared infra (`penpotdev-infra`: Postgres, RustFS, Valkey, mailer, LDAP)
+  * `penpotdev-wsN` project per runtime instance.
+     - `ws0` (a.k.a. `main`) is the current state of your repo;
+     - `ws1` and up are clones that you maintain explicitly under `${PENPOT_WORKSPACES_DIR}/wsN/`
+       (default `~/.penpot/penpot_workspaces/`). You can explicitly sync them
+       with the `--sync` flag (automatic on first start).
+
+Each call to `run-devenv` brings up one instance. Workspaces are independent
+and can be started and stopped in any order:
+
+```bash
+./manage.sh run-devenv                 # main (ws0)
+./manage.sh run-devenv --ws 1          # ws1
+./manage.sh run-devenv --ws 2 --sync   # ws2, re-seeding from the live repo
+```
+
+Starting an instance that is already running is an error. `--sync` is only
+valid for `ws1+`; on ws0 it errors out. When a `ws1+` workspace directory
+does not exist yet, the first start syncs it implicitly from the live repo.
+Otherwise the workspace contents are left untouched unless `--sync` is passed
+again. Live-repo Git in a fragile state (rebase / merge / cherry-pick /
+`index.lock`) blocks all syncs.
+
+`frontend/resources/public/js/config.js` (which is gitignored and configures
+the frontend's MCP flag) is copied into each workspace on its initial sync
+only. After that the developer maintains it in each workspace; subsequent
+`--sync` runs leave the workspace copy alone.
+
+The Claude Code skills link, `.claude/skills`, is seeded the same way: it is
+gitignored, so the sync does not carry it, and the first sync creates it as a
+link to `.agents/skills`. A workspace that already has that path keeps what it
+has. No `CLAUDE.md` is created, because Claude Code reads `AGENTS.md` itself
+in a project that has none.
+
+Stopping is equally flexible — each workspace is independent. Shared infra
+stops only when no instances remain running:
+
+```bash
+./manage.sh stop-devenv --ws 1           # stops ws1; ws0 + infra stay up
+./manage.sh stop-devenv                  # stops ws0; infra stays up if ws1+ still running
+./manage.sh stop-devenv --all            # stops every ws1+ first, then ws0 + infra
+```
+
+Host ports are offset by `10000 × N`:
+
+| Service | ws0 | ws1 | ws2 |
+|---|---|---|---|
+| Penpot UI (HTTPS) | `https://localhost:3449` | `https://localhost:13449` | `https://localhost:23449` |
+| MCP HTTP stream | `http://localhost:4401/mcp` | `http://localhost:14401/mcp` | `http://localhost:24401/mcp` |
+| Serena MCP | `http://localhost:14181` | `http://localhost:24181` | `http://localhost:34181` |
+
+Container-internal ports stay fixed. Target a specific instance with
+`--ws N` on `attach-devenv`, `run-devenv`, `stop-devenv`,
+`start-coding-agent`, `run-devenv-shell`, and `isolated-shell`. `--ws`
+accepts a **non-negative integer only** — `--ws main` or `--ws ws1` is
+rejected, keeping the flag shape uniform across commands. `run-devenv` is
+ws0-only and takes no workspace flag. `run-devenv` also accepts
+`--serena-context CTX` (used together with `--agentic`) and `--git-user-name NAME` / `--git-user-email
+EMAIL` (see below).
+
+Configuration lives in one tracked file, `docker/devenv/defaults.env` (the
+ws0 baseline); `ws1+` values (offset ports, `wsN` container/volume names) are
+derived and injected automatically, so there is no per-instance file to edit.
+
+### Git identity inside the container
+
+`run-devenv` wires a Git author identity into the container's
+**global** git config (`git config --global user.{name,email}`) so commits
+made from inside the devenv carry a real author/committer. Without this,
+the container would commit as the unconfigured `penpot@<container>`
+fallback — usable but useless for review.
+
+The values come from `--git-user-name NAME` / `--git-user-email EMAIL`
+when passed, or from your host's effective `git config user.{name,email}`
+otherwise. "Effective" here means the values plain `git config user.X`
+returns at the working directory `manage.sh` is invoked from — local
+(`<repo>/.git/config`) overrides global (`~/.gitconfig`), matching what
+`git commit` on the host would record. If neither is available the script
+prints a warning and continues — commits will fail inside the container
+until you set an identity. The values are applied every time
+`run-devenv` brings an instance up (idempotent), so re-running
+with different flags is the way to change the in-container identity.
+
+### Personal opencode config inside the container
+
+`run-devenv --opencode-config-dir DIR` bind-mounts a host directory over the
+container's `~/.config/opencode` (opencode's global config dir). This is how
+you keep personal agents, prompts, and skills in a separate repository and
+use them inside the devenv without committing them here or leaving untracked
+files in the repo:
+
+```bash
+./manage.sh run-devenv --agentic --opencode-config-dir ../penpot-opencode
+```
+
+The path must be an existing directory; `~` is expanded and the value is
+resolved to an absolute path automatically. The mount is applied at container
+creation, so changing it requires stopping and re-running `run-devenv` for
+that instance, and it applies only to instances brought up with the flag —
+other workspaces mount nothing. The directory is shared read-write with the
+container (same UID mapping as the source tree). Opencode's own state
+(sessions, `auth.json`) lives in `~/.local/share/opencode`, which stays in
+the container's data volume regardless of this flag.
+
+### Shared state and workers
+
+All instances share one Penpot database and one RustFS bucket; users, teams,
+files, and MCP tokens are visible from every instance. Per-instance Valkey
+keeps msgbus Pub/Sub channels (collab broadcasts, team-org notifications,
+file-summary cache, rate-limit counters) isolated.
+
+Background workers (`enable-backend-worker`) run only on ws0 — ws1+ overlays
+disable it. ws1+ RPC handlers still enqueue tasks into the shared Postgres
+`task` table; ws0's dispatcher claims them via `FOR UPDATE SKIP LOCKED` and
+runs them against the shared DB and RustFS. Workers are fire-and-forget:
+`wrk/submit!` inserts a row and returns; RPC handlers never wait on
+completion. The "ws0 only" policy avoids multi-instance worker races (cron
+dedup is best-effort across instances, `wrk/submit!` `dedupe` is racy across
+submitters).
+
+Each workspace is independent and can be started and stopped in any order.
+Shared infrastructure shuts down only when no instances remain running.
+
+### Upgrading from a pre-parallel devenv
+
+The devenv compose configuration has been split into two files and reorganized
+into separate compose projects per runtime instance:
+
+- `docker/devenv/docker-compose.infra.yml` (Postgres, RustFS, Valkey, mailer,
+  LDAP)
+  runs under the compose project `penpotdev-infra`.
+- `docker/devenv/docker-compose.main.yml` (one main container + its Valkey)
+  runs once per runtime instance under `penpotdev-ws0`, `penpotdev-ws1`, ….
+- Both projects join the external Docker network `penpot_shared`, created
+  idempotently by `manage.sh`.
+- Configuration lives in `docker/devenv/defaults.env` (the ws0 baseline);
+  ws1+ overrides are computed and injected at compose time.
+
+If you had the devenv running on the previous single-project (`penpotdev`)
+layout, leftover containers and the auto-generated `penpotdev_default`
+network must be removed before bringing the new ws0 instance up. The named
+data volumes (`penpotdev_postgres_data_pg18`, `penpotdev_rustfs_data`,
+`penpotdev_mailpit_data`, `penpotdev_user_data`, `penpotdev_valkey_data`) are
+pinned by explicit `name:` entries in the new compose files. The legacy
+`penpotdev_postgres_data_pg16` and `penpotdev_minio_data` volumes remain
+untouched. PostgreSQL 16 data and MinIO objects are not migrated automatically.
+
+PostgreSQL 18 stores its versioned data directory under
+`/var/lib/postgresql/18/docker`, so the devenv mounts its volume at
+`/var/lib/postgresql`. To retain data from PostgreSQL 16, export and restore it
+with `pg_dump` and `pg_restore`; do not mount the PostgreSQL 16 volume directly
+in the PostgreSQL 18 container.
+
+One-time cleanup, then bring up ws0:
+
+```bash
+# Stop and remove the old single-project containers (data volumes stay).
+docker stop penpot-devenv-main penpot-devenv-valkey 2>/dev/null
+docker rm   penpotdev-postgres-1 penpotdev-minio-1 penpotdev-minio-setup-1 \
+            penpotdev-mailer-1   penpotdev-ldap-1 \
+            penpot-devenv-main   penpot-devenv-valkey 2>/dev/null
+
+# Remove the orphaned auto-generated network.
+docker network rm penpotdev_default 2>/dev/null
+
+# Bring up infra + ws0 under the new project layout.
+./manage.sh run-devenv
+```
+
+After the cleanup, normal `./manage.sh start-devenv` / `run-devenv` work against the new layout. The legacy
+`penpotdev` compose project is no longer used.
 
 Having the container running and tmux opened inside the container,
 you are free to execute commands and open as many shells as you want.
@@ -161,14 +343,81 @@ If an exception is raised or an error occurs when code is reloaded, just use
 <code class="language-bash">(repl/refresh-all)</code> to finish loading the code correctly and then use
 <code class="language-bash">(restart)</code> again.
 
+
+### MCP Server
+
+To set up the MCP server local development environment it's needed some additional steps.
+
+### Activate the MCP features variables
+
+Create or modify the file `frontend/resources/public/js/config.js` and add (or modify) the `penpotFlags` to add the following:
+
+```javascript
+var penpotFlags = "enable-mcp enable-access-tokens"
+```
+
+This will enable the MCP in the workspace and in the user settings profile.
+
+### Start the DEVENV
+
+Start as usual the development environment
+
+```
+./manage.sh start-devenv
+```
+
+Once the TMUX is showing, create a new tmux tab (Ctrl+b c). And in the new tab run:
+
+```bash
+cd mcp
+pnpm run bootstrap:multi-user
+```
+
+This will start the MCP server and the multi-user plugin that will be loaded automaticaly by Penpot.
+
+There is a NGINX proxy that makes a proxy-pass from outside the docker container so you don't need to remember the ports it's using.
+
+### Configure the MCP in your tool
+
+You can use the instructions in [/mcp/#remote-mcp-in-5-steps](/mcp/#remote-mcp-in-5-steps) to setup the server.
+
+Warning: by default Cursor won't support HTTPS with a self-signed certificate. In order to work around this issue please use the port `3450` that uses an standard `http` protocol
+
+An example of your cursor configuration can be:
+
+```javascript
+{
+    "mcpServers": {
+        "penpot-devenv": {
+            "url": "http://localhost:3450/mcp/stream?userToken=TOKEN",
+            "type": "http"
+        }
+    }
+}
+```
+
+## Object storage
+
+The devenv uses RustFS for S3-compatible object storage. Its API is available
+at [http://localhost:9000](http://localhost:9000), and its management console
+is available at [http://localhost:9001](http://localhost:9001). Log in to the
+console with `penpot-devenv` as both the access key and secret key.
+
+Both ports bind only to the host loopback interface and are not exposed to the
+local network.
+
 ## Email
 
-To test email sending, the devenv includes [MailCatcher](https://mailcatcher.me/),
-a SMTP server that is used for develop. It does not send any mail outbounds.
-Instead, it stores them in memory and allows to browse them via a web interface
-similar to a webmail client. Simply navigate to:
+To test email sending, the devenv includes
+[Mailpit](https://mailpit.axllent.org/), an SMTP server for development. It does
+not send mail externally. Instead, it stores messages in a persistent Docker
+volume and provides a webmail-like interface. Simply navigate to:
 
 [http://localhost:1080](http://localhost:1080)
+
+The inbox persists when the container is recreated. `drop-devenv` preserves
+the `penpotdev_mailpit_data` volume, together with the other devenv data
+volumes.
 
 ## Create user
 

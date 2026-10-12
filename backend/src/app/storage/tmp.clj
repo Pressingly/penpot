@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.storage.tmp
   "Temporal files service all created files will be tried to clean after
@@ -92,6 +92,25 @@
   (let [path (tempfile* opts)]
     (sp/offer! queue [path (some-> min-age ct/duration)])
     path))
+
+(defn temp-path
+  "Reserve a unique temp path WITHOUT creating the file.
+
+  Use it when an external writer needs to create the file itself and
+  fails if it already exists (like the S3 SDK file download, which
+  opens with CREATE_NEW). The path is still registered for cleanup,
+  so a crash between reserve and write does not leak."
+  [& {:keys [suffix prefix dir min-age]
+      :or {prefix "penpot."
+           suffix ".tmp"
+           dir    default-tmp-dir}}]
+  (fs/create-dir dir)
+  (loop [path (fs/join dir (str prefix (uuid/next) suffix))]
+    (if (fs/exists? path)
+      (recur (fs/join dir (str prefix (uuid/next) suffix)))
+      (do
+        (sp/offer! queue [path (some-> min-age ct/duration)])
+        path))))
 
 (defn tempfile-from
   "Create a new tempfile from from consuming the stream"

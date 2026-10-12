@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 //
-// Copyright (c) KALEIDOS INC
+// Copyright (c) KALEIDOS INC Sucursal en España SL
 
 @use "ds/_sizes.scss" as *;
 @use "refactor/common-refactor.scss" as deprecated;
@@ -24,8 +24,7 @@
 .history-entries {
   height: calc(100vh - deprecated.$s-100);
   padding: deprecated.$s-12;
-  overflow-x: hidden;
-  overflow-y: auto;
+  overflow: hidden auto;
   font-size: deprecated.$fs-12;
 }
 
@@ -45,26 +44,74 @@
   .history-entry-summary {
     display: flex;
     align-items: center;
+
     .history-entry-summary-icon {
       svg {
-        @extend .button-icon-small;
+        @extend %button-icon-small;
+
         stroke: var(--entry-foreground-color);
       }
     }
+
     .history-entry-summary-text {
+      display: flex;
+      flex-direction: column;
+      gap: deprecated.$s-2;
       margin: 0 deprecated.$s-8;
       color: var(--color-foreground-primary);
+      min-inline-size: 0;
     }
+
+    .history-entry-title {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    // Metadata row: short identifier, relative timestamp, and author.
+    // Plain inline layout so the literal spaces embedded in the
+    // template ("hash · time by Name") survive rendering. Issue #7660.
+    .history-entry-meta {
+      color: var(--color-foreground-secondary);
+      font-size: deprecated.$fs-10;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .history-entry-hash {
+      font-family: monospace;
+      letter-spacing: 0.03em;
+    }
+
+    .history-entry-meta-sep {
+      opacity: 0.6;
+    }
+
+    .history-entry-time {
+      white-space: nowrap;
+    }
+
+    // Author ("by <name>") — the surrounding meta row already
+    // truncates, so keep the author span as a plain inline. Issue
+    // #7660.
+    .history-entry-author {
+      white-space: nowrap;
+    }
+
     .history-entry-summary-button {
       opacity: deprecated.$op-0;
       margin-left: auto;
+
       &.button-opened {
         svg {
           transform: rotate(90deg);
         }
       }
+
       svg {
-        @extend .button-icon-small;
+        @extend %button-icon-small;
+
         stroke: var(--entry-foreground-color);
       }
     }
@@ -74,6 +121,7 @@
     display: block;
     padding-top: deprecated.$s-16;
     color: var(--modal-text-foreground-color);
+
     .history-entry-details-list {
       margin: 0;
     }
@@ -88,14 +136,17 @@
   &:hover {
     background-color: var(--entry-background-color-hover);
     color: var(--entry-foreground-color-hover);
+
     .history-entry-summary {
       .history-entry-summary-icon {
         svg {
           stroke: var(--entry-foreground-color-hover);
         }
       }
+
       .history-entry-summary-button {
         opacity: deprecated.$op-10;
+
         &.button-opened {
           svg {
             transform: rotate(90deg);

@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.ui.inspect.attributes.shadow
   (:require-macros [app.main.style :as stl])
@@ -56,7 +56,8 @@
                         :copy-data (copy-color-data (:color shadow) color-format*)
                         :on-change-format on-change-format}]]))
 
-(mf/defc shadow-panel [{:keys [shapes]}]
+(mf/defc shadow-panel*
+  [{:keys [shapes]}]
   (let [shapes (->> shapes (filter has-shadow?))]
 
     (when (and (seq shapes) (> (count shapes) 0))

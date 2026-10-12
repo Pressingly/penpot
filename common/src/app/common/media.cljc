@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.common.media
   "Media assets helpers (images, fonts, etc)"
@@ -21,6 +21,26 @@
     "image/webp"
     "image/gif"
     "image/svg+xml"})
+
+(def tempfile-types
+  (conj image-types "application/pdf" "application/zip"))
+
+(def storage-object-types
+  "Every content-type the system stores in storage objects: uploaded
+  images and fonts, generated thumbnails, temporary files and the
+  `application/octet-stream` fallback used by file data and font
+  variants. Sorted for determinism. Every member must have a
+  producing code path; anticipated but unproduced types (such as
+  `image/apng`) stay out until some flow actually stores them.
+  Import boundaries normalize the stored string (lowercase, no
+  parameters) before checking membership, so legacy spelling
+  variants keep importing while unknown types are rejected."
+  (into (sorted-set)
+        (concat image-types
+                font-types
+                ["application/octet-stream"
+                 "application/pdf"
+                 "application/zip"])))
 
 (defn format->extension
   [format]
@@ -81,21 +101,22 @@
 (defn parse-font-weight
   [variant]
   (cond
-    (re-seq #"(?i)(?:hairline|thin)" variant)               100
-    (re-seq #"(?i)(?:extra\s*light|ultra\s*light)" variant) 200
-    (re-seq #"(?i)(?:light)" variant)                       300
-    (re-seq #"(?i)(?:normal|regular)" variant)              400
-    (re-seq #"(?i)(?:medium)" variant)                      500
-    (re-seq #"(?i)(?:semi\s*bold|demi\s*bold)" variant)     600
-    (re-seq #"(?i)(?:extra\s*bold|ultra\s*bold)" variant)   800
-    (re-seq #"(?i)(?:bold)" variant)                        700
-    (re-seq #"(?i)(?:extra\s*black|ultra\s*black)" variant) 950
-    (re-seq #"(?i)(?:black|heavy|solid)" variant)           900
-    :else                                                   400))
+    (re-seq #"(?i)(?:^|[-_\s])(hairline|thin)(?=(?:[-_\s]|$|italic\b))" variant)               100
+    (re-seq #"(?i)(?:^|[-_\s])(extra\s*light|ultra\s*light)(?=(?:[-_\s]|$|italic\b))" variant) 200
+    (re-seq #"(?i)(?:^|[-_\s])(light)(?=(?:[-_\s]|$|italic\b))" variant)                       300
+    (re-seq #"(?i)(?:^|[-_\s])(normal|regular)(?=(?:[-_\s]|$|italic\b))" variant)              400
+    (re-seq #"(?i)(?:^|[-_\s])(medium)(?=(?:[-_\s]|$|italic\b))" variant)                      500
+    (re-seq #"(?i)(?:^|[-_\s])(semi\s*bold|demi\s*bold)(?=(?:[-_\s]|$|italic\b))" variant)     600
+    (re-seq #"(?i)(?:^|[-_\s])(extra\s*bold|ultra\s*bold)(?=(?:[-_\s]|$|italic\b))" variant)   800
+    (re-seq #"(?i)(?:^|[-_\s])(bold)(?=(?:[-_\s]|$|italic\b))" variant)                        700
+    (re-seq #"(?i)(?:^|[-_\s])(extra\s*black|ultra\s*black)(?=(?:[-_\s]|$|italic\b))" variant) 950
+    (re-seq #"(?i)(?:^|[-_\s])(black|heavy|solid)(?=(?:[-_\s]|$|italic\b))" variant)           900
+    :else                                                                                      400))
 
 (defn parse-font-style
   [variant]
-  (if (re-seq #"(?i)(?:italic)" variant)
+  (if (or (re-seq #"(?i)(?:^|[-_\s])(italic)(?:[-_\s]|$)" variant)
+          (re-seq #"(?i)italic$" variant))
     "italic"
     "normal"))
 
@@ -112,3 +133,15 @@
     800 "Extra Bold"
     900 "Black"
     950 "Extra Black"))
+
+(defn font-display-variant
+  [variant-name weight style]
+  (cond
+    (and (string? variant-name) (not (str/blank? variant-name)))
+    (str/trim variant-name)
+
+    :else
+    (let [base (font-weight->name weight)
+          italic? (= "italic" style)]
+      (cond-> base
+        italic? (str " Italic")))))

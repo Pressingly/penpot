@@ -2,16 +2,16 @@
   "name": "penpot-render-wasm",
   "version": "1.20.0",
   "license": "MPL-2.0",
-  "author": "Kaleidos INC",
+  "author": "Kaleidos INC Sucursal en España SL",
   "private": true,
-  "packageManager": "pnpm@10.28.0+sha512.05df71d1421f21399e053fde567cea34d446fa02c76571441bfc1c7956e98e363088982d940465fd34480d4d90a0668bc12362f8aa88000a64e83d0b0e47be48",
+  "packageManager": "pnpm@12.5.1+sha512.e3f305bc784a2bc89f5ad3b6138889470fae8d2af5f36b61216ec91c2c3d64089775f9de38aac331044ea40f245cb0d5666392dfdf65824e1907ef6a2c62de5f",
   "repository": {
     "type": "git",
     "url": "https://github.com/penpot/penpot"
   },
   "type": "module",
   "devDependencies": {
-    "@types/node": "^20.12.7",
-    "esbuild": "^0.27.4"
+    "@types/node": "^26.3.0",
+    "esbuild": "^0.28.2"
   }
 }

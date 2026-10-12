@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 
 (ns app.main.ui.workspace.sidebar.assets.common
@@ -22,8 +22,10 @@
    [app.main.data.modal :as modal]
    [app.main.data.workspace :as dw]
    [app.main.data.workspace.libraries :as dwl]
+   [app.main.data.workspace.thumbnails-wasm :as dwt.wasm]
    [app.main.data.workspace.undo :as dwu]
    [app.main.data.workspace.variants :as dwv]
+   [app.main.features :as features]
    [app.main.refs :as refs]
    [app.main.render :refer [component-svg component-svg-thumbnail]]
    [app.main.store :as st]
@@ -172,7 +174,6 @@
      [:> title-bar*
       {:collapsable   (< 0 assets-count)
        :collapsed     (not is-open)
-       :all-clickable true
        :on-collapsed  on-collapsed
        :add-icon-gap  (= 0 assets-count)
        :title         title}
@@ -196,6 +197,39 @@
                 (add-group % group-name)))
          (run! st/emit!))
     (st/emit! (dwu/commit-undo-transaction undo-id))))
+
+(defn make-delete-asset-group-fn
+  "Build an `:on-delete-group` handler that filters `assets` by group
+  path, asks the user to confirm, and on accept emits every event
+  produced by `delete-events` inside one undo transaction.
+
+  Options:
+  - `:assets`             collection to filter.
+  - `:on-clear-selection` invoked before the deletes.
+  - `:delete-events`      `(fn [matching-assets] => seq-of-events)`.
+  - `:path-filter`        `(fn [asset-path group-path] => bool)` deciding
+                          which assets fall under the group. Defaults to
+                          `str/starts-with?`."
+  [{:keys [assets on-clear-selection delete-events path-filter]
+    :or {path-filter str/starts-with?}}]
+  (fn [path]
+    (let [matching (filter #(path-filter (:path %) path) assets)
+          undo-id  (js/Symbol)
+          do-delete
+          (fn []
+            (on-clear-selection)
+            (st/emit! (dwu/start-undo-transaction undo-id))
+            (run! st/emit! (delete-events matching))
+            (st/emit! (dwu/commit-undo-transaction undo-id)))]
+      (when (seq matching)
+        (st/emit!
+         (modal/show
+          {:type :confirm
+           :title (tr "modals.delete-asset-group.title")
+           :message (tr "modals.delete-asset-group.message"
+                        (c (count matching)))
+           :accept-label (tr "labels.delete")
+           :on-accept do-delete}))))))
 
 (defn on-drop-asset
   [event asset dragging* selected selected-full selected-paths rename]
@@ -286,14 +320,37 @@
   (let [page-id (:main-instance-page component)
         root-id (:main-instance-id component)
         retry   (mf/use-state 0)
+        wasm?   (features/active-feature? @st/state "render-wasm/v1")
+        current-page-id (mf/deref refs/current-page-id)
+        thumbnail-requested? (mf/use-ref false)
 
-        thumbnail-uri*
+        object-id
         (mf/with-memo [file-id page-id root-id]
-          (let [object-id (thc/fmt-object-id file-id page-id root-id "component")]
-            (refs/workspace-thumbnail-by-id object-id)))
+          (thc/fmt-object-id file-id page-id root-id "component"))
+
+        thumbnail-data*
+        (mf/with-memo [object-id]
+          (refs/workspace-thumbnail-by-id object-id))
+
+        thumbnail-data
+        (mf/deref thumbnail-data*)
 
         thumbnail-uri
-        (mf/deref thumbnail-uri*)
+        (:uri thumbnail-data)
+
+        thumbnail-rendered-at
+        (:rendered-at thumbnail-data)
+
+        modified-at
+        (some-> (:modified-at component) (.getTime))
+
+        ;; Stale if there's no in-session render record
+        ;; or the component was modified after the last render
+        stale?
+        (and (some? thumbnail-uri)
+             (or (nil? thumbnail-rendered-at)
+                 (and (some? modified-at)
+                      (> modified-at thumbnail-rendered-at))))
 
         on-error
         (mf/use-fn
@@ -302,8 +359,24 @@
            (when (< @retry 3)
              (inc retry))))]
 
+    ;; Lazy WASM thumbnail rendering: when the component becomes
+    ;; visible and either has no cached thumbnail or the cached one is
+    ;; stale relative to the last recorded edit, trigger a render. Ref
+    ;; is used to avoid triggering multiple renders while the previous
+    ;; render is in flight.
+    (mf/use-effect
+     (mf/deps is-hidden thumbnail-uri stale? wasm? current-page-id file-id page-id)
+     (fn []
+       (if (and (some? thumbnail-uri) (not stale?))
+         (mf/set-ref-val! thumbnail-requested? false)
+         (when (and wasm? (not is-hidden) (not (mf/ref-val thumbnail-requested?)) (= page-id current-page-id))
+           (mf/set-ref-val! thumbnail-requested? true)
+           (st/emit! (dwt.wasm/render-thumbnail file-id page-id root-id))))))
+
     (if (and (some? thumbnail-uri)
-             (contains? cf/flags :component-thumbnails))
+             (not stale?)
+             (or (contains? cf/flags :component-thumbnails)
+                 wasm?))
       [:& component-svg-thumbnail
        {:thumbnail-uri thumbnail-uri
         :class class

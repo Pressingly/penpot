@@ -4,7 +4,11 @@ use crate::utils::uuid_from_u32_quartet;
 use crate::uuid::Uuid;
 use crate::wasm::blend::RawBlendMode;
 use crate::wasm::layouts::constraints::{RawConstraintH, RawConstraintV};
-use crate::{with_state_mut, STATE};
+use crate::with_state;
+
+#[allow(unused_imports)]
+use crate::error::{Error, Result};
+use macros::wasm_error;
 
 use super::RawShapeType;
 
@@ -106,21 +110,25 @@ impl From<[u8; RAW_BASE_PROPS_SIZE]> for RawBasePropsData {
 }
 
 #[no_mangle]
-pub extern "C" fn set_shape_base_props() {
+#[wasm_error]
+pub extern "C" fn set_shape_base_props() -> Result<()> {
     let bytes = mem::bytes();
 
     if bytes.len() < RAW_BASE_PROPS_SIZE {
-        return;
+        return Ok(());
     }
 
-    let data: [u8; RAW_BASE_PROPS_SIZE] = bytes[..RAW_BASE_PROPS_SIZE].try_into().unwrap();
+    // FIXME: this should just be a try_from
+    let data: [u8; RAW_BASE_PROPS_SIZE] = bytes[..RAW_BASE_PROPS_SIZE]
+        .try_into()
+        .map_err(|_| Error::CriticalError("Invalid bytes for base props".to_string()))?;
     let raw = RawBasePropsData::from(data);
 
     let id = raw.id();
     let parent_id = raw.parent_id();
     let shape_type = RawShapeType::from(raw.shape_type);
 
-    with_state_mut!(state, {
+    with_state!(state, {
         state.use_shape(id);
         state.set_parent_for_current_shape(parent_id);
         state.touch_current();
@@ -151,6 +159,7 @@ pub extern "C" fn set_shape_base_props() {
             shape.set_corners((raw.corner_r1, raw.corner_r2, raw.corner_r3, raw.corner_r4));
         }
     });
+    Ok(())
 }
 
 #[cfg(test)]

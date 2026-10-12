@@ -2,13 +2,14 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
  (ns app.common.types.text
    (:require
     [app.common.data :as d]
     [app.common.data.macros :as dm]
     [app.common.flags :as flags]
+    [app.common.math :as mth]
     [app.common.types.color :as clr]
     [app.common.types.fills :as types.fills]
     [clojure.set :as set]
@@ -78,6 +79,15 @@
    text-transform-attrs
    text-fills))
 
+(def text-span-attrs
+  "Inline text span attrs. Line-height is paragraph-level in the DOM editor;
+   it may still be stored redundantly on span nodes."
+  (vec (remove #{:line-height} text-node-attrs)))
+
+(defn text-node-attr?
+  [attr]
+  (d/index-of text-node-attrs attr))
+
 (def text-all-attrs (d/concat-set shape-attrs root-attrs paragraph-attrs text-node-attrs))
 
 (def text-style-attrs
@@ -95,7 +105,9 @@
    :text-direction "ltr"})
 
 (def default-text-attrs
-  {:font-id "sourcesanspro"
+  {:typography-ref-file nil
+   :typography-ref-id nil
+   :font-id "sourcesanspro"
    :font-family "sourcesanspro"
    :font-variant-id "regular"
    :font-size "14"
@@ -199,6 +211,39 @@
   [text]
   (subs text 0 (min 280 (count text))))
 
+(defn- compare-text-attr
+  "Compare two attribute values and return true if they are different.
+   Take into account the following:
+    - Only process keys that belong to text node attrs (ignore deprecated
+      attributes or other things that may be attached).
+    - Consider nil values, empty strings or empty lists all equal.
+    - Normalize numeric values (legacy) into strings.
+    - No value is equal than the default value.
+    - Numeric attrs (e.g. line-height) compare with float tolerance so
+      editor/WASM round-trips like \"1.3333333333333333\" vs \"1.33333\"
+      do not count as a real style change (avoids detaching tokens)."
+  [key value1 value2]
+  (when (text-node-attr? key)
+    (let [default-value (get default-text-attrs key)
+          normalize-value (fn [value]
+                            (as-> value $
+                              (if (number? $) (str $) $)
+                              (if (or (d/empty? $) (= $ default-value))
+                                nil
+                                $)))
+          value1' (normalize-value value1)
+          value2' (normalize-value value2)]
+      (cond
+        (= value1' value2')
+        false
+
+        :else
+        (let [n1 (when (string? value1') (d/parse-double value1'))
+              n2 (when (string? value2') (d/parse-double value2'))]
+          (if (and (some? n1) (some? n2))
+            (not (mth/close? n1 n2))
+            true))))))
+
 (defn- compare-text-content
   "Given two content text structures, conformed by maps and vectors,
    compare them, and returns a set with the differences info.
@@ -240,8 +285,10 @@
                acc)
 
              :else
-             ;; If the key is not :text, and they are different, it is an attribute differece
-             (if (not= v1 v2)
+             ;; If the key is not :text, and they are different, it is an attribute difference.
+             ;; Take into account that some processes remove empty attributes, so in some
+             ;; cases we will compare [] with nil, and this is not a difference.
+             (if (compare-text-attr k v1 v2)
                (attribute-cb acc k)
                acc))))
        #{}
@@ -288,9 +335,16 @@
   "Given two content text structures, conformed by maps and vectors,
    compare them, and returns a set with the attributes that have changed.
    This is independent of the text structure, so if the structure changes
-   but the attributes are the same, it will return an empty set."
+   but the attributes are the same, it will return an empty set.
+
+   Line-height on text nodes is ignored: it is a paragraph-level attribute
+   and may be stored redundantly on spans (e.g. after token apply)."
   [a b]
-  (let [diff-attrs (compare-text-content a b
+  (let [strip-span-line-height
+        #(transform-nodes is-text-node? (fn [node] (dissoc node :line-height)) %)
+        a (strip-span-line-height a)
+        b (strip-span-line-height b)
+        diff-attrs (compare-text-content a b
                                          {:text-cb      identity
                                           :attribute-cb (fn [acc attr] (conj acc attr))})]
     (if-not (contains? diff-attrs :text-content-structure)
@@ -353,6 +407,32 @@
             [k (vec (map #(copy-attrs-keys %1 attrs) v))]
             [k (get attrs k v)]))))
 
+
+(defn content-has-text?
+  [content search]
+  (let [search-lower (str/lower search)]
+    (->> (node-seq is-text-node? content)
+         (some #(str/includes? (str/lower (:text %)) search-lower))
+         (boolean))))
+
+(defn replace-all-case-insensitive
+  [text search replacement]
+  (let [text-lower   (str/lower text)
+        search-lower (str/lower search)
+        search-len   (count search)]
+    (loop [result "" idx 0]
+      (let [found (str/index-of text-lower search-lower idx)]
+        (if (nil? found)
+          (str result (subs text idx))
+          (recur (str result (subs text idx found) replacement)
+                 (+ found search-len)))))))
+
+(defn replace-text-in-content
+  [content search replacement]
+  (transform-nodes
+   is-text-node?
+   (fn [node] (update node :text replace-all-case-insensitive search replacement))
+   content))
 
 (defn content->text
   "Given a root node of a text content extracts the texts with its associated styles"

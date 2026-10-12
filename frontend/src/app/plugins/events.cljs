@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.plugins.events
   (:require
@@ -53,16 +53,8 @@
 
 (defn- get-theme
   [state]
-  (let [theme (get-in state [:profile :theme])]
-    (cond
-      (or (not theme) (= theme "system"))
-      (theme/get-system-theme)
-
-      (= theme "default")
-      "dark"
-
-      :else
-      theme)))
+  (theme/resolve-theme (get-in state [:profile :theme])
+                       (theme/get-system-theme)))
 
 (defmethod handle-state-change "themechange"
   [_ _ old-val new-val _]
@@ -70,9 +62,7 @@
         new-theme (get-theme new-val)]
     (if (identical? old-theme new-theme)
       ::not-changed
-      (if (= new-theme "default")
-        "dark"
-        new-theme))))
+      new-theme)))
 
 (defmethod handle-state-change "shapechange"
   [_ plugin-id old-val new-val props]

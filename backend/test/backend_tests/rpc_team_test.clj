@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns backend-tests.rpc-team-test
   (:require
@@ -13,7 +13,9 @@
    [app.db :as db]
    [app.email.blacklist :as email.blacklist]
    [app.http :as http]
+   [app.nitrate :as nitrate]
    [app.rpc :as-alias rpc]
+   [app.rpc.commands.teams :as teams]
    [app.storage :as sto]
    [app.tokens :as tokens]
    [backend-tests.helpers :as th]
@@ -102,6 +104,67 @@
         (let [edata (-> out :error ex-data)]
           (t/is (= :validation (:type edata)))
           (t/is (= :member-is-muted (:code edata))))))))
+
+(t/deftest create-and-update-team-invitations-include-organization-props
+  (with-mocks [email-mock {:target 'app.email/send! :return nil}
+               audit-mock {:target 'app.loggers.audit/submit :return nil}]
+    (let [owner      (th/create-profile* 101 {:is-active true})
+          invitee    (th/create-profile* 102 {:is-active true})
+          organization-team   (th/create-team* 101 {:profile-id (:id owner)})
+          plain-team (th/create-team* 102 {:profile-id (:id owner)})
+          organization-id     (uuid/random)
+          organization         {:id organization-id
+                                :name "Acme"
+                                :slug "acme"
+                                :owner-id (:id owner)
+                                :avatar-bg-url "https://example.com/avatar.svg"
+                                :permissions {:new-team-members "anyone"}}
+          nitrate-call
+          (fn [_cfg method params]
+            (case method
+              :get-team-organization
+              (if (= (:team-id params) (:id organization-team))
+                {:organization organization :is-your-penpot false}
+                {:organization nil :is-your-penpot false})
+
+              :get-organization-members
+              [(:id invitee)]
+
+              nil))
+          invite!     (fn [team email]
+                        (th/command! {::th/type :create-team-invitations
+                                      ::rpc/profile-id (:id owner)
+                                      :team-id (:id team)
+                                      :role :editor
+                                      :emails [email]}))]
+      (with-redefs [cf/flags (conj cf/flags :admin-console :email-verification)
+                    nitrate/call nitrate-call]
+        (t/is (th/success? (invite! organization-team (:email invitee))))
+        (t/is (th/success? (invite! organization-team (:email invitee))))
+        (t/is (th/success? (invite! plain-team "external@example.com"))))
+
+      (let [events       (mapv second (:call-args-list @audit-mock))
+            create-organization   (first (filter #(and (= "create-team-invitation" (:name %))
+                                                       (= (:email invitee)
+                                                          (get-in % [:props :member-email])))
+                                                 events))
+            update-organization   (first (filter #(= "update-team-invitation" (:name %)) events))
+            create-plain (first (filter #(and (= "create-team-invitation" (:name %))
+                                              (= "external@example.com"
+                                                 (get-in % [:props :member-email])))
+                                        events))]
+        (doseq [event [create-organization update-organization]]
+          (t/is (= (str (:id owner))
+                   (get-in event [:props :user-who-send-invitation])))
+          (t/is (true? (get-in event [:props :team-belongs-to-organization])))
+          (t/is (true? (get-in event [:props :adds-invitee-to-organization])))
+          (t/is (true? (get-in event [:props :invitee-already-organization-member]))))
+
+        (t/is (= (str (:id owner))
+                 (get-in create-plain [:props :user-who-send-invitation])))
+        (t/is (false? (get-in create-plain [:props :team-belongs-to-organization])))
+        (t/is (false? (get-in create-plain [:props :adds-invitee-to-organization])))
+        (t/is (false? (get-in create-plain [:props :invitee-already-organization-member])))))))
 
 (t/deftest create-team-invitations-blacklisted-domain
   (with-mocks [mock {:target 'app.email/send! :return nil}]
@@ -298,6 +361,28 @@
           (t/is (= (:id profile2) (:member-id claims))))))))
 
 
+(t/deftest get-team-invitation-token-requires-edition-permissions
+  (let [profile1 (th/create-profile* 1 {:is-active true})
+        profile2 (th/create-profile* 2 {:is-active true})
+        team     (th/create-team* 1 {:profile-id (:id profile1)})
+        pool     (:app.db/pool th/*system*)]
+    (th/create-team-role* {:team-id (:id team)
+                           :profile-id (:id profile2)
+                           :role :viewer})
+    (db/insert! pool :team-invitation
+                {:team-id (:id team)
+                 :email-to "victim@example.com"
+                 :role "editor"
+                 :valid-until (ct/in-future "48h")})
+    (let [data {::th/type :get-team-invitation-token
+                ::rpc/profile-id (:id profile2)
+                :team-id (:id team)
+                :email "victim@example.com"}
+          out (th/command! data)]
+      (t/is (not (th/success? out)))
+      (t/is (= :not-found (-> out :error ex-data :type))))))
+
+
 (t/deftest accept-invitation-tokens
   (let [profile1 (th/create-profile* 1 {:is-active true})
         profile2 (th/create-profile* 2 {:is-active true})
@@ -377,6 +462,161 @@
           (let [edata (-> out :error ex-data)]
             (t/is (= :validation (:type edata)))
             (t/is (= :invalid-token (:code edata)))))))))
+
+(t/deftest accept-organization-invitation-audit-event
+  (with-mocks [audit-mock {:target 'app.loggers.audit/submit :return nil}]
+    (let [inviter          (th/create-profile* 201 {:is-active true})
+          invitee          (th/create-profile* 202 {:is-active true})
+          team             (th/create-team* 201 {:profile-id (:id inviter)})
+          organization-id  (uuid/random)
+          default-team-id  (uuid/random)
+          direct-token     (tokens/generate
+                            th/*system*
+                            {:iss :team-invitation
+                             :exp (ct/in-future "1h")
+                             :profile-id (:id inviter)
+                             :role :editor
+                             :organization-id organization-id
+                             :member-email (:email invitee)
+                             :member-id (:id invitee)})
+          team-token       (tokens/generate
+                            th/*system*
+                            {:iss :team-invitation
+                             :exp (ct/in-future "1h")
+                             :profile-id (:id inviter)
+                             :role :editor
+                             :team-id (:id team)
+                             :member-email (:email invitee)
+                             :member-id (:id invitee)})
+          verify!          (fn [token]
+                             (th/command! {::th/type :verify-token
+                                           ::rpc/profile-id (:id invitee)
+                                           :token token}))
+          emitted-events
+          (fn [event-name]
+            (->> (:call-args-list @audit-mock)
+                 (map second)
+                 (filter #(= event-name (:name %)))))
+          organization-event
+          (fn []
+            (first (emitted-events "accept-organization-invitation")))]
+
+      (db/insert! (:app.db/pool th/*system*)
+                  :team-invitation
+                  {:org-id organization-id
+                   :email-to (:email invitee)
+                   :created-by (:id inviter)
+                   :role "editor"
+                   :valid-until (ct/in-future "48h")})
+
+      (with-redefs [cf/flags (conj cf/flags :admin-console)
+                    nitrate/call
+                    (fn [_cfg method _params]
+                      (case method
+                        :get-organization-membership {:organization-id organization-id
+                                                      :is-member false}
+                        :get-organization-members [(:id inviter) (uuid/random) (uuid/random)]
+                        nil))
+                    teams/initialize-user-in-organization
+                    (fn [& _] default-team-id)]
+        (let [out (verify! direct-token)]
+          (t/is (th/success? out))
+          (t/is (not (contains? (:result out) :organization-invitation-audit)))))
+
+      (let [event (organization-event)]
+        (t/is (= organization-id (get-in event [:props :organization-id])))
+        (t/is (= (:id invitee) (get-in event [:props :profile-id])))
+        (t/is (= (:id inviter) (get-in event [:props :invited-by])))
+        (t/is (= (:email invitee) (get-in event [:props :profile-email])))
+        (t/is (= :editor (get-in event [:props :role])))
+        (t/is (uuid? (get-in event [:props :invitation-id])))
+        (t/is (= "direct-organization-invitation"
+                 (get-in event [:props :organization-member-add-source])))
+        (t/is (false? (get-in event [:props :belongs-to-team-on-add])))
+        (t/is (= 3 (get-in event [:props :organization-member-count-before])))
+        (t/is (not (contains? (:props event) :invitation-origin)))
+        (t/is (not (contains? (:context event) :event-origin)))
+        (t/is (= 1 (count (emitted-events "accept-organization-invitation"))))
+        (t/is (not-any? #(contains? #{"accept-team-invitation"
+                                      "accept-team-invitation-from"}
+                                    (:name (second %)))
+                        (:call-args-list @audit-mock))))
+
+      (th/reset-mock! audit-mock)
+      (db/insert! (:app.db/pool th/*system*)
+                  :team-invitation
+                  {:team-id (:id team)
+                   :email-to (:email invitee)
+                   :created-by (:id inviter)
+                   :role "editor"
+                   :valid-until (ct/in-future "48h")})
+
+      (with-redefs [cf/flags (conj cf/flags :admin-console)
+                    nitrate/call
+                    (fn [_cfg method _params]
+                      (case method
+                        :get-organization-membership-by-team {:organization-id organization-id
+                                                              :is-member false}
+                        :get-organization-members (into [(:id inviter)]
+                                                        (repeatedly 4 uuid/random))
+                        nil))
+                    teams/add-profile-to-team! (fn [& _] nil)]
+        (let [out (verify! team-token)]
+          (t/is (th/success? out))
+          (t/is (not (contains? (:result out) :organization-invitation-audit)))))
+
+      (let [events (mapv second (:call-args-list @audit-mock))
+            event  (organization-event)]
+        (t/is (some #(= "accept-team-invitation" (:name %)) events))
+        (t/is (some #(= "accept-team-invitation-from" (:name %)) events))
+        (t/is (= (:id team) (get-in event [:props :team-id])))
+        (t/is (= organization-id (get-in event [:props :organization-id])))
+        (t/is (= (:id invitee) (get-in event [:props :profile-id])))
+        (t/is (= (:id inviter) (get-in event [:props :invited-by])))
+        (t/is (= "team-invitation"
+                 (get-in event [:props :organization-member-add-source])))
+        (t/is (true? (get-in event [:props :belongs-to-team-on-add])))
+        (t/is (= 5 (get-in event [:props :organization-member-count-before])))
+        (t/is (not (contains? (:props event) :invitation-origin)))
+        (t/is (not (contains? (:context event) :event-origin)))
+        (t/is (= 1 (count (emitted-events "accept-organization-invitation")))))
+
+      (let [from-event (first (emitted-events "accept-team-invitation-from"))]
+        (t/is (= (:id team) (get-in from-event [:props :team-id])))
+        (t/is (= :editor (get-in from-event [:props :role])))
+        (t/is (uuid? (get-in from-event [:props :invitation-id])))
+        (t/is (= (:id inviter) (get-in from-event [:props :invited-by])))
+        (t/is (= (:id invitee) (get-in from-event [:props :profile-id])))
+        (t/is (= (:email invitee) (get-in from-event [:props :profile-email])))
+        (t/is (not (contains? (get-in from-event [:props]) :email)))
+        (t/is (not (contains? (get-in from-event [:props]) :user-id)))
+        (t/is (not (contains? (get-in from-event [:props])
+                              :user-who-send-invitation))))
+
+      (th/reset-mock! audit-mock)
+      (db/insert! (:app.db/pool th/*system*)
+                  :team-invitation
+                  {:team-id (:id team)
+                   :email-to (:email invitee)
+                   :role "editor"
+                   :valid-until (ct/in-future "48h")})
+
+      (with-redefs [cf/flags (conj cf/flags :admin-console)
+                    nitrate/call
+                    (fn [_cfg method _params]
+                      (case method
+                        :get-organization-membership-by-team {:organization-id organization-id
+                                                              :is-member true}
+                        :get-organization-members (throw (ex-info "unexpected member count" {}))
+                        nil))
+                    teams/add-profile-to-team! (fn [& _] nil)]
+        (let [out (verify! team-token)]
+          (t/is (th/success? out))
+          (t/is (not (contains? (:result out) :organization-invitation-audit)))))
+
+      (let [events (mapv second (:call-args-list @audit-mock))]
+        (t/is (some #(= "accept-team-invitation" (:name %)) events))
+        (t/is (not-any? #(= "accept-organization-invitation" (:name %)) events))))))
 
 (t/deftest create-team-invitations-with-email-verification-disabled
   (with-mocks [mock {:target 'app.email/send! :return nil}]
@@ -506,6 +746,67 @@
       (t/is (= 1 (:total-members item1)))
       (t/is (= 1 (:total-editors item1)))
       (t/is (not= (:default-team-id profile1) (:id item1))))))
+
+
+(t/deftest get-teams-fetches-organizations-in-one-batch
+  (let [profile           (th/create-profile* 1 {:is-active true})
+        organization-team (th/create-team* 1 {:profile-id (:id profile)})
+        plain-team        (th/create-team* 2 {:profile-id (:id profile)})
+        expired-team      (th/create-team* 3 {:profile-id (:id profile)})
+        organization-id   (uuid/random)
+        calls             (atom [])
+        organization      {:id organization-id
+                           :name "Acme"
+                           :slug "acme"
+                           :owner-id (:id profile)
+                           :avatar-bg-url "https://example.com/avatar.svg"}
+        nitrate-call      (fn [_cfg method params]
+                            (swap! calls conj [method params])
+                            [{:id (:id organization-team)
+                              :is-your-penpot false
+                              :organization organization}
+                             {:id (:id expired-team)
+                              :is-your-penpot false
+                              :organization (assoc organization :expired-license true)}])
+        params            {::th/type :get-teams
+                           ::rpc/profile-id (:id profile)}]
+    (with-redefs [cf/flags (conj cf/flags :admin-console)
+                  nitrate/call nitrate-call]
+      (let [out    (th/command! params)
+            teams (:result out)]
+        (t/is (th/success? out))
+        (t/is (= 1 (count @calls)))
+        (t/is (= :get-teams-organizations (ffirst @calls)))
+        (t/is (= #{(:default-team-id profile)
+                   (:id organization-team)
+                   (:id plain-team)
+                   (:id expired-team)}
+                 (-> @calls first second :team-ids set)))
+        (t/is (= #{(:default-team-id profile)
+                   (:id organization-team)
+                   (:id plain-team)}
+                 (into #{} (map :id) teams)))
+        (t/is (= organization
+                 (->> teams
+                      (filter #(= (:id organization-team) (:id %)))
+                      first
+                      :organization)))))))
+
+
+(t/deftest get-teams-rejects-invalid-organization-batch-response
+  (let [profile (th/create-profile* 1 {:is-active true})
+        calls   (atom [])
+        params  {::th/type :get-teams
+                 ::rpc/profile-id (:id profile)}]
+    (with-redefs [cf/flags (conj cf/flags :admin-console)
+                  nitrate/call (fn [_cfg method call-params]
+                                 (swap! calls conj [method call-params])
+                                 nil)]
+      (let [out (th/command! params)]
+        (t/is (not (th/success? out)))
+        (t/is (= :nitrate-unavailable (th/ex-type (:error out))))
+        (t/is (= 1 (count @calls)))
+        (t/is (= :get-teams-organizations (ffirst @calls)))))))
 
 
 (t/deftest team-deletion-1
@@ -804,6 +1105,102 @@
           out  (th/command! data)]
       (t/is (th/success? out)))))
 
+(t/deftest create-team-id-version
+  (let [profile (th/create-profile* 1 {:is-active true})
+        v3-id   "6fa459ea-ee8a-3ca4-894e-db77e160355e"
+        v4-id   "550e8400-e29b-41d4-a716-446655440000"
+        v7-id   "0191062e-3f50-7a5e-9f5a-1a2b3c4d5e6f"]
+
+    ;; reserved version (v3) must be rejected at the RPC boundary
+    (let [data {::th/type :create-team
+                ::rpc/profile-id (:id profile)
+                :name "team with v3 id"
+                :id v3-id}
+          out  (th/command! data)]
+      (t/is (not (th/success? out)))
+      (t/is (th/ex-of-type? (:error out) :validation))
+      (t/is (th/ex-of-code? (:error out) :params-validation)))
+
+    ;; v4, v7 and v8 ids are accepted
+    (doseq [id [v4-id v7-id (str (uuid/next))]]
+      (let [data {::th/type :create-team
+                  ::rpc/profile-id (:id profile)
+                  :name (str "team with id " id)
+                  :id id}
+            out  (th/command! data)]
+        (t/is (th/success? out))
+        (t/is (= id (str (:id (:result out)))))))))
+
+(t/deftest create-team-with-invitations-id-version
+  (with-mocks [mock {:target 'app.email/send! :return nil}]
+    (let [profile (th/create-profile* 1 {:is-active true})
+          v3-id   "6fa459ea-ee8a-3ca4-894e-db77e160355e"
+          v4-id   "550e8400-e29b-41d4-a716-446655440000"]
+
+      ;; reserved version (v3) must be rejected before any invitation is sent
+      (let [data {::th/type :create-team-with-invitations
+                  ::rpc/profile-id (:id profile)
+                  :name "team with v3 id"
+                  :id v3-id
+                  :emails #{"invitee@example.com"}
+                  :role :editor}
+            out  (th/command! data)]
+        (t/is (not (th/success? out)))
+        (t/is (th/ex-of-type? (:error out) :validation))
+        (t/is (th/ex-of-code? (:error out) :params-validation))
+        (t/is (= 0 (:call-count @mock))))
+
+      ;; v4 id is accepted
+      (let [data {::th/type :create-team-with-invitations
+                  ::rpc/profile-id (:id profile)
+                  :name "team with v4 id"
+                  :id v4-id
+                  :emails #{"invitee@example.com"}
+                  :role :editor}
+            out  (th/command! data)]
+        (t/is (th/success? out))
+        (t/is (= v4-id (str (:id (:result out)))))))))
+
+(t/deftest create-team-invitations-email-cooldown
+  (with-mocks [mock {:target 'app.email/send! :return nil}]
+    (let [profile1 (th/create-profile* 1 {:is-active true})
+          team     (th/create-team* 1 {:profile-id (:id profile1)})
+
+          data     {::th/type :create-team-invitations
+                    ::rpc/profile-id (:id profile1)
+                    :team-id (:id team)
+                    :role :editor
+                    :emails ["cooldown-test@example.com"]}]
+
+      ;; First invitation sends email
+      (let [out (th/command! data)]
+        (t/is (th/success? out))
+        (t/is (= 1 (:call-count @mock))))
+
+      ;; Resending immediately should NOT send email (cooldown active)
+      (th/reset-mock! mock)
+      (let [out (th/command! data)]
+        (t/is (th/success? out))
+        (t/is (= 0 (:call-count @mock))))
+
+      ;; Resending to a different email should send email
+      (th/reset-mock! mock)
+      (let [data (assoc data :emails ["different@example.com"])
+            out  (th/command! data)]
+        (t/is (th/success? out))
+        (t/is (= 1 (:call-count @mock))))
+
+      ;; After cooldown expires, resending should send email
+      (th/reset-mock! mock)
+      (th/db-update! :team-invitation
+                     {:updated-at (ct/in-past "10m")}
+                     {:team-id (:id team)
+                      :email-to "cooldown-test@example.com"})
+      (let [data (assoc data :emails ["cooldown-test@example.com"])
+            out  (th/command! data)]
+        (t/is (th/success? out))
+        (t/is (= 1 (:call-count @mock)))))))
+
 (t/deftest update-team-with-invalid-name
   (let [profile (th/create-profile* 1 {:is-active true})
         team    (th/create-team* 1 {:profile-id (:id profile)})]
@@ -846,3 +1243,543 @@
           out  (th/command! data)]
       (t/is (th/success? out)))))
 
+(t/deftest create-team-in-organization-regression
+  (with-mocks [audit-mock {:target 'app.loggers.audit/submit :return nil}]
+    (let [owner           (th/create-profile* 401 {:is-active true})
+          non-member      (th/create-profile* 402 {:is-active true})
+          organization-id (uuid/random)
+          params          {::th/type :create-team
+                           ::rpc/profile-id (:id owner)
+                           :name "Test Team"
+                           :organization-id organization-id}
+
+          nitrate-call-fn
+          (fn [_cfg method p]
+            (case method
+              :get-organization-membership
+              (if (= (:profile-id p) (:id non-member))
+                {:organization-id organization-id :is-member false}
+                {:organization-id organization-id :is-member true})
+
+              :get-organization-permissions
+              {:owner-id (:id owner)
+               :permissions {:create-teams "any"}}
+
+              :set-team-organization
+              (let [team-id (:team-id p)]
+                {:id team-id
+                 :name "Test Team"
+                 :organization-id organization-id
+                 :default-project-id (uuid/random)})
+
+              nil))]
+
+      ;; Non-member should be denied with :user-doesnt-belong-organization
+      (with-redefs [cf/flags (conj cf/flags :admin-console)
+                    nitrate/call nitrate-call-fn]
+        (let [out (th/command! (assoc params ::rpc/profile-id (:id non-member)))]
+          (t/is (not (th/success? out)))
+          (let [edata (-> out :error ex-data)]
+            (t/is (= :validation (:type edata)))
+            (t/is (= :user-doesnt-belong-organization (:code edata))))))
+
+      ;; Authorized member should succeed
+      (th/reset-mock! audit-mock)
+      (with-redefs [cf/flags (conj cf/flags :admin-console)
+                    nitrate/call nitrate-call-fn]
+        (let [out (th/command! params)]
+          (t/is (th/success? out))
+          (let [team (:result out)]
+            (t/is (uuid? (:id team)))
+            (t/is (= "Test Team" (:name team)))))))))
+
+;; --- T7-F-01: Role ceiling in team invitations ---
+
+(t/deftest admin-cannot-create-invitation-with-owner-role
+  (with-mocks [mock {:target 'app.email/send! :return nil}]
+    (let [owner   (th/create-profile* 1 {:is-active true})
+          admin   (th/create-profile* 2 {:is-active true})
+          team    (th/create-team* 1 {:profile-id (:id owner)})]
+
+      ;; Add admin as team member with :admin role
+      (th/create-team-role* {:team-id (:id team)
+                             :profile-id (:id admin)
+                             :role :admin})
+
+      ;; Admin tries to create invitation with :owner role (emails+role format)
+      ;; This should FAIL with :cant-promote-to-owner
+      (let [data {::th/type :create-team-invitations
+                  ::rpc/profile-id (:id admin)
+                  :team-id (:id team)
+                  :role :owner
+                  :emails ["invitee@example.com"]}
+            out  (th/command! data)]
+        (t/is (not (th/success? out)))
+        (t/is (th/ex-of-type? (:error out) :validation))
+        (t/is (th/ex-of-code? (:error out) :cant-promote-to-owner))
+        (t/is (= 0 (:call-count @mock)))))))
+
+(t/deftest admin-cannot-create-invitation-with-owner-role-invitations-format
+  (with-mocks [mock {:target 'app.email/send! :return nil}]
+    (let [owner   (th/create-profile* 1 {:is-active true})
+          admin   (th/create-profile* 2 {:is-active true})
+          team    (th/create-team* 1 {:profile-id (:id owner)})]
+
+      ;; Add admin as team member with :admin role
+      (th/create-team-role* {:team-id (:id team)
+                             :profile-id (:id admin)
+                             :role :admin})
+
+      ;; Admin tries to create invitation with :owner role (invitations format)
+      ;; This should FAIL with :cant-promote-to-owner
+      (let [data {::th/type :create-team-invitations
+                  ::rpc/profile-id (:id admin)
+                  :team-id (:id team)
+                  :invitations [{:email "invitee@example.com" :role :owner}]}
+            out  (th/command! data)]
+        (t/is (not (th/success? out)))
+        (t/is (th/ex-of-type? (:error out) :validation))
+        (t/is (th/ex-of-code? (:error out) :cant-promote-to-owner))
+        (t/is (= 0 (:call-count @mock)))))))
+
+(t/deftest admin-cannot-update-invitation-role-to-owner
+  (with-mocks [mock {:target 'app.email/send! :return nil}]
+    (let [owner   (th/create-profile* 1 {:is-active true})
+          admin   (th/create-profile* 2 {:is-active true})
+          team    (th/create-team* 1 {:profile-id (:id owner)})]
+
+      ;; Add admin as team member with :admin role
+      (th/create-team-role* {:team-id (:id team)
+                             :profile-id (:id admin)
+                             :role :admin})
+
+      ;; Owner creates an invitation with :editor role
+      (let [data {::th/type :create-team-invitations
+                  ::rpc/profile-id (:id owner)
+                  :team-id (:id team)
+                  :role :editor
+                  :emails ["invitee@example.com"]}
+            out  (th/command! data)]
+        (t/is (th/success? out)))
+
+      (th/reset-mock! mock)
+
+      ;; Admin tries to update invitation role to :owner
+      ;; This should FAIL with :cant-promote-to-owner
+      (let [data {::th/type :update-team-invitation-role
+                  ::rpc/profile-id (:id admin)
+                  :team-id (:id team)
+                  :email "invitee@example.com"
+                  :role :owner}
+            out  (th/command! data)]
+        (t/is (not (th/success? out)))
+        (t/is (th/ex-of-type? (:error out) :validation))
+        (t/is (th/ex-of-code? (:error out) :cant-promote-to-owner))))))
+
+(t/deftest owner-can-create-invitation-with-owner-role
+  (with-mocks [mock {:target 'app.email/send! :return nil}]
+    (let [owner   (th/create-profile* 1 {:is-active true})
+          team    (th/create-team* 1 {:profile-id (:id owner)})]
+
+      ;; Owner creates invitation with :owner role
+      ;; This should SUCCEED (owner has full privileges)
+      (let [data {::th/type :create-team-invitations
+                  ::rpc/profile-id (:id owner)
+                  :team-id (:id team)
+                  :role :owner
+                  :emails ["invitee@example.com"]}
+            out  (th/command! data)]
+        (t/is (th/success? out))
+        (t/is (= 1 (:call-count @mock)))))))
+
+(t/deftest admin-cannot-remove-team-owner
+  (let [owner  (th/create-profile* 1 {:is-active true})
+        admin  (th/create-profile* 2 {:is-active true})
+        team   (th/create-team* 1 {:profile-id (:id owner)})]
+
+    (th/create-team-role* {:team-id (:id team)
+                           :profile-id (:id admin)
+                           :role :admin})
+
+    (let [out (th/command! {::th/type :delete-team-member
+                            ::rpc/profile-id (:id admin)
+                            :team-id (:id team)
+                            :member-id (:id owner)})]
+      (t/is (not (th/success? out)))
+      (t/is (th/ex-of-type? (:error out) :validation))
+      (t/is (th/ex-of-code? (:error out) :cant-remove-owner)))))
+
+(t/deftest owner-can-remove-another-owner
+  (let [owner1 (th/create-profile* 1 {:is-active true})
+        owner2 (th/create-profile* 2 {:is-active true})
+        team   (th/create-team* 1 {:profile-id (:id owner1)})]
+
+    (th/create-team-role* {:team-id (:id team)
+                           :profile-id (:id owner2)
+                           :role :owner})
+
+    (let [out (th/command! {::th/type :delete-team-member
+                            ::rpc/profile-id (:id owner1)
+                            :team-id (:id team)
+                            :member-id (:id owner2)})]
+      (t/is (th/success? out)))))
+
+(t/deftest owner-can-remove-admin
+  (let [owner  (th/create-profile* 1 {:is-active true})
+        admin  (th/create-profile* 2 {:is-active true})
+        team   (th/create-team* 1 {:profile-id (:id owner)})]
+
+    (th/create-team-role* {:team-id (:id team)
+                           :profile-id (:id admin)
+                           :role :admin})
+
+    (let [out (th/command! {::th/type :delete-team-member
+                            ::rpc/profile-id (:id owner)
+                            :team-id (:id team)
+                            :member-id (:id admin)})]
+      (t/is (th/success? out)))))
+
+(t/deftest admin-can-remove-admin
+  (let [owner  (th/create-profile* 1 {:is-active true})
+        admin1 (th/create-profile* 2 {:is-active true})
+        admin2 (th/create-profile* 3 {:is-active true})
+        team   (th/create-team* 1 {:profile-id (:id owner)})]
+
+    (th/create-team-role* {:team-id (:id team)
+                           :profile-id (:id admin1)
+                           :role :admin})
+
+    (th/create-team-role* {:team-id (:id team)
+                           :profile-id (:id admin2)
+                           :role :admin})
+
+    (let [out (th/command! {::th/type :delete-team-member
+                            ::rpc/profile-id (:id admin1)
+                            :team-id (:id team)
+                            :member-id (:id admin2)})]
+      (t/is (th/success? out)))))
+
+(t/deftest delete-nonexistent-member-returns-not-found
+  (let [owner    (th/create-profile* 1 {:is-active true})
+        team     (th/create-team* 1 {:profile-id (:id owner)})
+        fake-id  (uuid/next)]
+
+    (let [out (th/command! {::th/type :delete-team-member
+                            ::rpc/profile-id (:id owner)
+                            :team-id (:id team)
+                            :member-id fake-id})]
+      (t/is (not (th/success? out)))
+      (t/is (th/ex-of-type? (:error out) :not-found))
+      (t/is (th/ex-of-code? (:error out) :member-does-not-exist)))))
+
+(t/deftest leaver-loses-file-access
+  ;; GHSA-v9r9-h77c-55m2: leaving the team must revoke the file and
+  ;; project roles granted in that team.
+  (let [owner  (th/create-profile* 1 {:is-active true})
+        editor (th/create-profile* 2 {:is-active true})
+        team   (th/create-team* 1 {:profile-id (:id owner)})]
+
+    (th/create-team-role* {:team-id (:id team)
+                           :profile-id (:id editor)
+                           :role :editor})
+
+    (let [project (th/create-project* 1 {:profile-id (:id editor)
+                                         :team-id (:id team)})
+          file    (th/create-file* 1 {:profile-id (:id editor)
+                                      :project-id (:id project)})]
+
+      (t/testing "editor can rename and read summary before leaving"
+        (let [out (th/command! {::th/type :rename-file
+                                ::rpc/profile-id (:id editor)
+                                :id (:id file)
+                                :name "renamed"})]
+          (t/is (th/success? out)))
+        (let [out (th/command! {::th/type :get-file-summary
+                                ::rpc/profile-id (:id editor)
+                                :id (:id file)})]
+          (t/is (th/success? out))))
+
+      (t/testing "leave team"
+        (let [out (th/command! {::th/type :leave-team
+                                ::rpc/profile-id (:id editor)
+                                :id (:id team)})]
+          (t/is (th/success? out))))
+
+      (t/testing "renaming after leaving fails with not-found"
+        (let [out   (th/command! {::th/type :rename-file
+                                  ::rpc/profile-id (:id editor)
+                                  :id (:id file)
+                                  :name "renamed-again"})
+              error (:error out)]
+          (t/is (th/ex-info? error))
+          (t/is (th/ex-of-type? error :not-found))))
+
+      (t/testing "file summary after leaving fails with not-found"
+        (let [out   (th/command! {::th/type :get-file-summary
+                                  ::rpc/profile-id (:id editor)
+                                  :id (:id file)})
+              error (:error out)]
+          (t/is (th/ex-info? error))
+          (t/is (th/ex-of-type? error :not-found))))
+
+      (t/testing "get-file after leaving fails with not-found"
+        (let [out   (th/command! {::th/type :get-file
+                                  ::rpc/profile-id (:id editor)
+                                  :id (:id file)
+                                  :components-v2 true})
+              error (:error out)]
+          (t/is (th/ex-info? error))
+          (t/is (th/ex-of-type? error :not-found)))))))
+
+(t/deftest removed-member-loses-file-access
+  ;; Same as above through the expulsion path.
+  (let [owner  (th/create-profile* 1 {:is-active true})
+        editor (th/create-profile* 2 {:is-active true})
+        team   (th/create-team* 1 {:profile-id (:id owner)})]
+
+    (th/create-team-role* {:team-id (:id team)
+                           :profile-id (:id editor)
+                           :role :editor})
+
+    (let [project (th/create-project* 1 {:profile-id (:id editor)
+                                         :team-id (:id team)})
+          file    (th/create-file* 1 {:profile-id (:id editor)
+                                      :project-id (:id project)})]
+
+      (t/testing "remove member"
+        (let [out (th/command! {::th/type :delete-team-member
+                                ::rpc/profile-id (:id owner)
+                                :team-id (:id team)
+                                :member-id (:id editor)})]
+          (t/is (th/success? out))))
+
+      (t/testing "renaming after removal fails with not-found"
+        (let [out   (th/command! {::th/type :rename-file
+                                  ::rpc/profile-id (:id editor)
+                                  :id (:id file)
+                                  :name "renamed-again"})
+              error (:error out)]
+          (t/is (th/ex-info? error))
+          (t/is (th/ex-of-type? error :not-found))))
+
+      (t/testing "file summary after removal fails with not-found"
+        (let [out   (th/command! {::th/type :get-file-summary
+                                  ::rpc/profile-id (:id editor)
+                                  :id (:id file)})
+              error (:error out)]
+          (t/is (th/ex-info? error))
+          (t/is (th/ex-of-type? error :not-found)))))))
+
+(t/deftest orphan-file-role-without-team-membership-grants-nothing
+  ;; Defense in depth: a file role row without a live team membership
+  ;; (leftover from before the leave-team cleanup) grants no access.
+  (let [owner    (th/create-profile* 1 {:is-active true})
+        stranger (th/create-profile* 2 {:is-active true})
+        team     (th/create-team* 1 {:profile-id (:id owner)})
+        project  (th/create-project* 1 {:profile-id (:id owner)
+                                        :team-id (:id team)})
+        file     (th/create-file* 1 {:profile-id (:id owner)
+                                     :project-id (:id project)})]
+
+    ;; Plant an orphan file role for a profile that was never a member.
+    (th/create-file-role* {:file-id (:id file)
+                           :profile-id (:id stranger)
+                           :role :editor})
+
+    (t/testing "orphan file role cannot rename"
+      (let [out   (th/command! {::th/type :rename-file
+                                ::rpc/profile-id (:id stranger)
+                                :id (:id file)
+                                :name "renamed"})
+            error (:error out)]
+        (t/is (th/ex-info? error))
+        (t/is (th/ex-of-type? error :not-found))))
+
+    (t/testing "orphan file role cannot read summary"
+      (let [out   (th/command! {::th/type :get-file-summary
+                                ::rpc/profile-id (:id stranger)
+                                :id (:id file)})
+            error (:error out)]
+        (t/is (th/ex-info? error))
+        (t/is (th/ex-of-type? error :not-found))))))
+
+(t/deftest leaver-loses-project-access
+  ;; Same revocation at project level (covers sql:project-permissions).
+  (let [owner  (th/create-profile* 1 {:is-active true})
+        editor (th/create-profile* 2 {:is-active true})
+        team   (th/create-team* 1 {:profile-id (:id owner)})]
+
+    (th/create-team-role* {:team-id (:id team)
+                           :profile-id (:id editor)
+                           :role :editor})
+
+    (let [project (th/create-project* 1 {:profile-id (:id editor)
+                                         :team-id (:id team)})]
+
+      (t/testing "leave team"
+        (let [out (th/command! {::th/type :leave-team
+                                ::rpc/profile-id (:id editor)
+                                :id (:id team)})]
+          (t/is (th/success? out))))
+
+      (t/testing "get-project after leaving fails with not-found"
+        (let [out   (th/command! {::th/type :get-project
+                                  ::rpc/profile-id (:id editor)
+                                  :id (:id project)})
+              error (:error out)]
+          (t/is (th/ex-info? error))
+          (t/is (th/ex-of-type? error :not-found))))
+
+      (t/testing "rename-project after leaving fails with not-found"
+        (let [out   (th/command! {::th/type :rename-project
+                                  ::rpc/profile-id (:id editor)
+                                  :id (:id project)
+                                  :name "renamed"})
+              error (:error out)]
+          (t/is (th/ex-info? error))
+          (t/is (th/ex-of-type? error :not-found)))))))
+
+(t/deftest leaver-vanishes-from-search
+  ;; The old team's files are no longer searchable by the leaver.
+  (let [owner  (th/create-profile* 1 {:is-active true})
+        editor (th/create-profile* 2 {:is-active true})
+        team   (th/create-team* 1 {:profile-id (:id owner)})]
+
+    (th/create-team-role* {:team-id (:id team)
+                           :profile-id (:id editor)
+                           :role :editor})
+
+    (let [project (th/create-project* 1 {:profile-id (:id editor)
+                                         :team-id (:id team)})
+          file    (th/create-file* 1 {:profile-id (:id editor)
+                                      :project-id (:id project)
+                                      :name "searchable-file"})]
+
+      (t/testing "member finds the file before leaving"
+        (let [out (th/command! {::th/type :search-files
+                                ::rpc/profile-id (:id editor)
+                                :team-id (:id team)
+                                :search-term "searchable"})]
+          (t/is (th/success? out))
+          (t/is (= (:id file) (-> out :result first :id)))))
+
+      (t/testing "leave team"
+        (let [out (th/command! {::th/type :leave-team
+                                ::rpc/profile-id (:id editor)
+                                :id (:id team)})]
+          (t/is (th/success? out))))
+
+      (t/testing "search on the old team fails with not-found"
+        (let [out   (th/command! {::th/type :search-files
+                                  ::rpc/profile-id (:id editor)
+                                  :team-id (:id team)
+                                  :search-term "searchable"})
+              error (:error out)]
+          (t/is (th/ex-info? error))
+          (t/is (th/ex-of-type? error :not-found)))))))
+
+(t/deftest pins-are-cleaned-on-leave
+  ;; The project pin (team-project-profile-rel) goes with the leaver.
+  (let [owner  (th/create-profile* 1 {:is-active true})
+        editor (th/create-profile* 2 {:is-active true})
+        team   (th/create-team* 1 {:profile-id (:id owner)})]
+
+    (th/create-team-role* {:team-id (:id team)
+                           :profile-id (:id editor)
+                           :role :editor})
+
+    (let [project (th/create-project* 1 {:profile-id (:id editor)
+                                         :team-id (:id team)})]
+
+      (t/testing "pin the project"
+        (let [out (th/command! {::th/type :update-project-pin
+                                ::rpc/profile-id (:id editor)
+                                :id (:id project)
+                                :team-id (:id team)
+                                :is-pinned true})]
+          (t/is (th/success? out)))
+        (t/is (= 1 (count (th/db-query :team-project-profile-rel
+                                       {:team-id (:id team)
+                                        :profile-id (:id editor)})))))
+
+      (t/testing "leave team removes the pin row"
+        (let [out (th/command! {::th/type :leave-team
+                                ::rpc/profile-id (:id editor)
+                                :id (:id team)})]
+          (t/is (th/success? out)))
+        (t/is (= 0 (count (th/db-query :team-project-profile-rel
+                                       {:team-id (:id team)
+                                        :profile-id (:id editor)}))))))))
+
+(t/deftest leaving-one-team-keeps-other-team-access
+  ;; Deletes are scoped by team: leaving A keeps B's files usable.
+  (let [owner   (th/create-profile* 1 {:is-active true})
+        editor  (th/create-profile* 2 {:is-active true})
+        team-a  (th/create-team* 1 {:profile-id (:id owner)})
+        team-b  (th/create-team* 2 {:profile-id (:id owner)})]
+
+    (th/create-team-role* {:team-id (:id team-a)
+                           :profile-id (:id editor)
+                           :role :editor})
+    (th/create-team-role* {:team-id (:id team-b)
+                           :profile-id (:id editor)
+                           :role :editor})
+
+    (let [project-a (th/create-project* 1 {:profile-id (:id editor)
+                                           :team-id (:id team-a)})
+          file-a    (th/create-file* 1 {:profile-id (:id editor)
+                                        :project-id (:id project-a)})
+          project-b (th/create-project* 2 {:profile-id (:id editor)
+                                           :team-id (:id team-b)})
+          file-b    (th/create-file* 2 {:profile-id (:id editor)
+                                        :project-id (:id project-b)})]
+
+      (t/testing "leave team A"
+        (let [out (th/command! {::th/type :leave-team
+                                ::rpc/profile-id (:id editor)
+                                :id (:id team-a)})]
+          (t/is (th/success? out))))
+
+      (t/testing "team A file is gone"
+        (let [out   (th/command! {::th/type :rename-file
+                                  ::rpc/profile-id (:id editor)
+                                  :id (:id file-a)
+                                  :name "renamed"})
+              error (:error out)]
+          (t/is (th/ex-info? error))
+          (t/is (th/ex-of-type? error :not-found))))
+
+      (t/testing "team B file still works"
+        (let [out (th/command! {::th/type :rename-file
+                                ::rpc/profile-id (:id editor)
+                                :id (:id file-b)
+                                :name "renamed"})]
+          (t/is (th/success? out)))))))
+
+(t/deftest orphan-project-role-grants-nothing-and-lists-nothing
+  ;; Mirror of the file orphan test at project level, including the
+  ;; get-all-projects listing (covers the F1 guard).
+  (let [owner    (th/create-profile* 1 {:is-active true})
+        stranger (th/create-profile* 2 {:is-active true})
+        team     (th/create-team* 1 {:profile-id (:id owner)})
+        project  (th/create-project* 1 {:profile-id (:id owner)
+                                        :team-id (:id team)})]
+
+    ;; Plant an orphan project role for a profile that was never a member.
+    (th/create-project-role* {:project-id (:id project)
+                              :profile-id (:id stranger)
+                              :role :editor})
+
+    (t/testing "orphan project role cannot read the project"
+      (let [out   (th/command! {::th/type :get-project
+                                ::rpc/profile-id (:id stranger)
+                                :id (:id project)})
+            error (:error out)]
+        (t/is (th/ex-info? error))
+        (t/is (th/ex-of-type? error :not-found))))
+
+    (t/testing "orphan project is not listed"
+      (let [out (th/command! {::th/type :get-all-projects
+                              ::rpc/profile-id (:id stranger)})]
+        (t/is (th/success? out))
+        (t/is (nil? (some #(= (:id project) (:id %)) (:result out))))))))

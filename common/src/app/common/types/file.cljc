@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.common.types.file
   (:require
@@ -28,7 +28,8 @@
    [app.common.types.shape :as cts]
    [app.common.types.shape-tree :as ctst]
    [app.common.types.text :as txt]
-   [app.common.types.tokens-lib :refer [schema:tokens-lib]]
+   [app.common.types.tokens-lib :as ctob]
+   [app.common.types.tokens-status :as ctos]
    [app.common.types.typographies-list :as ctyl]
    [app.common.types.typography :as cty]
    [app.common.uuid :as uuid]
@@ -86,7 +87,15 @@
    [:components {:optional true} schema:components]
    [:typographies {:optional true} schema:typographies]
    [:plugin-data {:optional true} schema:plugin-data]
-   [:tokens-lib {:optional true} schema:tokens-lib]])
+   [:tokens-source {:optional true} ::sm/uuid]                ;; Forward-compat: UUID of external library containing tokens-lib (full support in follow-up PR)
+   [:tokens-lib {:optional true} ctob/schema:tokens-lib]
+   [:tokens-status {:optional true} ctos/schema:tokens-status]])
+
+(def schema:file-metadata
+  [:map {:title "Metadata"}
+   [:storage-ref-id {:optional true} ::sm/uuid]
+   [:generated-by {:optional true} :string]
+   [:referer {:optional true} :string]])
 
 (def schema:file
   "A schema for validate a file data structure; data is optional
@@ -106,6 +115,7 @@
    [:data {:optional true} schema:data]
    [:version :int]
    [:features ::cfeat/features]
+   [:metadata {:optional true} schema:file-metadata]
    [:migrations {:optional true}
     [::sm/set {:ordered true} :string]]])
 
@@ -122,6 +132,9 @@
 
 (def check-file-media
   (sm/check-fn schema:media))
+
+(def decode-file-metadata
+  (sm/decoder schema:file-metadata sm/json-transformer))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; INITIALIZATION
@@ -204,7 +217,8 @@
 
 (defn update-file-data
   [file f]
-  (update file :data f))
+  (when file
+    (update file :data f)))
 
 (defn containers-seq
   "Generate a sequence of all pages and all components, wrapped as containers"
@@ -225,7 +239,87 @@
     (ctpl/update-page file-data (:id container) f)
     (ctkl/update-component file-data (:id container) f)))
 
+(defn update-pages
+  "Update all pages inside the file"
+  [file-data f]
+  (update file-data :pages-index d/update-vals
+          (fn [page]
+            (-> page
+                (ctn/make-container :page)
+                (f)
+                (ctn/unmake-container)))))
+
+(defn update-components
+  "Update all components inside the file"
+  [file-data f]
+  (d/update-when file-data :components d/update-vals
+                 (fn [component]
+                   (-> component
+                       (ctn/make-container :component)
+                       (f)
+                       (ctn/unmake-container)))))
+
+(defn update-containers
+  "Update all pages and components inside the file"
+  [file-data f]
+  (-> file-data
+      (update-pages f)
+      (update-components f)))
+
+(defn update-objects-tree
+  "Do a depth-first traversal of the shapes in a container, doing different kinds of updates.
+   The function f receives a shape with a context metadata with the container.
+   It must return a map with the following keys:
+   - :result -> :keep, :update or :remove
+   - :updated-shape -> the updated shape if result is :update"
+  [container f]
+  (letfn [(update-shape-recursive
+            [container shape-id]
+            (let [shape (ctst/get-shape container shape-id)]
+              (when (not shape)
+                (throw (ex-info "Shape not found" {:shape-id shape-id})))
+              (let [shape (with-meta shape {:container container})
+
+                    {:keys [result updated-shape]} (f shape)
+
+                    container'
+                    (case result
+                      :keep
+                      container
+
+                      :update
+                      (ctst/set-shape container updated-shape)
+
+                      :remove
+                      (ctst/delete-shape container shape-id true)
+
+                      (throw (ex-info "Invalid result from update function" {:result result})))]
+
+                (if (= result :remove)
+                  container'
+                  (reduce update-shape-recursive
+                          container'
+                          (:shapes shape))))))]
+
+    (let [root-id (if (ctn/page? container)
+                    uuid/zero
+                    (:main-instance-id container))]
+
+      (if-not (empty? (:objects container))
+        (update-shape-recursive container root-id)
+        container))))
+
+(defn update-all-shapes
+  "Update all shapes in the file data, using the update-objects-tree function for each container"
+  [file-data f]
+  (when file-data
+    (update-containers
+     file-data
+     (fn [container]
+       (update-objects-tree container f)))))
+
 ;; Asset helpers
+
 (defn find-component-file
   [file libraries component-file]
   (if (and (some? file) (= component-file (:id file)))
@@ -327,6 +421,38 @@
             (when (some? component)
               (get-ref-shape (:data component-file) component shape :with-context? with-context?))))]
     (some find-ref-shape-in-head (ctn/get-parent-heads (:objects container) shape))))
+
+(defn find-near-match
+  "Locate the shape that occupies the same position in the near main component.
+  This will be the ref-shape except if the shape is a copy subhead that has been
+  swapped. In this case, the near match will be the ref-shape that was before
+  the swap."
+  [file container libraries shape & {:keys [include-deleted? with-context?] :or {include-deleted? false with-context? false}}]
+  (let  [parent-shape     (ctst/get-shape container (:parent-id shape))
+         parent-ref-shape (when parent-shape
+                            (find-ref-shape file container libraries parent-shape :include-deleted? include-deleted? :with-context? true))
+         ref-container    (when parent-ref-shape
+                            (:container (meta parent-ref-shape)))
+         shape-index      (when parent-shape
+                            (d/index-of (:shapes parent-shape) (:id shape)))
+         near-match-id    (when (and parent-ref-shape shape-index)
+                            (get (:shapes parent-ref-shape) shape-index))
+         near-match       (when near-match-id
+                            (cond-> (ctst/get-shape ref-container near-match-id)
+                              with-context?
+                              (with-meta (meta parent-ref-shape))))]
+    near-match))
+
+(defn swapped-subhead?
+  "Whether `shape` references outside its near main parent and needs a swap slot.
+  Same-parent positional differences are synchronized as reorders."
+  [shape container find-parent-ref-shape]
+  (let [parent-shape     (ctst/get-shape container (:parent-id shape))
+        parent-ref-shape (when parent-shape
+                           (find-parent-ref-shape parent-shape))]
+    (and (some? parent-ref-shape)
+         (not-any? #(= % (:shape-ref shape))
+                   (:shapes parent-ref-shape)))))
 
 (defn advance-shape-ref
   "Get the shape-ref of the near main of the shape, recursively repeated as many times
@@ -800,8 +926,10 @@
   (let [shape (get objects shape-id)]
     (println (str/pad (str (str/repeat "  " level)
                            (when (:main-instance shape) "{")
+                           (when (:is-variant-container shape) "{{")
                            (:name shape)
                            (when (:main-instance shape) "}")
+                           (when (:is-variant-container shape) "}}")
                            (when (seq (:touched shape)) "*")
                            (when show-ids (str/format " %s" (:id shape))))
                       {:length 20

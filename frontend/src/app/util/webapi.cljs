@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.util.webapi
   "HTML5 web api helpers."
@@ -97,17 +97,22 @@
 
 (defn data-uri->blob
   [data-uri]
-  (let [[mtype b64-data] (str/split data-uri ";base64," 2)
-        mtype   (subs mtype (inc (str/index-of mtype ":")))
-        decoded (.atob js/window b64-data)
-        size    (.-length ^js decoded)
-        content (js/Uint8Array. size)]
-
-    (loop [i 0]
-      (when (< i size)
-        (aset content i (.charCodeAt ^js decoded i))
-        (recur (inc i))))
-
+  (let [[meta data] (str/split data-uri "," 2)
+        mtype-end   (or (str/index-of meta ";") (count meta))
+        mtype       (subs meta (inc (str/index-of meta ":")) mtype-end)
+        base64?     (str/includes? meta ";base64")
+        content     (if base64?
+                      (let [decoded (.atob js/globalThis data)
+                            size    (.-length ^js decoded)
+                            bytes   (js/Uint8Array. size)]
+                        (loop [i 0]
+                          (when (< i size)
+                            (aset bytes i (.charCodeAt ^js decoded i))
+                            (recur (inc i))))
+                        bytes)
+                      ;; Data URIs can be plain/URL-encoded (e.g. ;utf8,<svg...>).
+                      ;; Encode into UTF-8 bytes before creating the Blob.
+                      (.encode (js/TextEncoder.) (.decodeURIComponent js/globalThis data)))]
     (create-blob content mtype)))
 
 (defn get-current-selected-text
@@ -198,6 +203,24 @@
        (.observe ^js obs node)
        (fn []
          (.disconnect ^js obs))))))
+
+(defn on-dpr-change
+  "Registers a recurring listener for device-pixel-ratio changes (browser zoom).
+   Calls `f` with the new DPR each time it changes. Returns a 0-arity cancel fn."
+  [f]
+  (let [cancelled? (volatile! false)]
+    (letfn [(listen! []
+              (when-not @cancelled?
+                (let [dpr (.-devicePixelRatio ^js globals/window)
+                      mq  (.matchMedia globals/window (str "(resolution: " dpr "dppx)"))]
+                  (.addEventListener mq "change"
+                                     (fn [_]
+                                       (when-not @cancelled?
+                                         (f (.-devicePixelRatio ^js globals/window))
+                                         (listen!)))
+                                     #js {:once true}))))]
+      (listen!)
+      (fn [] (vreset! cancelled? true)))))
 
 (defn empty-png-size*
   [width height]

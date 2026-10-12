@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.ui.workspace.sidebar.assets.file-library
   (:require-macros [app.main.style :as stl])
@@ -100,7 +100,6 @@
                    :open is-open)}
      [:> title-bar* {:collapsable    true
                      :collapsed      (not is-open)
-                     :all-clickable  true
                      :on-collapsed   toggle-open
                      :title          (if is-local
                                        (mf/html [:div {:class (stl/css :special-title)}
