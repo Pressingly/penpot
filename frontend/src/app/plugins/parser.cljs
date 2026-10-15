@@ -2,11 +2,12 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.plugins.parser
   (:require
    [app.common.data :as d]
+   [app.common.geom.point :as gpt]
    [app.common.json :as json]
    [app.common.types.path :as path]
    [app.common.uuid :as uuid]
@@ -26,10 +27,16 @@
   (if (string? color) (-> color str/lower) color))
 
 (defn parse-point
+  "Parses a point-like JS object into a `gpt/point` record.
+
+  The schema for shape interactions (`schema:open-overlay-interaction`,
+  `::gpt/point`) requires a Point record — returning a plain map caused
+  plugin `addInteraction` calls with an `open-overlay` action and a
+  `manualPositionLocation` to be silently rejected. See issue #8409."
   [^js point]
   (when point
-    {:x (obj/get point "x")
-     :y (obj/get point "y")}))
+    (gpt/point (obj/get point "x")
+               (obj/get point "y"))))
 
 (defn parse-shape-type
   [type]
@@ -207,6 +214,7 @@
 ;;   strokeCapStart?: StrokeCap;
 ;;   strokeCapEnd?: StrokeCap;
 ;;   strokeColorGradient?: Gradient;
+;;   strokeImage?: ImageData;
 ;; }
 (defn parse-stroke
   [^js stroke]
@@ -221,7 +229,8 @@
       :stroke-alignment (-> (obj/get stroke "strokeAlignment") parse-keyword)
       :stroke-cap-start (-> (obj/get stroke "strokeCapStart") parse-keyword)
       :stroke-cap-end (-> (obj/get stroke "strokeCapEnd") parse-keyword)
-      :stroke-color-gradient (-> (obj/get stroke "strokeColorGradient") parse-gradient)})))
+      :stroke-color-gradient (-> (obj/get stroke "strokeColorGradient") parse-gradient)
+      :stroke-image (-> (obj/get stroke "strokeImage") parse-image-data)})))
 
 (defn parse-strokes
   [^js strokes]
@@ -230,7 +239,6 @@
 
 ;; export interface Blur {
 ;;   id?: string;
-;;   type?: 'layer-blur';
 ;;   value?: number;
 ;;   hidden?: boolean;
 ;; }
@@ -239,7 +247,6 @@
   (when (some? blur)
     (d/without-nils
      {:id (-> (obj/get blur "id") parse-id)
-      :type (-> (obj/get blur "type") parse-keyword)
       :value (obj/get blur "value")
       :hidden (obj/get blur "hidden")})))
 
@@ -331,17 +338,17 @@
     (d/without-nils
      {:type (-> (obj/get guide "type") parse-keyword)
       :display (obj/get guide "display")
-      :params (-> (obj/get guide "params") parse-frame-guide-column-params)})))
+      :params (-> (obj/get guide "params") parse-frame-guide-square-params)})))
 
 (defn parse-frame-guide
   [^js guide]
   (when (some? guide)
     (case (obj/get guide "type")
       "column"
-      parse-frame-guide-column
+      (parse-frame-guide-column guide)
 
       "row"
-      parse-frame-guide-row
+      (parse-frame-guide-row guide)
 
       "square"
       (parse-frame-guide-square guide))))
@@ -483,7 +490,7 @@
          {:action-type action-type
           :destination (-> (obj/get action "destination") (obj/get "$id"))
           :relative-to (-> (obj/get action "relativeTo") (obj/get "$id"))
-          :overlay-pos-type (-> (obj/get action "position") parse-keyword)
+          :overlay-pos-type (or (-> (obj/get action "position") parse-keyword) :center)
           :overlay-position (-> (obj/get action "manualPositionLocation") parse-point)
           :close-click-outside (obj/get action "closeWhenClickOutside")
           :background-overlay (obj/get action "addBackgroundOverlay")

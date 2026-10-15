@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.storage
   "Objects storage abstraction layer."
@@ -38,13 +38,18 @@
 (def default-bucket
   "file-media-object")
 
+(def tempfile-bucket
+  "Bucket name for temporary file uploads (10-minute expiry)."
+  "tempfile")
+
 (def valid-buckets
   #{"file-media-object"
     "team-font-variant"
     "file-object-thumbnail"
     "file-thumbnail"
     "profile"
-    "tempfile"
+    "organization"
+    tempfile-bucket
     "file-data"
     "file-data-fragment"
     "file-change"})
@@ -134,7 +139,8 @@
         ;; still not deleted.
         result (when (and (::deduplicate? params)
                           (:hash mdata)
-                          (:bucket mdata))
+                          (:bucket mdata)
+                          (not= tempfile-bucket (:bucket mdata)))
                  (let [result (get-database-object-by-hash connectable backend
                                                            (:bucket mdata)
                                                            (:hash mdata))]

@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.rpc.commands.media
   (:require
@@ -16,6 +16,8 @@
    [app.db :as db]
    [app.loggers.audit :as-alias audit]
    [app.media :as media]
+   [app.media.svg :as svg]
+   [app.media.validation :as media.v]
    [app.rpc :as-alias rpc]
    [app.rpc.climit :as climit]
    [app.rpc.commands.files :as files]
@@ -38,13 +40,19 @@
 
 (declare create-file-media-object)
 
+(def ^:private sql:get-team-id-for-file
+  "SELECT p.team_id
+     FROM file AS f
+     JOIN project AS p ON (p.id = f.project_id)
+    WHERE f.id = ?")
+
 (def ^:private schema:upload-file-media-object
   [:map {:title "upload-file-media-object"}
-   [:id {:optional true} ::sm/uuid]
+   [:id {:optional true} ::sm/user-provided-uuid]
    [:file-id ::sm/uuid]
    [:is-local ::sm/boolean]
    [:name [:string {:max 250}]]
-   [:content media/schema:upload]])
+   [:content media.v/schema:upload]])
 
 (sv/defmethod ::upload-file-media-object
   {::doc/added "1.17"
@@ -53,8 +61,14 @@
                 [:process-image/global]]}
   [{:keys [::db/pool] :as cfg} {:keys [::rpc/profile-id file-id content] :as params}]
   (files/check-edition-permissions! pool profile-id file-id)
-  (media/validate-media-type! content)
-  (media/validate-media-size! content)
+  (media.v/validate-media-type! content)
+  (media.v/validate-media-size! content)
+
+  (let [team-id (:team-id (db/exec-one! pool [sql:get-team-id-for-file file-id]))]
+    (quotes/check! cfg {::quotes/id        ::quotes/media-storage-bytes-per-team
+                        ::quotes/profile-id profile-id
+                        ::quotes/team-id    team-id
+                        ::quotes/incr       (:size content)}))
 
   (db/run! cfg (fn [{:keys [::db/conn] :as cfg}]
                  ;; We get the minimal file for proper checking if
@@ -113,21 +127,29 @@
 
 (defn- process-main-image
   [info]
-  (let [hash (sto/calculate-hash (:path info))
-        data (-> (sto/content (:path info))
-                 (sto/wrap-with-hash hash))]
+  (let [path  (:path info)
+        mtype (:mtype info)
+        path  (if (= mtype "image/svg+xml")
+                (let [content   (slurp path)
+                      sanitized (svg/sanitize-svg content)
+                      temp-path (tmp/tempfile :prefix "penpot-svg-" :suffix ".svg" :min-age "5m")]
+                  (spit (str temp-path) sanitized)
+                  temp-path)
+                path)
+        hash  (sto/calculate-hash path)
+        data  (-> (sto/content path)
+                  (sto/wrap-with-hash hash))]
     {::sto/content data
      ::sto/deduplicate? true
      ::sto/touched-at (:ts info)
-     :content-type (:mtype info)
+     :content-type mtype
      :bucket "file-media-object"}))
 
 (defn- process-thumb-image
-  [info]
-  (let [thumb (-> thumbnail-options
-                  (assoc :cmd :generic-thumbnail)
-                  (assoc :input info)
-                  (media/run))
+  [cfg info]
+  (let [thumb (media/run cfg (assoc thumbnail-options
+                                    :cmd :generic-thumbnail
+                                    :input info))
         hash  (sto/calculate-hash (:data thumb))
         data  (-> (sto/content (:data thumb) (:size thumb))
                   (sto/wrap-with-hash hash))]
@@ -138,12 +160,12 @@
      :bucket "file-media-object"}))
 
 (defn- process-image
-  [content]
-  (let [info (media/run {:cmd :info :input content})]
+  [cfg content]
+  (let [info (media/run cfg {:cmd :info :input content})]
     (cond-> info
       (and (not (svg-image? info))
            (big-enough-for-thumbnail? info))
-      (assoc ::thumb (process-thumb-image info))
+      (assoc ::thumb (process-thumb-image cfg info))
 
       :always
       (assoc ::image (process-main-image info)))))
@@ -170,7 +192,7 @@
            :path (str (:path content))
            :origin origin)
 
-    (let [result  (process-image content)
+    (let [result  (process-image cfg content)
           image   (sto/put-object! storage (::image result))
           thumb   (when-let [params (::thumb result)]
                     (sto/put-object! storage params))
@@ -203,7 +225,7 @@
    [:file-id ::sm/uuid]
    [:is-local ::sm/boolean]
    [:url ::sm/uri]
-   [:id {:optional true} ::sm/uuid]
+   [:id {:optional true} ::sm/user-provided-uuid]
    [:name {:optional true} [:string {:max 250}]]])
 
 (sv/defmethod ::create-file-media-object-from-url
@@ -262,8 +284,13 @@
   (clone-file-media-object cfg params))
 
 (defn clone-file-media-object
-  [{:keys [::db/conn]} {:keys [id file-id is-local]}]
+  [{:keys [::db/conn] :as cfg} {:keys [id file-id is-local] :as params}]
   (let [mobj (db/get-by-id conn :file-media-object id)]
+    (when-not mobj
+      (ex/raise :type :not-found
+                :code :object-not-found
+                :hint "source media object not found"))
+    (files/check-read-permissions! conn (::rpc/profile-id params) (:file-id mobj))
     (db/insert! conn :file-media-object
                 {:id (uuid/next)
                  :file-id file-id
@@ -279,14 +306,14 @@
 
 (def ^:private schema:create-upload-session
   [:map {:title "create-upload-session"}
-   [:total-chunks ::sm/int]])
+   [:total-chunks [::sm/int {:min 1}]]])
 
 (def ^:private schema:create-upload-session-result
   [:map {:title "create-upload-session-result"}
    [:session-id ::sm/uuid]])
 
 (sv/defmethod ::create-upload-session
-  {::doc/added "2.16"
+  {::doc/added "2.17"
    ::sm/params schema:create-upload-session
    ::sm/result schema:create-upload-session-result}
   [{:keys [::db/pool] :as cfg}
@@ -312,11 +339,14 @@
 
 ;; --- Chunked Upload: Upload a single chunk
 
+(declare ^:private get-upload-chunk)
+(declare ^:private check-upload-chunk-slot)
+
 (def ^:private schema:upload-chunk
   [:map {:title "upload-chunk"}
    [:session-id ::sm/uuid]
    [:index      ::sm/int]
-   [:content    media/schema:upload]])
+   [:content    media.v/schema:upload]])
 
 (def ^:private schema:upload-chunk-result
   [:map {:title "upload-chunk-result"}
@@ -324,12 +354,34 @@
    [:index      ::sm/int]])
 
 (sv/defmethod ::upload-chunk
-  {::doc/added "2.16"
+  {::doc/added "2.17"
    ::sm/params schema:upload-chunk
    ::sm/result schema:upload-chunk-result}
-  [{:keys [::db/pool] :as cfg}
-   {:keys [::rpc/profile-id session-id index content] :as _params}]
-  (let [session (db/get pool :upload-session {:id session-id :profile-id profile-id})]
+  [cfg {:keys [::rpc/profile-id session-id index content]}]
+  (let [session (db/tx-run! cfg check-upload-chunk-slot session-id profile-id index content)]
+    (l/trc :hint "upload-chunk"
+           :session-id session-id
+           :chunk (str index "/" (:total-chunks session))
+           :size (:size content)
+           :path (:path content))
+
+    (let [storage (sto/resolve cfg)
+          data    (sto/content (:path content))]
+      (sto/put-object! storage
+                       {::sto/content      data
+                        ::sto/deduplicate? false
+                        ::sto/touch        true
+                        :content-type      (:mtype content)
+                        :bucket            sto/tempfile-bucket
+                        :upload-id         (str session-id)
+                        :chunk-index       index}))
+
+    {:session-id session-id
+     :index      index}))
+
+(defn- check-upload-chunk-slot
+  [{:keys [::db/conn]} session-id profile-id index content]
+  (let [session (db/get conn :upload-session {:id session-id :profile-id profile-id} {::db/for-update true})]
     (when (or (neg? index) (>= index (:total-chunks session)))
       (ex/raise :type :validation
                 :code :invalid-chunk-index
@@ -338,26 +390,23 @@
                 :total-chunks (:total-chunks session)
                 :index index))
 
+    (when (> (:size content) (cf/get :upload-max-chunk-size))
+      (ex/raise :type :validation
+                :code :chunk-too-large
+                :hint "chunk size exceeds the maximum allowed"
+                :session-id session-id
+                :index index
+                :size (:size content)
+                :max-size (cf/get :upload-max-chunk-size)))
 
-    (l/trc :hint "upload-chunk"
-           :session-id session-id
-           :chunk (str index "/" (:total-chunks session))
-           :size (:size content)
-           :path (:path content)))
+    (when (get-upload-chunk conn session-id index)
+      (ex/raise :type :validation
+                :code :duplicate-chunk-index
+                :hint "chunk index already uploaded for this session"
+                :session-id session-id
+                :index index))
 
-  (let [storage (sto/resolve cfg)
-        data    (sto/content (:path content))]
-    (sto/put-object! storage
-                     {::sto/content      data
-                      ::sto/deduplicate? false
-                      ::sto/touch        true
-                      :content-type      (:mtype content)
-                      :bucket            "tempfile"
-                      :upload-id         (str session-id)
-                      :chunk-index       index}))
-
-  {:session-id session-id
-   :index      index})
+    session))
 
 ;; --- Chunked Upload: shared helpers
 
@@ -371,6 +420,18 @@
 (defn- get-upload-chunks
   [conn session-id]
   (db/exec! conn [sql:get-upload-chunks (str session-id)]))
+
+(def ^:private sql:get-upload-chunk
+  "SELECT id
+     FROM storage_object
+    WHERE (metadata->>'~:upload-id') = ?::text
+      AND (metadata->>'~:chunk-index')::integer = ?
+      AND deleted_at IS NULL
+    LIMIT 1")
+
+(defn- get-upload-chunk
+  [conn session-id index]
+  (db/exec-one! conn [sql:get-upload-chunk (str session-id) index]))
 
 (defn- concat-chunks
   "Reads all chunk storage objects in order and writes them to a single
@@ -387,20 +448,24 @@
 (defn assemble-chunks
   "Validates that all expected chunks are present for `session-id` and
   concatenates them into a single temporary file.  Returns a map
-  conforming to `media/schema:upload` with `:filename`, `:path` and
+  conforming to `media.v/schema:upload` with `:filename`, `:path` and
   `:size`.
 
-  Raises a :validation/:missing-chunks error when the number of stored
-  chunks does not match `:total-chunks` recorded in the session row.
+  Raises a :validation/:missing-chunks error when the stored chunk
+  indices do not form exactly the `0..total-chunks` range recorded in
+  the session row (wrong count, gaps or duplicates).
+  Raises :not-found when the session does not belong to `profile-id`.
   Deletes the session row from `upload_session` on success."
-  [{:keys [::db/conn] :as cfg} session-id]
-  (let [session (db/get conn :upload-session {:id session-id})
-        chunks  (get-upload-chunks conn session-id)]
+  [{:keys [::db/conn] :as cfg} profile-id session-id]
+  (let [session (db/get conn :upload-session {:id session-id :profile-id profile-id})
+        chunks  (get-upload-chunks conn session-id)
+        indices (sort (map :chunk-index chunks))]
 
-    (when (not= (count chunks) (:total-chunks session))
+    (when (or (not= (count chunks) (:total-chunks session))
+              (not= indices (range (:total-chunks session))))
       (ex/raise :type :validation
                 :code :missing-chunks
-                :hint "number of stored chunks does not match expected total"
+                :hint "stored chunks do not match expected total"
                 :session-id session-id
                 :expected   (:total-chunks session)
                 :found      (count chunks)))
@@ -424,10 +489,10 @@
    [:is-local   ::sm/boolean]
    [:name       [:string {:max 250}]]
    [:mtype      :string]
-   [:id         {:optional true} ::sm/uuid]])
+   [:id         {:optional true} ::sm/user-provided-uuid]])
 
 (sv/defmethod ::assemble-file-media-object
-  {::doc/added "2.16"
+  {::doc/added "2.17"
    ::sm/params schema:assemble-file-media-object
    ::climit/id [[:process-image/by-profile ::rpc/profile-id]
                 [:process-image/global]]}
@@ -437,12 +502,12 @@
 
   (db/tx-run! cfg
               (fn [{:keys [::db/conn] :as cfg}]
-                (let [content (assemble-chunks cfg session-id)
+                (let [content (assemble-chunks cfg profile-id session-id)
                       content (-> content
                                   (assoc :filename (str "upload:" name))
                                   (assoc :mtype mtype)
-                                  (media/validate-media-type!)
-                                  (media/validate-media-size!))
+                                  (media.v/validate-media-type!)
+                                  (media.v/validate-media-size!))
                       mobj    (create-file-media-object cfg (assoc params
                                                                    :id id
                                                                    :from-chunks? true

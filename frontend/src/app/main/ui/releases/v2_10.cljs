@@ -2,12 +2,13 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.ui.releases.v2-10
   (:require-macros [app.main.style :as stl])
   (:require
    [app.common.data.macros :as dm]
+   [app.main.ui.ds.buttons.button :refer [button*]]
    [app.main.ui.releases.common :as c]
    [rumext.v2 :as mf]))
 
@@ -46,8 +47,10 @@
            "Let’s dive in!"]]
 
          [:div {:class (stl/css :navigation)}
-          [:button {:class (stl/css :next-btn)
-                    :on-click next} "Continue"]]]]]]
+          [:> button* {:class (stl/css :next-btn)
+                       :on-click next
+                       :variant "primary"}
+           "Continue"]]]]]]
 
      0
      [:div {:class (stl/css-case :modal-overlay true)}
@@ -74,13 +77,15 @@
            "This release has been shaped by our amazing community. A huge thank-you to everyone who shared ideas, feedback, and insights to make Penpot Variants possible <3"]]
 
          [:div {:class (stl/css :navigation)}
-          [:& c/navigation-bullets
+          [:> c/navigation-bullets*
            {:slide slide
             :navigate navigate
             :total 4}]
 
-          [:button {:on-click next
-                    :class (stl/css :next-btn)} "Continue"]]]]]]
+          [:> button* {:class (stl/css :next-btn)
+                       :on-click next
+                       :variant "primary"}
+           "Continue"]]]]]]
 
      1
      [:div {:class (stl/css-case :modal-overlay true)}
@@ -107,19 +112,22 @@
            "And one more thing…Tune into our product showcase to see future plans and help us shape Penpot. Come for the insights, stay for the community…"]
 
           [:p {:class (stl/css :feature-content)}
-           [:a {:href "https://penpot.app/penpotfest"
+           [:a {:class (stl/css :link)
+                :href "https://penpot.app/penpotfest"
                 :target "_blank"}
             "Get your tickets"]
            " now to join us 8-10 October, in Madrid!"]]
 
          [:div {:class (stl/css :navigation)}
-          [:& c/navigation-bullets
+          [:> c/navigation-bullets*
            {:slide slide
             :navigate navigate
             :total 4}]
 
-          [:button {:on-click next
-                    :class (stl/css :next-btn)} "Continue"]]]]]]
+          [:> button* {:class (stl/css :next-btn)
+                       :on-click next
+                       :variant "primary"}
+           "Continue"]]]]]]
 
      2
      [:div {:class (stl/css-case :modal-overlay true)}
@@ -143,13 +151,15 @@
            "This latest update brings—no more no less than—six new token types, significantly boosting your ability to manage design decisions, particularly in typography: Font Family, Font Weight, Text Case, Text Decoration, Letter Spacing token, and Number token (for unitless values)."]]
 
          [:div {:class (stl/css :navigation)}
-          [:& c/navigation-bullets
+          [:> c/navigation-bullets*
            {:slide slide
             :navigate navigate
             :total 4}]
 
-          [:button {:on-click next
-                    :class (stl/css :next-btn)} "Continue"]]]]]]
+          [:> button* {:class (stl/css :next-btn)
+                       :on-click next
+                       :variant "primary"}
+           "Continue"]]]]]]
 
      3
      [:div {:class (stl/css-case :modal-overlay true)}
@@ -174,11 +184,12 @@
 
          [:div {:class (stl/css :navigation)}
 
-          [:& c/navigation-bullets
+          [:> c/navigation-bullets*
            {:slide slide
             :navigate navigate
             :total 4}]
 
-          [:button {:on-click finish
-                    :class (stl/css :next-btn)} "Let's go"]]]]]])))
-
+          [:> button* {:class (stl/css :next-btn)
+                       :on-click finish
+                       :variant "primary"}
+           "Let's go"]]]]]])))

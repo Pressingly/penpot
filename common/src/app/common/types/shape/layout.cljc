@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.common.types.shape.layout
   (:require
@@ -346,6 +346,22 @@
     (if (= :simple layout-padding-type)
       (+ pad-top pad-top)
       (+ pad-top pad-bottom))))
+
+(defn padding-type-for
+  "`:simple` when top≈bottom and left≈right, `:multiple` otherwise (nil sides = 0)."
+  [{:keys [p1 p2 p3 p4]}]
+  (if (and (mth/close? (d/nilv p1 0) (d/nilv p3 0))
+           (mth/close? (d/nilv p2 0) (d/nilv p4 0)))
+    :simple
+    :multiple))
+
+(defn margin-type-for
+  "`:simple` when top≈bottom and left≈right, `:multiple` otherwise (nil sides = 0)."
+  [{:keys [m1 m2 m3 m4]}]
+  (if (and (mth/close? (d/nilv m1 0) (d/nilv m3 0))
+           (mth/close? (d/nilv m2 0) (d/nilv m4 0)))
+    :simple
+    :multiple))
 
 (defn child-min-width
   [child]
@@ -874,6 +890,42 @@
         (duplicate-cells :column index (inc index) ids-map)
         (assign-cells objects))))
 
+(defn duplicate-row-at
+  "Duplicate source row and insert the copy at target-index (0-indexed).
+   Like `duplicate-row` but inserts at an arbitrary position.
+   Note: after add-grid-row, if target <= source the source cells shift
+   by +1, so we must adjust the from-index for duplicate-cells."
+  [shape objects source-index target-index ids-map]
+  (let [value          (dm/get-in shape [:layout-grid-rows source-index])
+        ;; After inserting at target-index, cells at rows >= (inc target-index)
+        ;; get shifted +1. If target <= source, the source row shifts.
+        adjusted-source (if (<= target-index source-index)
+                          (inc source-index)
+                          source-index)]
+    (-> shape
+        (remove-cell-areas-after :row source-index)
+        (add-grid-row value target-index)
+        (duplicate-cells :row adjusted-source target-index ids-map)
+        (assign-cells objects))))
+
+(defn duplicate-column-at
+  "Duplicate source column and insert the copy at target-index (0-indexed).
+   Like `duplicate-column` but inserts at an arbitrary position.
+   Note: after add-grid-column, if target <= source the source cells shift
+   by +1, so we must adjust the from-index for duplicate-cells."
+  [shape objects source-index target-index ids-map]
+  (let [value          (dm/get-in shape [:layout-grid-columns source-index])
+        ;; After inserting at target-index, cells at columns >= (inc target-index)
+        ;; get shifted +1. If target <= source, the source column shifts.
+        adjusted-source (if (<= target-index source-index)
+                          (inc source-index)
+                          source-index)]
+    (-> shape
+        (remove-cell-areas-after :column source-index)
+        (add-grid-column value target-index)
+        (duplicate-cells :column adjusted-source target-index ids-map)
+        (assign-cells objects))))
+
 (defn make-remove-cell
   [attr span-attr track-num]
   (fn [[_ cell]]
@@ -1038,7 +1090,7 @@
           (maybe-remove?)))))
 
 (defn check-deassigned-cells
-  "Clean the cells whith shapes that are no longer in the layout"
+  "Clean the cells with shapes that are no longer in the layout"
   [parent objects]
 
   (let [child-set (set (:shapes parent))
@@ -1473,20 +1525,37 @@
       (some? target-cell)
       (add-children-to-cell ids objects [(:row target-cell) (:column target-cell)]))))
 
+(defn- refill-slots
+  "Fill matching positions in `shapes` from `ordered`, preserving other indices.
+  `ordered` must contain exactly the ids accepted by `slot?`."
+  [shapes slot? ordered]
+  (loop [shapes  (seq shapes)
+         ordered (seq ordered)
+         result  (transient [])]
+    (if (nil? shapes)
+      (persistent! result)
+      (let [id (first shapes)]
+        (if (slot? id)
+          (recur (next shapes) (next ordered) (conj! result (first ordered)))
+          (recur (next shapes) ordered (conj! result id)))))))
+
 (defn reorder-grid-children
+  "Order cell children by grid position while preserving the indices of
+  hidden and absolute-positioned children."
   [parent]
-  (let [cells (get-cells parent {:sort? true})
+  (let [cells  (get-cells parent {:sort? true})
         child? (set (:shapes parent))
-        new-shapes
-        (into (d/ordered-set)
+
+        in-cell-ids
+        (into []
               (comp (keep (comp first :shapes))
-                    (filter child?))
-              cells)
-
-        ;; Add the children that are not in cells (absolute positioned for example)
-        new-shapes (into new-shapes (:shapes parent))]
-
-    (assoc parent :shapes (into [] (reverse new-shapes)))))
+                    (filter child?)
+                    (distinct))
+              cells)]
+    ;; :shapes is ordered in reverse relative to the visual cell order
+    (assoc parent :shapes (refill-slots (:shapes parent)
+                                        (set in-cell-ids)
+                                        (reverse in-cell-ids)))))
 
 (defn cells-by-row
   ([parent index]

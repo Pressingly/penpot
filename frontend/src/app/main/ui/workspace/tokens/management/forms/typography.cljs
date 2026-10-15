@@ -2,15 +2,15 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.ui.workspace.tokens.management.forms.typography
   (:require-macros [app.main.style :as stl])
   (:require
    [app.common.data :as d]
+   [app.common.files.tokens :as cfo]
    [app.common.schema :as sm]
    [app.common.types.token :as cto]
-   [app.common.types.tokens-lib :as ctob]
    [app.main.data.workspace.tokens.errors :as wte]
    [app.main.ui.components.radio-buttons :refer [radio-button radio-buttons]]
    [app.main.ui.ds.foundations.assets.icon :as i]
@@ -18,7 +18,6 @@
    [app.main.ui.workspace.tokens.management.forms.generic-form :as generic]
    [app.main.ui.workspace.tokens.management.forms.validators :refer [check-coll-self-reference check-self-reference default-validate-token]]
    [app.util.i18n :refer [tr]]
-   [beicon.v2.core :as rx]
    [cuerdas.core :as str]
    [rumext.v2 :as mf]))
 
@@ -43,11 +42,14 @@
 (defn- validate-typography-token
   [{:keys [token-value] :as props}]
   (cond
-    ;; Entering form without a value - show no error just resolve nil
-    (nil? token-value) (rx/of nil)
     ;; Validate refrence string
     (cto/composite-token-reference? token-value) (default-validate-token props)
-    ;; Validate composite token
+    ;; Validate composite token. `token-value` may be nil when the form is
+    ;; submitted without any composite field filled in — normalize it to `{}`
+    ;; so `check-empty-typography-token` catches it and rejects the submit,
+    ;; instead of silently saving a token with a `nil` value (which later
+    ;; crashes token resolution: the tokens-studio StyleDictionary
+    ;; preprocessor assumes a typography token's value is never null).
     :else
     (-> props
         (update :token-value
@@ -209,19 +211,12 @@
 
 ;; TODO: use cfo/make-schema:token-value and extend it with typography and reference fields
 (defn- make-schema
-  [tokens-tree active-tab]
+  [current-token-path tokens-tree active-tab]
   (sm/schema
    [:and
     [:map
-     [:name
-      [:and
-       [:string {:min 1 :max 255
-                 :error/fn #(str (:value %) (tr "workspace.tokens.token-name-length-validation-error"))}]
-       (sm/update-properties cto/schema:token-name assoc
-                             :error/fn #(str (:value %) (tr "workspace.tokens.token-name-validation-error")))
-       [:fn {:error/fn #(tr "workspace.tokens.token-name-duplication-validation-error" (:value %))}
-        #(not (ctob/token-name-path-exists? % tokens-tree))]]]
-
+     [:name (cfo/make-token-name-schema (-> tokens-tree
+                                            (d/dissoc-in current-token-path)))]
      [:value
       [:map
        [:font-family {:optional true} [:maybe :string]]
@@ -239,7 +234,7 @@
       [:string {:max 2048 :error/fn #(tr "errors.field-max-length" 2048)}]]]
 
     [:fn {:error/field [:value :reference]
-          :error/fn #(tr "workspace.tokens.self-reference")}
+          :error/fn #(tr "errors.tokens.self-reference")}
      (fn [{:keys [name value]}]
        (let [reference (get value :reference)]
          (if (and reference name)
@@ -247,7 +242,7 @@
            true)))]
 
     [:fn {:error/field [:value :line-height]
-          :error/fn #(tr "workspace.tokens.composite-line-height-needs-font-size")}
+          :error/fn #(tr "errors.tokens.composite-line-height-needs-font-size")}
      (fn [{:keys [value]}]
        (let [line-heigh (get value :line-height)
              font-size (get value :font-size)]
@@ -269,7 +264,7 @@
          result))]]))
 
 (mf/defc form*
-  [{:keys [token] :as props}]
+  [{:keys [token current-token-path] :as props}]
   (let [initial
         (mf/with-memo [token]
           (let [value (:value token)
@@ -297,7 +292,7 @@
              :value       processed-value
              :description (:description token "")}))
         props (mf/spread-props props {:initial initial
-                                      :make-schema make-schema
+                                      :make-schema (partial make-schema current-token-path)
                                       :token token
                                       :validator validate-typography-token
                                       :value-type :composite

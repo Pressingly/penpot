@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.data.workspace.shape-layout
   (:require
@@ -23,9 +23,11 @@
    [app.main.data.changes :as dch]
    [app.main.data.event :as ev]
    [app.main.data.helpers :as dsh]
+   [app.main.data.workspace :as-alias dw]
    [app.main.data.workspace.colors :as cl]
    [app.main.data.workspace.grid-layout.editor :as dwge]
    [app.main.data.workspace.modifiers :as dwm]
+   [app.main.data.workspace.reflow :as wrf]
    [app.main.data.workspace.selection :as dwse]
    [app.main.data.workspace.shapes :as dwsh]
    [app.main.data.workspace.undo :as dwu]
@@ -98,26 +100,50 @@
 ;; Never call this directly but through the data-event `:layout/update`
 ;; Otherwise a lot of cycle dependencies could be generated
 (defn- update-layout-positions
-  [{:keys [page-id ids undo-group]}]
+  [{:keys [page-id ids undo-group reflow-tasks]}]
   (ptk/reify ::update-layout-positions
     ptk/WatchEvent
-    (watch [_ state _]
+    (watch [_ state stream]
       (let [page-id (or page-id (:current-page-id state))
             objects (dsh/lookup-page-objects state page-id)
-            ids (->> ids (remove uuid/zero?) (filter #(contains? objects %)))]
-        (if (d/not-empty? ids)
-          (let [modif-tree (dwm/create-modif-tree ids (ctm/reflow-modifiers))]
-            (if (features/active-feature? state "render-wasm/v1")
-              (rx/of (dwm/apply-wasm-modifiers modif-tree
+            ids (->> ids (remove uuid/zero?) (filter #(contains? objects %)))
+
+            update-positions-stream
+            (if (d/not-empty? ids)
+              (let [modif-tree (dwm/create-modif-tree ids (ctm/reflow-modifiers))]
+                (if (features/active-feature? state "render-wasm/v1")
+                  (rx/of (dwm/apply-wasm-modifiers modif-tree
+                                                   :stack-undo? true
+                                                   :undo-group undo-group
+                                                   :ignore-touched true))
+                  (rx/of (dwm/apply-modifiers {:page-id page-id
+                                               :modifiers modif-tree
                                                :stack-undo? true
-                                               :undo-group undo-group
-                                               :ignore-touched true))
-              (rx/of (dwm/apply-modifiers {:page-id page-id
-                                           :modifiers modif-tree
-                                           :stack-undo? true
-                                           :ignore-touched true
-                                           :undo-group undo-group}))))
-          (rx/empty))))))
+                                               :ignore-touched true
+                                               :undo-group undo-group}))))
+              (rx/empty))
+
+            ;; The apply events above are dispatched and applied synchronously,
+            ;; except while a shape-update buffer is open (token propagation),
+            ;; where the commit lands on `update-shapes-buffer-commit`.
+            drain-stream
+            (if (and (::dwsh/update-shapes-buffer state)
+                     (d/not-empty? ids))
+              (->> stream
+                   (rx/filter (ptk/type? ::dwsh/update-shapes-buffer-commit))
+                   (rx/take 1)
+                   (rx/take-until (rx/filter (ptk/type? ::dw/finalize-workspace) stream))
+                   ;; No events are derived from this
+                   (rx/ignore))
+              (rx/empty))]
+
+        (cond->> (rx/concat update-positions-stream drain-stream)
+          (d/not-empty? reflow-tasks)
+          (rx/finalize #(wrf/finish-tasks! reflow-tasks)))))))
+
+(defn- without-root-board
+  [ids]
+  (into [] (remove uuid/zero?) ids))
 
 (defn initialize-shape-layout
   []
@@ -126,21 +152,27 @@
     (watch [_ _ stream]
       (let [stopper (rx/filter (ptk/type? ::finalize-shape-layout) stream)]
         (->> stream
-             ;; FIXME: we don't need use types for simple signaling,
-             ;; we can just use a keyword for it
              (rx/filter (ptk/type? :layout/update))
-             (rx/map deref)
-             ;; We buffer the updates to the layout so if there are many changes at the same time
-             ;; they are process together. It will get a better performance.
+             ;; Keeps each update's page and the shapes that can be laid out;
+             ;; the root lays out nothing, so an update with only it is dropped.
+             (rx/map (fn [event]
+                       (-> (deref event)
+                           (update :ids without-root-board))))
+             (rx/filter #(d/not-empty? (:ids %)))
+             (rx/map #(assoc % ::reflow-task (wrf/start! :layout (:ids %))))
              (rx/buffer-time 100)
              (rx/filter #(d/not-empty? %))
              (rx/mapcat
-              (fn [data]
-                (->> (group-by :page-id data)
-                     (map (fn [[page-id items]]
-                            (let [ids (reduce #(into %1 (:ids %2)) #{} items)]
-                              (update-layout-positions {:page-id page-id :ids ids})))))))
-             (rx/take-until stopper))))))
+              (fn [updates]
+                (->> (group-by :page-id updates)
+                     (map (fn [[page-id updates]]
+                            (let [ids (into #{} (mapcat :ids) updates)]
+                              (update-layout-positions {:page-id page-id
+                                                        :ids ids
+                                                        :reflow-tasks (mapv ::reflow-task updates)})))))))
+             (rx/take-until stopper)
+             ;; On workspace teardown clear everything still pending.
+             (rx/finalize wrf/reset-pending!))))))
 
 (defn finalize-shape-layout
   []
@@ -555,10 +587,9 @@
       ;; change parent to fixed
       (and row? auto-height? (every? ctl/fill-height? all-children))
       (assoc :layout-item-v-sizing :fix))))
-
 (defn update-layout-child
-  ([ids changes] (update-layout-child ids changes nil))
-  ([ids changes options]
+  ([ids attrs] (update-layout-child ids attrs nil))
+  ([ids attrs options]
    (ptk/reify ::update-layout-child
      ptk/WatchEvent
      (watch [_ state _]
@@ -568,20 +599,20 @@
              children-ids (->> ids (mapcat #(cfh/get-children-ids objects %)))
              parent-ids   (->> ids (map #(cfh/get-parent-id objects %)))
              undo-id      (js/Symbol)
-             margin-attrs (-> (get changes :layout-item-margin)
+             margin-attrs (-> (get attrs :layout-item-margin)
                               keys
                               set)]
          (rx/of (dwu/start-undo-transaction undo-id)
-                (dwsh/update-shapes ids (d/patch-object changes)
+                (dwsh/update-shapes ids (d/patch-object attrs)
                                     (cond-> options
                                       (seq margin-attrs)
                                       (assoc :changed-sub-attr margin-attrs)))
-                (dwsh/update-shapes children-ids (partial fix-child-sizing objects changes) options)
+                (dwsh/update-shapes children-ids (partial fix-child-sizing objects attrs) options)
                 (dwsh/update-shapes
                  parent-ids
                  (fn [parent objects]
                    (-> parent
-                       (fix-parent-sizing objects (set ids) changes)
+                       (fix-parent-sizing objects (set ids) attrs)
                        (cond-> (ctl/grid-layout? parent)
                          (ctl/assign-cells objects))))
                  (merge options {:with-objects? true}))
@@ -787,3 +818,135 @@
          (dch/commit-changes changes)
          (ptk/data-event :layout/update {:ids [layout-id]})
          (dwu/commit-undo-transaction undo-id))))))
+
+(defn complete-rows?
+  "Check if the selected cells cover complete row(s) — all columns must be included."
+  [grid cells]
+  (let [{:keys [first-column last-column]} (ctl/cells-coordinates cells)
+        num-columns (count (:layout-grid-columns grid))]
+    (and (= first-column 1)
+         (= last-column num-columns))))
+
+(defn complete-columns?
+  "Check if the selected cells cover complete column(s) — all rows must be included."
+  [grid cells]
+  (let [{:keys [first-row last-row]} (ctl/cells-coordinates cells)
+        num-rows (count (:layout-grid-rows grid))]
+    (and (= first-row 1)
+         (= last-row num-rows))))
+
+(defn copy-grid-tracks
+  "Store the selected track indices for later paste. Works for both
+   complete rows and complete columns."
+  [grid-id type]
+  (assert (#{:row :column} type))
+  (ptk/reify ::copy-grid-tracks
+    ptk/UpdateEvent
+    (update [_ state]
+      (let [objects    (dsh/lookup-page-objects state)
+            grid       (get objects grid-id)
+            selected   (get-in state [:workspace-grid-edition grid-id :selected])
+            cells      (->> selected (map #(get-in grid [:layout-grid-cells %])))
+            {:keys [first-row last-row first-column last-column]} (ctl/cells-coordinates cells)
+            ;; Convert 1-indexed cell positions to 0-indexed track indices
+            track-indices (if (= type :row)
+                            (vec (range (dec first-row) last-row))
+                            (vec (range (dec first-column) last-column)))]
+        (assoc-in state [:workspace-grid-edition grid-id :copied-tracks]
+                  {:track-indices track-indices
+                   :type type
+                   :grid-id grid-id})))))
+
+(defn paste-grid-tracks
+  "Paste previously copied tracks at the end of the grid.
+   Each source track is duplicated and appended after the last
+   existing track. All operations are grouped in a single undo
+   transaction. Follows the same pattern as `duplicate-layout-track`."
+  [grid-id]
+  (ptk/reify ::paste-grid-tracks
+    ptk/WatchEvent
+    (watch [it state _]
+      (let [file-id      (:current-file-id state)
+            page         (dsh/lookup-page state)
+            objects      (:objects page)
+            libraries    (dsh/lookup-libraries state)
+            library-data (dsh/lookup-file state file-id)
+            grid         (get objects grid-id)
+
+            copied        (get-in state [:workspace-grid-edition grid-id :copied-tracks])
+            track-indices (:track-indices copied)
+            type          (:type copied)
+            undo-id       (js/Symbol)]
+
+        (when (and (seq track-indices) (some? type))
+          (let [shapes-by-track-fn
+                (if (= type :row)
+                  ctl/shapes-by-row
+                  ctl/shapes-by-column)
+
+                ;; Collect shapes from all source tracks
+                all-shapes
+                (->> track-indices
+                     (mapcat #(shapes-by-track-fn grid % false))
+                     (set))
+
+                ;; Generate duplication changes for all shapes at once
+                changes
+                (-> (pcb/empty-changes it)
+                    (cll/generate-duplicate-changes objects page all-shapes (gpt/point 0 0) libraries library-data file-id)
+                    (cll/generate-duplicate-changes-update-indices objects all-shapes))
+
+                ;; Build ids-map: old-shape-id -> new-shape-id
+                ids-map
+                (->> changes
+                     :redo-changes
+                     (filter #(= (:type %) :add-obj))
+                     (filter #(all-shapes (:old-id %)))
+                     (map #(vector (:old-id %) (get-in % [:obj :id])))
+                     (into {}))
+
+                duplicate-at-fn
+                (if (= type :row)
+                  ctl/duplicate-row-at
+                  ctl/duplicate-column-at)
+
+                tracks-prop
+                (if (= type :row)
+                  :layout-grid-rows
+                  :layout-grid-columns)
+
+                ;; Sort source indices ascending — we'll append each
+                ;; copy at the end in order, preserving the original
+                ;; track ordering in the appended block.
+                sorted-indices (vec (sort track-indices))
+
+                changes
+                (-> changes
+                    (pcb/update-shapes
+                     [grid-id]
+                     (fn [shape objects]
+                       ;; Restore grid structure (duplication may have altered it)
+                       (let [shape (merge shape (select-keys grid [:layout-grid-cells :layout-grid-columns :layout-grid-rows]))]
+                         ;; Append each source track at the end.
+                         ;; Process in ascending order so the copies
+                         ;; appear in the same order as the originals.
+                         ;; Each insertion adds one track, so both the
+                         ;; target index and the source index (if it
+                         ;; comes after the target) shift by 1.
+                         (reduce
+                          (fn [s [offset src-idx]]
+                            (let [;; Source tracks don't shift because we
+                                  ;; append after them (target > source).
+                                  actual-src src-idx
+                                  ;; Append at the end (which grows by
+                                  ;; one with each iteration).
+                                  target-idx (+ (count (get grid tracks-prop)) offset)]
+                              (duplicate-at-fn s objects actual-src target-idx ids-map)))
+                          shape
+                          (map-indexed vector sorted-indices))))
+                     {:with-objects? true}))]
+
+            (rx/of (dwu/start-undo-transaction undo-id)
+                   (dch/commit-changes changes)
+                   (ptk/data-event :layout/update {:ids [grid-id]})
+                   (dwu/commit-undo-transaction undo-id))))))))

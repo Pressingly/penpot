@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.common.types.container
   (:require
@@ -54,6 +54,10 @@
 (defn make-container
   [page-or-component type]
   (assoc page-or-component :type type))
+
+(defn unmake-container
+  [container]
+  (dissoc container :type))
 
 (defn page?
   [container]
@@ -255,7 +259,7 @@
    (some? (find-component-main objects shape only-direct-child?))))
 
 (defn in-any-component?
-  "Check if the shape is part of any component (main or copy), wether it's
+  "Check if the shape is part of any component (main or copy), whether it's
    head or not."
   [objects shape]
   (or (ctk/in-component-copy? shape)
@@ -335,7 +339,10 @@
                                                                           ;; We must avoid that destiny frame is inside the component frame
                                                                           (nil? (get component-children (:id %)))
                                                                           ;; We must avoid that destiny frame is inside a copy
-                                                                          (not (ctk/in-component-copy? %)))}))
+                                                                          (not (ctk/in-component-copy? %))
+                                                                          ;; We must avoid that destiny frame is a variant container,
+                                                                          ;; because their children must be variant mains
+                                                                          (not (ctk/is-variant-container? %)))}))
          frame           (get-shape page frame-id)
          component-frame (get-component-shape objects frame {:allow-main? true})
 
@@ -401,7 +408,7 @@
       (map remap-ids new-shapes)])))
 
 (defn get-first-valid-parent
-  "Go trough the parents until we find a shape that is not a copy of a component nor
+  "Go through the parents until we find a shape that is not a copy of a component nor
    a variant container."
   [objects id]
   (let [shape (get objects id)]
@@ -482,65 +489,80 @@
      ;; or inside its main component if it's in a copy.
      comps-nesting-loop?)))
 
+(defn parent-validation-cache
+  "Pre-computes the `children`-derived data for `find-valid-parent-and-frame-ids`.
+   Build once per gesture and pass as `cache`; values are delays so unused
+   branches stay unrealized."
+  [objects children libraries]
+  (let [children-ids (set (map :id children))
+        top-children (remove #(contains? children-ids (:parent-id %)) children)
+        all-main?    (every? ctk/main-instance? top-children)
+        get-variant-id (fn [shape]
+                         (when (:component-id shape)
+                           (->  (get-component-from-shape shape libraries)
+                                :variant-id)))
+        descendants (delay (mapcat #(cfh/get-children-with-self objects %) children-ids))
+        any-variant-container-descendant (delay (some ctk/is-variant-container? @descendants))
+        descendants-variant-ids-set (delay (->> @descendants
+                                                (map get-variant-id)
+                                                set))
+        any-main-descendant
+        (delay
+          (some
+           (fn [shape]
+             (some ctk/main-instance? (cfh/get-children-with-self objects (:id shape))))
+           children))]
+    {:top-children top-children
+     :all-main? all-main?
+     :descendants descendants
+     :any-variant-container-descendant any-variant-container-descendant
+     :descendants-variant-ids-set descendants-variant-ids-set
+     :any-main-descendant any-main-descendant}))
+
 (defn find-valid-parent-and-frame-ids
-  "Navigate trough the ancestors until find one that is valid. Returns [ parent-id frame-id ]"
+  "Navigate through the ancestors until find one that is valid. Returns [ parent-id frame-id ]"
   ([parent-id objects children]
-   (find-valid-parent-and-frame-ids parent-id objects children false nil))
+   (find-valid-parent-and-frame-ids parent-id objects children false nil nil))
   ([parent-id objects children pasting? libraries]
-   (letfn [(get-frame [parent-id]
-             (if (cfh/frame-shape? objects parent-id) parent-id (get-in objects [parent-id :frame-id])))]
-     (let [parent (get objects parent-id)
+   (find-valid-parent-and-frame-ids parent-id objects children pasting? libraries nil))
+  ([parent-id objects children pasting? libraries cache]
+   (letfn [(get-frame [pid]
+             (if (cfh/frame-shape? objects pid) pid (get-in objects [pid :frame-id])))]
+     ;; Predicates below are ordered so cheap parent/ascendant checks
+     ;; short-circuit before the descendant delays are forced.
+     (let [{:keys [top-children all-main? any-variant-container-descendant
+                   descendants-variant-ids-set any-main-descendant]}
+           (or cache (parent-validation-cache objects children libraries))]
 
-           ;; We need to check only the top shapes
-           children-ids (set (map :id children))
-           top-children (remove #(contains? children-ids (:parent-id %)) children)
+       (loop [parent-id parent-id]
+         (let [parent (get objects parent-id)
 
-           ;; We can always move the children to the parent they already have.
-           ;; But if we are pasting, those are new items, so it is considered a change
-           no-changes?
-           (and (every? #(= parent-id (:parent-id %)) top-children)
-                (not pasting?))
+               ;; We can always move the children to the parent they already have.
+               ;; But if we are pasting, those are new items, so it is considered a change
+               no-changes?
+               (and (every? #(= parent-id (:parent-id %)) top-children)
+                    (not pasting?))
 
-           ;; Are all the top-children a main-instance of a component?
-           all-main?
-           (every? ctk/main-instance? top-children)
+               ascendants (cfh/get-parents-with-self objects parent-id)
+               any-main-ascendant (some ctk/main-instance? ascendants)
+               any-variant-container-ascendant (some ctk/is-variant-container? ascendants)]
 
-           ascendants (cfh/get-parents-with-self objects parent-id)
-           any-main-ascendant (some ctk/main-instance? ascendants)
-           any-variant-container-ascendant (some ctk/is-variant-container? ascendants)
-
-           get-variant-id (fn [shape]
-                            (when (:component-id shape)
-                              (->  (get-component-from-shape shape libraries)
-                                   :variant-id)))
-
-           descendants (mapcat #(cfh/get-children-with-self objects %) children-ids)
-           any-variant-container-descendant (some ctk/is-variant-container? descendants)
-           descendants-variant-ids-set (->> descendants
-                                            (map get-variant-id)
-                                            set)
-           any-main-descendant
-           (some
-            (fn [shape]
-              (some ctk/main-instance? (cfh/get-children-with-self objects (:id shape))))
-            children)]
-
-       (if (or no-changes?
-               (and (not (invalid-structure-for-component? objects parent children pasting? libraries))
-                    ;; If we are moving (not pasting) into a main component, no descendant can be main
-                    (or pasting? (nil? any-main-descendant) (not (ctk/main-instance? parent)))
-                    ;; Don't allow variant-container inside variant container nor main
-                    (or (not any-variant-container-descendant)
-                        (and (not any-variant-container-ascendant) (not any-main-ascendant)))
-                    ;; If the parent is a variant-container, all the items should be main
-                    (or (not (ctk/is-variant-container? parent)) all-main?)
-                    ;; If we are pasting, the parent can't be a "brother" of any of the pasted items,
-                    ;; so not have the same variant-id of any descendant
-                    (or (not pasting?)
-                        (not (ctk/is-variant? parent))
-                        (not (contains? descendants-variant-ids-set (:variant-id parent))))))
-         [parent-id (get-frame parent-id)]
-         (recur (:parent-id parent) objects children pasting? libraries))))))
+           (if (or no-changes?
+                   (and (not (invalid-structure-for-component? objects parent children pasting? libraries))
+                        ;; If we are moving (not pasting) into a main component, no descendant can be main
+                        (or pasting? (not (ctk/main-instance? parent)) (nil? @any-main-descendant))
+                        ;; Don't allow variant-container inside variant container nor main
+                        (or (and (not any-variant-container-ascendant) (not any-main-ascendant))
+                            (not @any-variant-container-descendant))
+                        ;; If the parent is a variant-container, all the items should be main
+                        (or (not (ctk/is-variant-container? parent)) all-main?)
+                        ;; If we are pasting, the parent can't be a "brother" of any of the pasted items,
+                        ;; so not have the same variant-id of any descendant
+                        (or (not pasting?)
+                            (not (ctk/is-variant? parent))
+                            (not (contains? @descendants-variant-ids-set (:variant-id parent))))))
+             [parent-id (get-frame parent-id)]
+             (recur (:parent-id parent)))))))))
 
 ;; --- SHAPE UPDATE
 
@@ -555,14 +577,14 @@
   (let [old-applied-tokens     (d/nilv (:applied-tokens shape) #{})
         changed-token-attrs    (filter #(not= (get old-applied-tokens %) (get new-applied-tokens %))
                                        ctt/all-keys)
-        text-shape?            (= (:type shape) :text)
+        shape-type             (get shape :type)
+        text-shape?            (= shape-type :text)
         attrs-in-text-content? (some #(ctt/attrs-in-text-content %)
                                      changed-token-attrs)
 
         changed-groups         (into #{}
                                      (comp (map ctt/token-attr->shape-attr)
-                                           (map #(get ctk/sync-attrs %))
-                                           (filter some?))
+                                           (keep #(ctk/resolve-sync-group shape-type %)))
                                      changed-token-attrs)
 
         changed-groups      (if (and text-shape?
@@ -578,8 +600,9 @@
   The returned shape will contain a metadata associated with it
   indicating if shape is touched or not."
   [shape attr val & {:keys [ignore-touched ignore-geometry]}]
-  (let [group        (get ctk/sync-attrs attr)
-        shape-val    (get shape attr)
+  (let [type      (get shape :type)
+        group     (ctk/resolve-sync-group type attr)
+        shape-val (get shape attr)
 
         ignore?
         (or ignore-touched
@@ -613,16 +636,20 @@
              (not equal?)
              (not (and ignore-geometry is-geometry?)))
 
-        content-diff-type (when (and (= (:type shape) :text) (= attr :content))
-                            (cttx/get-diff-type (:content shape) val))
+        content-diff-type
+        (when (and (= type :text) (= attr :content))
+          (cttx/get-diff-type (:content shape) val))
 
-        token-groups (if (= attr :applied-tokens)
-                       (get-token-groups shape val)
-                       #{})
+        token-groups
+        (if (= attr :applied-tokens)
+          (get-token-groups shape val)
+          #{})
 
-        groups (cond-> token-groups
-                 (and group (not equal?))
-                 (set/union #{group} content-diff-type))]
+        groups
+        (cond-> token-groups
+          (and group (not equal?))
+          (set/union #{group} content-diff-type))]
+
     (cond-> shape
       ;; Depending on the origin of the attribute change, we need or not to
       ;; set the "touched" flag for the group the attribute belongs to.

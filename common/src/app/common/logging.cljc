@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.common.logging
   "A lightweight and multiplaform (clj & cljs) asynchronous by default
@@ -253,7 +253,7 @@
                      (swap! log-record (constantly lrecord))))]
     (if sync?
       (logfn)
-      (px/exec! *default-executor* logfn))))
+      (px/exec *default-executor* logfn))))
 
 (defmacro log!
   "Emit a new log record to the global log-record state (asynchronously). "
@@ -332,8 +332,9 @@
    (defn setup!
      [{:as config}]
      (run! (fn [[logger level]]
-             (let [logger (if (keyword? logger) (name logger) logger)]
-               (l/set-level! logger level)))
+             (let [logger (if (keyword? logger) (name logger) logger)
+                   level  (level->int level)]
+               (.set ^js/Map loggers logger level)))
            config)))
 
 (defmacro raw!

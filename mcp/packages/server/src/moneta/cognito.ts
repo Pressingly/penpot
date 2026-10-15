@@ -271,9 +271,6 @@ export class CognitoClient {
         url.searchParams.set("state", state);
         url.searchParams.set("code_challenge", codeChallenge);
         url.searchParams.set("code_challenge_method", "S256");
-        if (this.config.identityProvider) {
-            url.searchParams.set("identity_provider", this.config.identityProvider);
-        }
         return url.href;
     }
 }

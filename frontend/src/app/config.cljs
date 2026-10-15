@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.config
   (:require
@@ -28,7 +28,7 @@
 ;; --- Auxiliar Functions
 
 (def valid-browsers
-  #{:chrome :firefox :safari :safari-16 :safari-17 :edge :other})
+  #{:chrome :firefox :safari :safari-16 :safari-17 :safari-18 :safari-26 :edge :other})
 
 (def valid-platforms
   #{:windows :linux :macos :other})
@@ -41,15 +41,19 @@
         check-edge? (fn [] (str/includes? user-agent "edg"))
         check-safari? (fn [] (str/includes? user-agent "safari"))
         check-safari-16? (fn [] (and (check-safari?) (str/includes? user-agent "version/16")))
-        check-safari-17? (fn [] (and (check-safari?) (str/includes? user-agent "version/17")))]
+        check-safari-17? (fn [] (and (check-safari?) (str/includes? user-agent "version/17")))
+        check-safari-18? (fn [] (and (check-safari?) (str/includes? user-agent "version/18")))
+        check-safari-26? (fn [] (and (check-safari?) (str/includes? user-agent "version/26")))]
     (cond
       ^boolean (check-edge?)      :edge
       ^boolean (check-chrome?)    :chrome
       ^boolean (check-firefox?)   :firefox
       ^boolean (check-safari-16?) :safari-16
       ^boolean (check-safari-17?) :safari-17
+      ^boolean (check-safari-18?) :safari-18
+      ^boolean (check-safari-26?) :safari-26
       ^boolean (check-safari?)    :safari
-      :else              :other)))
+      :else                       :unknown)))
 
 (defn- parse-platform
   []
@@ -152,7 +156,9 @@
         (ts/asap #(.reload ^js location true))
         true))))
 
+(def saas?                (obj/get global "penpotIsSaas" false))
 (def terms-of-service-uri (obj/get global "penpotTermsOfServiceURI"))
+(def oidc-name            (obj/get global "penpotOIDCName"))
 (def privacy-policy-uri   (obj/get global "penpotPrivacyPolicyURI"))
 
 ;; mPass SSO full-3-layer signout URL. Read at runtime from config.js
@@ -207,6 +213,11 @@
       (get :path)
       (str "?version=" version-tag)))
 
+(def fonts-preview-sprite-uri
+  (-> public-uri
+      (u/join "fonts/fonts-preview-sprite.svg")
+      (str)))
+
 (defn external-feature-flag
   [flag value]
   (let [f (obj/get global "externalFeatureFlag")]
@@ -241,7 +252,7 @@
 (defn ^boolean check-browser? [candidate]
   (dm/assert! (contains? valid-browsers candidate))
   (if (= candidate :safari)
-    (contains? #{:safari :safari-16 :safari-17} browser)
+    (contains? #{:safari :safari-16 :safari-17 :safari-18 :safari-26} browser)
     (= candidate browser)))
 
 (defn ^boolean check-platform? [candidate]
@@ -264,6 +275,23 @@
   [id]
   (dm/str (u/join public-uri "assets/by-id/" (str id))))
 
+;; Current share-id for asset URL building. The share-link viewer sets
+;; this in `app.main.data.viewer/initialize` so every caller of
+;; `resolve-file-media` (inspector, code panel, image previews,
+;; code generators, etc.) automatically receives a share-id without
+;; having to thread it through every call site. Workspace callers
+;; leave it nil and continue to get the original URL shape.
+(defonce ^:private ^{:doc "Active share-id used by `resolve-file-media`."
+                     :dynamic true}
+  current-share-id
+  nil)
+
+(defn set-current-share-id!
+  "Set the share-id used by `resolve-file-media`. Pass `nil` to clear it
+  (e.g. when leaving the viewer)."
+  [share-id]
+  (set! current-share-id share-id))
+
 (defn resolve-file-media
   ([media]
    (resolve-file-media media false))
@@ -272,7 +300,8 @@
        (dm/str
         (cond-> (u/join public-uri "assets/by-file-media-id/")
           (true? thumbnail?) (u/join (dm/str id "/thumbnail"))
-          (false? thumbnail?) (u/join (dm/str id)))))))
+          (false? thumbnail?) (u/join (dm/str id))
+          (some? current-share-id) (u/join (dm/str "?share-id=" current-share-id)))))))
 
 (defn resolve-href
   [resource]

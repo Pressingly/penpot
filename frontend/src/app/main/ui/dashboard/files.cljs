@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.ui.dashboard.files
   (:require-macros [app.main.style :as stl])
@@ -16,6 +16,7 @@
    [app.main.store :as st]
    [app.main.ui.dashboard.grid :refer [grid*]]
    [app.main.ui.dashboard.inline-edition :refer [inline-edition]]
+   [app.main.ui.dashboard.layout-toggle :as lt :refer [layout-toggle*]]
    [app.main.ui.dashboard.pin-button :refer [pin-button*]]
    [app.main.ui.dashboard.project-menu :refer [project-menu*]]
    [app.main.ui.ds.product.empty-placeholder :refer [empty-placeholder*]]
@@ -31,9 +32,8 @@
   (deprecated-icon/icon-xref :menu (stl/css :menu-icon)))
 
 (mf/defc header*
-  {::mf/props :obj
-   ::mf/private true}
-  [{:keys [project create-fn can-edit]}]
+  {::mf/private true}
+  [{:keys [project create-fn can-edit layout on-change]}]
   (let [project-id (:id project)
 
         local
@@ -74,7 +74,8 @@
                      (dd/clear-selected-files))))]
 
 
-    [:header {:class (stl/css :dashboard-header) :data-testid "dashboard-header"}
+    [:header {:class (stl/css :dashboard-header)
+              :data-testid "dashboard-header"}
      (if (:is-default project)
        [:div#dashboard-drafts-title {:class (stl/css :dashboard-title)}
         [:h1 (tr "labels.drafts")]]
@@ -96,6 +97,9 @@
            (:name project)]]))
 
      [:div {:class (stl/css :dashboard-header-actions)}
+      [:> layout-toggle* {:layout layout
+                          :on-change on-change}]
+
       (when ^boolean can-edit
         [:a {:class (stl/css :btn-secondary :btn-small :new-file)
              :tab-index "0"
@@ -133,8 +137,7 @@
                            :on-import on-import}])]]))
 
 (mf/defc files-section*
-  {::mf/props :obj}
-  [{:keys [project team]}]
+  [{:keys [project team layout on-layout-change]}]
   (let [files            (mf/deref refs/files)
         project-id       (get project :id)
 
@@ -144,7 +147,6 @@
                                 (sort-by :modified-at)
                                 (reverse)))
 
-
         can-edit?          (-> team :permissions :can-edit)
         project-id         (:id project)
         is-draft-proyect   (:is-default project)
@@ -152,8 +154,13 @@
         [rowref limit]     (hooks/use-dynamic-grid-item-width)
 
         file-count         (or (count files) 0)
+
+        loading?           (and (some? (:count project))
+                                (not= (:count project) file-count))
+
         empty-state-viewer (and (not can-edit?)
-                                (= 0 file-count))
+                                (= 0 file-count)
+                                (not loading?))
 
         selected-files     (mf/deref refs/selected-files)
 
@@ -184,13 +191,15 @@
       (st/emit! (dpj/fetch-files project-id)
                 (dd/clear-selected-files)))
 
-    (hooks/use-shortcuts ::dashboard sc/shortcuts-drafts-libraries)
+    (hooks/use-shortcuts ::dashboard sc/shortcuts-drafts-libraries :dashboard)
 
     [:*
      [:> header* {:team team
                   :can-edit can-edit?
                   :project project
-                  :create-fn create-file}]
+                  :create-fn create-file
+                  :layout layout
+                  :on-change on-layout-change}]
      [:section {:class (stl/css :dashboard-container :no-bg)
                 :ref rowref}
       (if empty-state-viewer
@@ -203,10 +212,10 @@
                                             (tr "dashboard.empty-placeholder-drafts-subtitle")
                                             (tr "dashboard.empty-placeholder-files-subtitle"))}]
         [:> grid* {:project project
-                   :files files
+                   :files (if loading? nil files)
                    :selected-files selected-files
                    :can-edit can-edit?
                    :origin :files
                    :create-fn create-file
-                   :limit limit}])]]))
-
+                   :limit limit
+                   :layout layout}])]]))

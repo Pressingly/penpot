@@ -2,12 +2,13 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.ui.releases.v2-7
   (:require-macros [app.main.style :as stl])
   (:require
    [app.common.data.macros :as dm]
+   [app.main.ui.ds.buttons.button :refer [button*]]
    [app.main.ui.releases.common :as c]
    [rumext.v2 :as mf]))
 
@@ -46,8 +47,10 @@
            "Let’s dive in!"]]
 
          [:div {:class (stl/css :navigation)}
-          [:button {:class (stl/css :next-btn)
-                    :on-click next} "Continue"]]]]]]
+          [:> button* {:class (stl/css :next-btn)
+                       :on-click next
+                       :variant "primary"}
+           "Continue"]]]]]]
 
      0
      [:div {:class (stl/css-case :modal-overlay true)}
@@ -71,13 +74,15 @@
            "The highlight: you can now duplicate token sets directly from a menu item. A huge time-saver, especially when working from existing sets. We’ve also made it easier to create themes by letting you select their set right away, and we’ve polished some info indicators to make everything a bit clearer. Plus, we’ve fixed a bunch of early-stage bugs to keep things running smoothly."]]
 
          [:div {:class (stl/css :navigation)}
-          [:& c/navigation-bullets
+          [:> c/navigation-bullets*
            {:slide slide
             :navigate navigate
             :total 3}]
 
-          [:button {:on-click next
-                    :class (stl/css :next-btn)} "Continue"]]]]]]
+          [:> button* {:class (stl/css :next-btn)
+                       :on-click next
+                       :variant "primary"}
+           "Continue"]]]]]]
 
      1
      [:div {:class (stl/css-case :modal-overlay true)}
@@ -101,13 +106,15 @@
            "This update gives editors and viewers the same ability to configure, create, copy, and delete sharing links. A capability that, until now, was limited to owners and admins."]]
 
          [:div {:class (stl/css :navigation)}
-          [:& c/navigation-bullets
+          [:> c/navigation-bullets*
            {:slide slide
             :navigate navigate
             :total 3}]
 
-          [:button {:on-click next
-                    :class (stl/css :next-btn)} "Continue"]]]]]]
+          [:> button* {:class (stl/css :next-btn)
+                       :on-click next
+                       :variant "primary"}
+           "Continue"]]]]]]
 
      2
      [:div {:class (stl/css-case :modal-overlay true)}
@@ -132,11 +139,12 @@
 
          [:div {:class (stl/css :navigation)}
 
-          [:& c/navigation-bullets
+          [:> c/navigation-bullets*
            {:slide slide
             :navigate navigate
             :total 3}]
 
-          [:button {:on-click finish
-                    :class (stl/css :next-btn)} "Let's go"]]]]]])))
-
+          [:> button* {:class (stl/css :next-btn)
+                       :on-click finish
+                       :variant "primary"}
+           "Let's go"]]]]]])))

@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.rpc.commands.binfile
   (:refer-clojure :exclude [assert])
@@ -19,8 +19,9 @@
    [app.http.sse :as sse]
    [app.loggers.audit :as-alias audit]
    [app.loggers.webhooks :as-alias webhooks]
-   [app.media :as media]
+   [app.media.validation :as media.v]
    [app.rpc :as-alias rpc]
+   [app.rpc.climit :as-alias climit]
    [app.rpc.commands.files :as files]
    [app.rpc.commands.media :as media-cmd]
    [app.rpc.commands.projects :as projects]
@@ -59,7 +60,7 @@
                                     {::sto/content data
                                      ::sto/touched-at (ct/in-future {:minutes 60})
                                      :content-type "application/zip"
-                                     :bucket "tempfile"})]
+                                     :bucket sto/tempfile-bucket})]
 
         (-> (cf/get :public-uri)
             (u/join "/assets/by-id/")
@@ -74,8 +75,8 @@
    ::doc/changes [["2.12" "Remove version parameter, only one version is supported"]]
    ::webhooks/event? true
    ::sm/params schema:export-binfile}
-  [{:keys [::db/pool] :as cfg} {:keys [::rpc/profile-id file-id] :as params}]
-  (files/check-read-permissions! pool profile-id file-id)
+  [cfg {:keys [::rpc/profile-id file-id] :as params}]
+  (files/check-read-permissions! cfg profile-id file-id)
   (sse/response (partial export-binfile cfg params)))
 
 ;; --- Command: import-binfile
@@ -92,7 +93,9 @@
             (assoc ::bfc/features (cfeat/get-team-enabled-features cf/flags team))
             (assoc ::bfc/project-id project-id)
             (assoc ::bfc/profile-id profile-id)
-            (assoc ::bfc/name name))
+            (assoc ::bfc/name name)
+            (assoc ::bfc/import-max-object-size (cf/get :binfile-import-max-object-size))
+            (assoc ::bfc/import-max-zip-entries (cf/get :binfile-import-max-zip-entries)))
 
         input-path (:path file)
         owned?     (some? upload-id)
@@ -104,7 +107,11 @@
         (try
           (case (int version)
             1 (bf.v1/import-files! cfg)
-            3 (bf.v3/import-files! cfg))
+            3 (bf.v3/import-files! cfg)
+            (throw (ex-info (str "Unsupported binfile version: " version)
+                            {:type :validation
+                             :code :unsupported-version
+                             :version version})))
           (finally
             (when owned?
               (fs/delete input-path))))]
@@ -122,58 +129,56 @@
     [:name [:or [:string {:max 250}]
             [:map-of ::sm/uuid [:string {:max 250}]]]]
     [:project-id ::sm/uuid]
-    [:file-id {:optional true} ::sm/uuid]
-    [:version {:optional true} ::sm/int]
-    [:file {:optional true} media/schema:upload]
+    [:version {:optional true} [:enum 1 3]]
+    [:file {:optional true} media.v/schema:upload]
     [:upload-id {:optional true} ::sm/uuid]]
    [:fn {:error/message "one of :file or :upload-id is required"}
     (fn [{:keys [file upload-id]}]
       (or (some? file) (some? upload-id)))]])
 
 (sv/defmethod ::import-binfile
-  "Import a penpot file in a binary format. If `file-id` is provided,
-  an in-place import will be performed instead of creating a new file.
-
-  The in-place imports are only supported for binfile-v3 and when a
-  .penpot file only contains one penpot file.
+  "Import a penpot file in a binary format.
 
   The file content may be provided either as a multipart `file` upload
   or as an `upload-id` referencing a completed chunked-upload session,
   which allows importing files larger than the multipart size limit.
   "
   {::doc/added "1.15"
-   ::doc/changes ["1.20" "Add file-id param for in-place import"
-                  "1.20" "Set default version to 3"
-                  "2.15" "Add upload-id param for chunked upload support"]
+   ::doc/changes [["1.20" "Set default version to 3"]
+                  ["2.15" "Add upload-id param for chunked upload support"]]
 
    ::webhooks/event? true
    ::sse/stream? true
-   ::sm/params schema:import-binfile}
-  [{:keys [::db/pool] :as cfg} {:keys [::rpc/profile-id project-id version file-id upload-id] :as params}]
+   ::sm/params schema:import-binfile
+   ::climit/id [[:import-binfile/by-profile ::rpc/profile-id]
+                [:import-binfile/global]]}
+  [{:keys [::db/pool] :as cfg} {:keys [::rpc/profile-id project-id version upload-id] :as params}]
   (projects/check-edition-permissions! pool profile-id project-id)
-  (let [version (or version 3)
+  (let [params  (if (some? upload-id)
+                  (let [file (db/tx-run! cfg media-cmd/assemble-chunks profile-id upload-id)]
+                    (assoc params :file file))
+                  params)
+
+        version (or version
+                    (case (bfc/parse-file-format (-> params :file :path))
+                      :binfile-v1 1
+                      :binfile-v3 3))
+
         params  (-> params
                     (assoc :profile-id profile-id)
                     (assoc :version version))
 
-        cfg     (cond-> cfg
-                  (uuid? file-id)
-                  (assoc ::bfc/file-id file-id))
-
-        params
-        (if (some? upload-id)
-          (let [file (db/tx-run! cfg media-cmd/assemble-chunks upload-id)]
-            (assoc params :file file))
-          params)
-
         manifest
         (case (int version)
           1 nil
-          3 (bf.v3/get-manifest (-> params :file :path)))]
+          3 (bf.v3/get-manifest (-> params :file :path))
+          (throw (ex-info (str "Unsupported binfile version: " version)
+                          {:type :validation
+                           :code :unsupported-version
+                           :version version})))]
 
     (with-meta
       (sse/response (partial import-binfile cfg params))
       {::audit/props {:file nil
-                      :file-id file-id
                       :generated-by (:generated-by manifest)
                       :referer (:referer manifest)}})))

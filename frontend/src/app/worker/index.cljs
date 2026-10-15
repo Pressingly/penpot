@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.worker.index
   "Page index management within the worker."
@@ -10,9 +10,7 @@
    [app.common.data :as d]
    [app.common.data.macros :as dm]
    [app.common.files.changes :as ch]
-   [app.common.geom.matrix :as gmt]
    [app.common.geom.rect :as grc]
-   [app.common.geom.shapes :as gsh]
    [app.common.logging :as log]
    [app.common.time :as ct]
    [app.worker.impl :as impl]
@@ -65,48 +63,34 @@
           (log/dbg :hint "page index updated" :id page-id :elapsed elapsed ::log/sync? true))))
     nil))
 
-(defmethod impl/handler :index/update-text-rect
-  [{:keys [page-id shape-id dimensions]}]
-  (let [page (dm/get-in @state [:pages-index page-id])
-        objects (get page :objects)
-        shape (get objects shape-id)
-        center (gsh/shape->center shape)
-        transform (:transform shape (gmt/matrix))
-        rect (-> (grc/make-rect dimensions)
-                 (grc/rect->points))
-        points (gsh/transform-points rect center transform)
-        selrect (gsh/calculate-selrect points (gsh/points->center points))
+(defn- run-query-snap
+  [index page-id frame-id axis ranges bounds]
+  (let [match-bounds?
+        (fn [[_ data]]
+          (some #(or (= :guide (:type %))
+                     (= :layout (:type %))
+                     (grc/contains-point? bounds (:pt %))) data))
 
-        data {:position-data nil
-              :points points
-              :selrect selrect}
-
-        shape (d/patch-object shape data)
-
-        objects
-        (assoc objects shape-id shape)]
-
-    (swap! state update-in [::text-rect page-id] assoc shape-id data)
-    (swap! state update-in [::selection page-id] selection/update-index-single objects shape)
-    nil))
+        xform
+        (comp (mapcat #(snap/query index page-id frame-id axis %))
+              (distinct)
+              (filter match-bounds?))]
+    (into [] xform ranges)))
 
 ;; FIXME: schema
-
 (defmethod impl/handler :index/query-snap
-  [{:keys [page-id frame-id axis ranges bounds] :as message}]
+  [{:keys [page-id frame-id axis ranges bounds]}]
   (if-let [index (get @state ::snap)]
-    (let [match-bounds?
-          (fn [[_ data]]
-            (some #(or (= :guide (:type %))
-                       (= :layout (:type %))
-                       (grc/contains-point? bounds (:pt %))) data))
-
-          xform
-          (comp (mapcat #(snap/query index page-id frame-id axis %))
-                (distinct)
-                (filter match-bounds?))]
-      (into [] xform ranges))
+    (run-query-snap index page-id frame-id axis ranges bounds)
     []))
+
+;; Single round-trip for X+Y snap used by `app.main.snap/closest-snap` (e.g. shape drag).
+(defmethod impl/handler :index/query-snap-xy
+  [{:keys [page-id frame-id bounds x-ranges y-ranges]}]
+  (if-let [index (get @state ::snap)]
+    {:x (run-query-snap index page-id frame-id :x x-ranges bounds)
+     :y (run-query-snap index page-id frame-id :y y-ranges bounds)}
+    {:x [] :y []}))
 
 ;; FIXME: schema
 

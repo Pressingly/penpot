@@ -2,12 +2,13 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.ui.releases.v2-14
   (:require-macros [app.main.style :as stl])
   (:require
    [app.common.data.macros :as dm]
+   [app.main.ui.ds.buttons.button :refer [button*]]
    [app.main.ui.releases.common :as c]
    [rumext.v2 :as mf]))
 
@@ -46,8 +47,10 @@
            "Let’s dive in!"]]
 
          [:div {:class (stl/css :navigation)}
-          [:button {:class (stl/css :next-btn)
-                    :on-click next} "Continue"]]]]]]
+          [:> button* {:class (stl/css :next-btn)
+                       :on-click next
+                       :variant "primary"}
+           "Continue"]]]]]]
 
      0
      [:div {:class (stl/css-case :modal-overlay true)}
@@ -74,13 +77,15 @@
            "One extra detail: if you edit the path and change group segments, the token is moved to its new group (creating it if needed), and empty groups are automatically cleaned up."]]
 
          [:div {:class (stl/css :navigation)}
-          [:& c/navigation-bullets
+          [:> c/navigation-bullets*
            {:slide slide
             :navigate navigate
             :total 4}]
 
-          [:button {:on-click next
-                    :class (stl/css :next-btn)} "Continue"]]]]]]
+          [:> button* {:class (stl/css :next-btn)
+                       :on-click next
+                       :variant "primary"}
+           "Continue"]]]]]]
 
      1
      [:div {:class (stl/css-case :modal-overlay true)}
@@ -104,13 +109,15 @@
            "If you’ve been waiting to generate tokens, sync them, or manipulate them from your own tools, this is the missing piece. And yes, this one has been requested a lot."]]
 
          [:div {:class (stl/css :navigation)}
-          [:& c/navigation-bullets
+          [:> c/navigation-bullets*
            {:slide slide
             :navigate navigate
             :total 4}]
 
-          [:button {:on-click next
-                    :class (stl/css :next-btn)} "Continue"]]]]]]
+          [:> button* {:class (stl/css :next-btn)
+                       :on-click next
+                       :variant "primary"}
+           "Continue"]]]]]]
 
      2
      [:div {:class (stl/css-case :modal-overlay true)}
@@ -134,13 +141,15 @@
            "Remapping is always optional, because sometimes you don’t want to keep the current connections. When enabled, it affects all tokens in the file and also takes libraries into account, so main components can propagate changes to child components, and applied tokens update on the elements using them."]]
 
          [:div {:class (stl/css :navigation)}
-          [:& c/navigation-bullets
+          [:> c/navigation-bullets*
            {:slide slide
             :navigate navigate
             :total 4}]
 
-          [:button {:on-click next
-                    :class (stl/css :next-btn)} "Continue"]]]]]]
+          [:> button* {:class (stl/css :next-btn)
+                       :on-click next
+                       :variant "primary"}
+           "Continue"]]]]]]
 
      3
      [:div {:class (stl/css-case :modal-overlay true)}
@@ -168,11 +177,12 @@
 
          [:div {:class (stl/css :navigation)}
 
-          [:& c/navigation-bullets
+          [:> c/navigation-bullets*
            {:slide slide
             :navigate navigate
             :total 4}]
 
-          [:button {:on-click finish
-                    :class (stl/css :next-btn)} "Let's go"]]]]]])))
-
+          [:> button* {:class (stl/css :next-btn)
+                       :on-click finish
+                       :variant "primary"}
+           "Let's go"]]]]]])))

@@ -41,6 +41,13 @@ pub struct Stroke {
     pub cap_end: Option<StrokeCap>,
     pub cap_start: Option<StrokeCap>,
     pub kind: StrokeKind,
+    // Dash and gap overrides for the `Dashed` style. `None` falls back to the
+    // default `width + 10` pattern to keep existing designs visually identical.
+    pub dash: Option<f32>,
+    pub gap: Option<f32>,
+    // Per-side widths [top, right, bottom, left] for rects and frames.
+    // `None` means the uniform `width` applies to all sides.
+    pub widths: Option<[f32; 4]>,
 }
 
 impl Stroke {
@@ -53,11 +60,34 @@ impl Stroke {
         }
     }
 
+    /// The widest side of the stroke: the uniform `width` unless per-side
+    /// widths are set, in which case the maximum of the four sides.
+    pub fn max_width(&self) -> f32 {
+        match self.widths {
+            Some(widths) => widths.into_iter().reduce(f32::max).unwrap_or(self.width),
+            None => self.width,
+        }
+    }
+
+    /// Per-side widths [top, right, bottom, left] when they actually differ.
+    /// Returns `None` when unset or when all sides are equal, so the uniform
+    /// render path (which supports dashed/dotted styles) keeps handling that
+    /// case.
+    pub fn per_side_widths(&self) -> Option<[f32; 4]> {
+        let widths = self.widths?;
+        let [top, right, bottom, left] = widths;
+        if top == right && right == bottom && bottom == left {
+            None
+        } else {
+            Some(widths)
+        }
+    }
+
     pub fn bounds_width(&self, is_open: bool) -> f32 {
         match self.render_kind(is_open) {
             StrokeKind::Inner => 0.,
-            StrokeKind::Center => self.width / 2.,
-            StrokeKind::Outer => self.width,
+            StrokeKind::Center => self.max_width() / 2.,
+            StrokeKind::Outer => self.max_width(),
         }
     }
 
@@ -72,6 +102,8 @@ impl Stroke {
         style: StrokeStyle,
         cap_start: Option<StrokeCap>,
         cap_end: Option<StrokeCap>,
+        dash: Option<f32>,
+        gap: Option<f32>,
     ) -> Self {
         Stroke {
             fill: Fill::Solid(SolidColor(skia::Color::TRANSPARENT)),
@@ -80,6 +112,9 @@ impl Stroke {
             cap_end,
             cap_start,
             kind: StrokeKind::Center,
+            dash,
+            gap,
+            widths: None,
         }
     }
 
@@ -88,6 +123,8 @@ impl Stroke {
         style: StrokeStyle,
         cap_start: Option<StrokeCap>,
         cap_end: Option<StrokeCap>,
+        dash: Option<f32>,
+        gap: Option<f32>,
     ) -> Self {
         Stroke {
             fill: Fill::Solid(SolidColor(skia::Color::TRANSPARENT)),
@@ -96,6 +133,9 @@ impl Stroke {
             cap_end,
             cap_start,
             kind: StrokeKind::Inner,
+            dash,
+            gap,
+            widths: None,
         }
     }
 
@@ -104,6 +144,8 @@ impl Stroke {
         style: StrokeStyle,
         cap_start: Option<StrokeCap>,
         cap_end: Option<StrokeCap>,
+        dash: Option<f32>,
+        gap: Option<f32>,
     ) -> Self {
         Stroke {
             fill: Fill::Solid(SolidColor(skia::Color::TRANSPARENT)),
@@ -112,11 +154,25 @@ impl Stroke {
             cap_end,
             cap_start,
             kind: StrokeKind::Outer,
+            dash,
+            gap,
+            widths: None,
         }
     }
 
     pub fn scale_content(&mut self, value: f32) {
         self.width *= value;
+        if let Some(widths) = &mut self.widths {
+            for width in widths.iter_mut() {
+                *width *= value;
+            }
+        }
+        if let Some(dash) = self.dash {
+            self.dash = Some(dash * value);
+        }
+        if let Some(gap) = self.gap {
+            self.gap = Some(gap * value);
+        }
     }
 
     /// Returns the clip operation for dotted inner/outer strokes.
@@ -213,25 +269,40 @@ impl Stroke {
         paint.set_anti_alias(antialias);
 
         if let Some(svg_attrs) = svg_attrs {
-            if svg_attrs.stroke_linecap == StrokeLineCap::Round {
-                paint.set_stroke_cap(skia::paint::Cap::Round);
+            match svg_attrs.stroke_linecap {
+                StrokeLineCap::Round => {
+                    paint.set_stroke_cap(skia::paint::Cap::Round);
+                }
+                StrokeLineCap::Square => {
+                    paint.set_stroke_cap(skia::paint::Cap::Square);
+                }
+                StrokeLineCap::Butt => {} // Skia default
             }
 
-            if svg_attrs.stroke_linejoin == StrokeLineJoin::Round {
-                paint.set_stroke_join(skia::paint::Join::Round);
+            match svg_attrs.stroke_linejoin {
+                StrokeLineJoin::Round => {
+                    paint.set_stroke_join(skia::paint::Join::Round);
+                }
+                StrokeLineJoin::Bevel => {
+                    paint.set_stroke_join(skia::paint::Join::Bevel);
+                }
+                StrokeLineJoin::Miter => {} // Skia default
             }
         }
 
         if self.style != StrokeStyle::Solid {
             let path_effect = match self.style {
                 StrokeStyle::Dotted => {
-                    let mut circle_path = skia::Path::new();
                     let width = match self.kind {
                         StrokeKind::Inner => self.width,
                         StrokeKind::Center => self.width / 2.0,
                         StrokeKind::Outer => self.width,
                     };
-                    circle_path.add_circle((0.0, 0.0), width, None);
+                    let circle_path = {
+                        let mut pb = skia::PathBuilder::new();
+                        pb.add_circle((0.0, 0.0), width, None);
+                        pb.detach()
+                    };
                     let advance = self.width + 5.0;
                     skia::PathEffect::path_1d(
                         &circle_path,
@@ -241,7 +312,9 @@ impl Stroke {
                     )
                 }
                 StrokeStyle::Dashed => {
-                    skia::PathEffect::dash(&[self.width + 10., self.width + 10.], 0.)
+                    let dash = self.dash.unwrap_or(self.width + 10.);
+                    let gap = self.gap.unwrap_or(self.width + 10.);
+                    skia::PathEffect::dash(&[dash, gap], 0.)
                 }
                 StrokeStyle::Mixed => skia::PathEffect::dash(
                     &[
@@ -276,6 +349,10 @@ impl Stroke {
             StrokeKind::Outer => {
                 paint.set_stroke_width(2. * paint.stroke_width());
             }
+        }
+
+        if let Some(cap) = self.to_skia_linecap() {
+            paint.set_stroke_cap(cap);
         }
 
         paint
@@ -314,6 +391,19 @@ impl Stroke {
     pub fn cap_bounds_margin(&self) -> f32 {
         cap_margin_for_cap(self.cap_start, self.width)
             .max(cap_margin_for_cap(self.cap_end, self.width))
+    }
+
+    /// Returns a Skia `PaintCap` to apply natively on the stroke paint when
+    /// both ends share the same simple line cap (`Round/Round` or
+    /// `Square/Square`). Skia only emits cap geometry at sub-path endpoints,
+    /// so this is a no-op on closed paths and avoids the extra fill draw the
+    /// manual caps would otherwise require on open paths.
+    pub fn to_skia_linecap(&self) -> Option<skia::paint::Cap> {
+        match (self.cap_start, self.cap_end) {
+            (Some(StrokeCap::Round), Some(StrokeCap::Round)) => Some(skia::paint::Cap::Round),
+            (Some(StrokeCap::Square), Some(StrokeCap::Square)) => Some(skia::paint::Cap::Square),
+            _ => None,
+        }
     }
 }
 
@@ -359,5 +449,48 @@ fn cap_margin_for_cap(cap: Option<StrokeCap>, width: f32) -> f32 {
         Some(StrokeCap::Square) => width,
         Some(StrokeCap::Round) => width * 0.5,
         _ => 0.0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stroke_with_widths(widths: Option<[f32; 4]>) -> Stroke {
+        let mut stroke = Stroke::new_inner_stroke(2.0, StrokeStyle::Solid, None, None, None, None);
+        stroke.widths = widths;
+        stroke
+    }
+
+    #[test]
+    fn max_width_falls_back_to_uniform_width() {
+        let stroke = stroke_with_widths(None);
+        assert_eq!(stroke.max_width(), 2.0);
+    }
+
+    #[test]
+    fn max_width_uses_widest_side() {
+        let stroke = stroke_with_widths(Some([1.0, 8.0, 3.0, 0.0]));
+        assert_eq!(stroke.max_width(), 8.0);
+    }
+
+    #[test]
+    fn per_side_widths_none_when_all_sides_equal() {
+        let stroke = stroke_with_widths(Some([4.0, 4.0, 4.0, 4.0]));
+        assert_eq!(stroke.per_side_widths(), None);
+    }
+
+    #[test]
+    fn per_side_widths_returns_differing_sides() {
+        let stroke = stroke_with_widths(Some([1.0, 2.0, 3.0, 4.0]));
+        assert_eq!(stroke.per_side_widths(), Some([1.0, 2.0, 3.0, 4.0]));
+    }
+
+    #[test]
+    fn scale_content_scales_per_side_widths() {
+        let mut stroke = stroke_with_widths(Some([1.0, 2.0, 3.0, 4.0]));
+        stroke.scale_content(2.0);
+        assert_eq!(stroke.widths, Some([2.0, 4.0, 6.0, 8.0]));
+        assert_eq!(stroke.width, 4.0);
     }
 }

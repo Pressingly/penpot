@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.common.files.changes
   (:require
@@ -244,6 +244,7 @@
      [:page-id {:optional true} ::sm/uuid]
      [:component-id {:optional true} ::sm/uuid]
      [:ignore-touched {:optional true} :boolean]
+     [:allow-altering-copies {:optional true} :boolean]
      [:parent-id ::sm/uuid]
      [:shapes ::sm/any]]]
 
@@ -261,7 +262,11 @@
      ;; All props are optional, background can be nil because is the
      ;; way to remove already set background
      [:background {:optional true} [:maybe ctc/schema:hex-color]]
-     [:name {:optional true} :string]]]
+     [:name {:optional true} :string]
+     ;; Pixel grid display controls — nil removes the per-page override
+     ;; and falls back to the default hardcoded grid color/opacity.
+     [:pixel-grid-color {:optional true} [:maybe ctc/schema:hex-color]]
+     [:pixel-grid-opacity {:optional true} [:maybe ::sm/safe-number]]]]
 
    [:set-plugin-data schema:set-plugin-data-change]
 
@@ -629,22 +634,26 @@
     (d/update-in-when data [:components component-id :objects] process-operations change)))
 
 (defn- process-children-reordering
-  [objects {:keys [parent-id shapes] :as change}]
+  [objects {:keys [parent-id shapes allow-altering-copies] :as change}]
   (if-let [old-shapes (dm/get-in objects [parent-id :shapes])]
-    (let [id->idx
-          (update-vals
-           (->> (d/enumerate shapes)
-                (group-by second))
-           (comp first first))
+    ;; Component sync owns copy child ordering.
+    (if (and (not allow-altering-copies)
+             (ctk/in-component-copy? (get objects parent-id)))
+      objects
+      (let [id->idx
+            (update-vals
+             (->> (d/enumerate shapes)
+                  (group-by second))
+             (comp first first))
 
-          new-shapes
-          (vec (sort-by #(d/nilv (id->idx %) -1) < old-shapes))]
+            new-shapes
+            (vec (sort-by #(d/nilv (id->idx %) -1) < old-shapes))]
 
-      (if (not= old-shapes new-shapes)
-        (do
-          (some-> *touched-changes* (vswap! conj change))
-          (update objects parent-id assoc :shapes new-shapes))
-        objects))
+        (if (not= old-shapes new-shapes)
+          (do
+            (some-> *touched-changes* (vswap! conj change))
+            (update objects parent-id assoc :shapes new-shapes))
+          objects)))
 
     objects))
 
@@ -853,8 +862,10 @@
   [data {:keys [id] :as params}]
   (d/update-in-when data [:pages-index id]
                     (fn [page]
-                      (let [name (get params :name)
-                            bg   (get params :background :not-found)]
+                      (let [name       (get params :name)
+                            bg         (get params :background :not-found)
+                            grid-color (get params :pixel-grid-color :not-found)
+                            grid-op    (get params :pixel-grid-opacity :not-found)]
                         (cond-> page
                           (string? name)
                           (assoc :name name)
@@ -863,7 +874,19 @@
                           (assoc :background bg)
 
                           (nil? bg)
-                          (dissoc :background))))))
+                          (dissoc :background)
+
+                          (string? grid-color)
+                          (assoc :pixel-grid-color grid-color)
+
+                          (and (not= grid-color :not-found) (nil? grid-color))
+                          (dissoc :pixel-grid-color)
+
+                          (number? grid-op)
+                          (assoc :pixel-grid-opacity grid-op)
+
+                          (and (not= grid-op :not-found) (nil? grid-op))
+                          (dissoc :pixel-grid-opacity))))))
 
 (defmethod process-change :set-plugin-data
   [data {:keys [object-type object-id page-id namespace key value]}]
@@ -1176,7 +1199,7 @@
 ;; frames. Return the ids of the frames affected
 
 (defn- parents-frames
-  "Go trough the parents and get all of them that are a frame."
+  "Go through the parents and get all of them that are a frame."
   [id objects]
   (->> (cfh/get-parents-with-self objects id)
        (filter cfh/frame-shape?)))
@@ -1191,9 +1214,9 @@
                        ; Check if the shape has changed any
                        ; attribute that participates in components synchronization.
                        (and (= (:type operation) :set)
-                            (get ctk/sync-attrs (:attr operation))))
-          any-sync? (some need-sync? operations)]
-      (when any-sync?
+                            (contains? ctk/sync-attrs (:attr operation))))]
+
+      (when (some need-sync? operations)
         (parents-frames id (:objects page))))))
 
 (defmethod frames-changed :mov-objects

@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.data.workspace.transforms
   "Events related with shapes transformations"
@@ -27,12 +27,14 @@
    [app.common.types.shape.attrs :refer [editable-attrs]]
    [app.common.types.shape.layout :as ctl]
    [app.common.uuid :as uuid]
+   [app.main.constants :as mconst]
    [app.main.data.changes :as dch]
    [app.main.data.event :as ev]
    [app.main.data.helpers :as dsh]
    [app.main.data.workspace.collapse :as dwc]
    [app.main.data.workspace.modifiers :as dwm]
    [app.main.data.workspace.selection :as dws]
+   [app.main.data.workspace.shapes :as dwsh]
    [app.main.data.workspace.undo :as dwu]
    [app.main.features :as features]
    [app.main.snap :as snap]
@@ -137,9 +139,11 @@
   (ptk/reify ::finish-transform
     ptk/UpdateEvent
     (update [_ state]
-      (-> state
-          (update :workspace-local dissoc :transform :duplicate-move-started?)
-          (dissoc :workspace-selrect :workspace-wasm-modifiers)))))
+      (update state :workspace-local dissoc :transform :duplicate-move-started?))
+
+    ptk/EffectEvent
+    (effect [_ _ _]
+      (ms/clear-transform-preview!))))
 
 ;; -- Resize --------------------------------------------------------
 
@@ -304,6 +308,7 @@
                     (if (features/active-feature? state "render-wasm/v1")
                       (rx/merge
                        (->> resize-events-stream
+                            (rx/sample mconst/resize-sample-time)
                             (rx/mapcat
                              (fn [modifiers]
                                (let [modif-tree (dwm/create-modif-tree shape-ids modifiers)]
@@ -323,12 +328,21 @@
                                (dwm/create-modif-tree shape-ids %)
                                :ignore-constraints (contains? layout :scale-text)))))
 
-                      (->> resize-events-stream
-                           (rx/mapcat
+                      (let [emit-modifiers
                             (fn [modifiers]
                               (let [modif-tree (dwm/create-modif-tree shape-ids modifiers)]
-                                (rx/of (dwm/set-modifiers modif-tree (contains? layout :scale-text))))))
-                           (rx/take-until stopper)))]
+                                (rx/of (dwm/set-modifiers modif-tree (contains? layout :scale-text)))))]
+                        ;; Throttle the live preview to limit re-renders; the trailing
+                        ;; rx/last applies the exact final frame.
+                        (rx/merge
+                         (->> resize-events-stream
+                              (rx/sample mconst/resize-sample-time)
+                              (rx/mapcat emit-modifiers)
+                              (rx/take-until stopper))
+                         (->> resize-events-stream
+                              (rx/take-until stopper)
+                              (rx/last)
+                              (rx/mapcat emit-modifiers)))))]
 
                 (rx/concat
                  ;; This initial stream waits for some pixels to be move before making the resize
@@ -373,7 +387,7 @@
   "Change size of shapes, from the sidebar options form
   (will ignore pixel snap)"
   ([ids attr value] (update-dimensions ids attr value nil))
-  ([ids attr value options]
+  ([ids attr value {:keys [no-wasm?] :as options}]
    (assert (number? value))
    (assert (every? uuid? ids)
            "expected valid coll of uuids")
@@ -388,7 +402,7 @@
                  (get state :current-page-id))
 
              objects
-             (dsh/lookup-page-objects state page-id)
+             (dwsh/lookup-changed-objects state page-id)
 
              get-modifier
              (fn [shape]
@@ -408,7 +422,7 @@
 
              modif-tree (dwm/build-modif-tree ids objects get-modifier)]
 
-         (if (features/active-feature? state "render-wasm/v1")
+         (if (and (features/active-feature? state "render-wasm/v1") (not no-wasm?))
            (rx/of (dwm/apply-wasm-modifiers modif-tree (assoc options :ignore-snap-pixel true)))
 
            (let [modif-tree (gm/set-objects-modifiers modif-tree objects)]
@@ -510,6 +524,7 @@
           (rx/concat
            (rx/merge
             (->> angle-stream
+                 (rx/sample mconst/rotation-sample-time)
                  (rx/map #(dwm/set-wasm-modifiers (rotation-modifiers % shapes group-center)))
                  (rx/take-until stopper))
             (->> angle-stream
@@ -519,24 +534,32 @@
 
            (rx/of (finish-transform)))
 
-          (rx/concat
-           (rx/merge
-            (->> angle-stream
-                 (rx/map
-                  #(dwm/set-rotation-modifiers % shapes group-center))
-                 (rx/take-until stopper)))
-           (rx/of (dwm/apply-modifiers)
-                  (finish-transform))))))))
+          (let [emit-modifiers
+                (fn [angle] (dwm/set-rotation-modifiers angle shapes group-center))]
+            ;; Throttle the live preview to limit re-renders; the trailing
+            ;; rx/last applies the exact final frame.
+            (rx/concat
+             (rx/merge
+              (->> angle-stream
+                   (rx/sample mconst/rotation-sample-time)
+                   (rx/map emit-modifiers)
+                   (rx/take-until stopper))
+              (->> angle-stream
+                   (rx/take-until stopper)
+                   (rx/last)
+                   (rx/map emit-modifiers)))
+             (rx/of (dwm/apply-modifiers)
+                    (finish-transform)))))))))
 
 (defn increase-rotation
   "Rotate shapes a fixed angle, from a keyboard action."
   ([ids rotation]
    (increase-rotation ids rotation nil))
-  ([ids rotation {:keys [center delta?] :as params} & {:as options}]
+  ([ids rotation {:keys [center delta?] :as params} & {:keys [no-wasm?] :as options}]
    (ptk/reify ::increase-rotation
      ptk/WatchEvent
      (watch [_ state _]
-       (if (features/active-feature? state "render-wasm/v1")
+       (if (and (features/active-feature? state "render-wasm/v1") (not no-wasm?))
          (let [objects (dsh/lookup-page-objects state)
 
                get-modifier
@@ -548,7 +571,7 @@
                modif-tree
                (dwm/build-modif-tree ids objects get-modifier)]
 
-           (rx/of (dwm/apply-wasm-modifiers modif-tree)))
+           (rx/of (dwm/apply-wasm-modifiers modif-tree :ignore-touched (:ignore-touched options))))
 
          (let [page-id (or (:page-id options)
                            (:current-page-id state))
@@ -558,6 +581,7 @@
            (rx/concat
             (rx/of (dwm/set-delta-rotation-modifiers rotation shapes (assoc params :page-id page-id)))
             (rx/of (dwm/apply-modifiers options)))))))))
+
 ;; -- Move ----------------------------------------------------------
 
 (declare start-move)
@@ -699,7 +723,21 @@
                            (rx/map #(array pos %)))))))]
          (if (empty? shapes)
            (rx/of (finish-transform))
-           (let [move-stream
+           ;; Per-gesture caches: `shapes`/`objects`/`libraries` are
+           ;; stable for the gesture, so build once and thread through.
+           (let [parent-validation-cache
+                 (ctn/parent-validation-cache objects shapes libraries)
+
+                 subtree-ids-by-id
+                 (into {}
+                       (map (fn [id]
+                              [id (cfh/get-children-ids-with-self objects id)]))
+                       ids)
+
+                 selection-rect-cache
+                 (volatile! nil)
+
+                 move-stream
                  (->> position
                       ;; We ask for the snap position but we continue even if the result is not available
                       (rx/with-latest-from snap-delta)
@@ -714,14 +752,15 @@
                          (let [position         (gpt/add from-position move-vector)
                                exclude-frames   (if mod? exclude-frames exclude-frames-siblings)
                                target-frame     (ctst/top-nested-frame objects position exclude-frames)
-                               [target-frame _] (ctn/find-valid-parent-and-frame-ids target-frame objects shapes false libraries)
+                               [target-frame _] (ctn/find-valid-parent-and-frame-ids target-frame objects shapes false libraries parent-validation-cache)
                                flex-layout?     (ctl/flex-layout? objects target-frame)
                                grid-layout?     (ctl/grid-layout? objects target-frame)
                                drop-index       (when flex-layout? (gslf/get-drop-index target-frame objects position))
                                cell-data        (when (and grid-layout? (not mod?)) (get-drop-cell target-frame objects position))]
                            (array move-vector target-frame drop-index cell-data))))
 
-                      (rx/take-until stopper))
+                      (rx/take-until stopper)
+                      (rx/share))
 
                  modifiers-stream
                  (->> move-stream
@@ -761,9 +800,15 @@
                  (rx/merge
                   (->> modifiers-stream
                        (rx/take-until duplicate-stopper)
+                       ;; Sample at a fixed cadence to keep preview smooth. Unlike a throttle,
+                       ;; this tends to avoid perceptible "jumps" while still capping WASM work.
+                       (rx/sample mconst/move-sample-time)
                        (rx/map
                         (fn [[modifiers snap-ignore-axis]]
-                          (dwm/set-wasm-modifiers modifiers :snap-ignore-axis snap-ignore-axis))))
+                          (dwm/set-wasm-modifiers modifiers
+                                                  :snap-ignore-axis snap-ignore-axis
+                                                  :subtree-ids-by-id subtree-ids-by-id
+                                                  :selection-rect-cache selection-rect-cache))))
 
                   (->> move-stream
                        (rx/with-latest-from ms/mouse-position-alt)
@@ -788,13 +833,16 @@
                              (dwu/start-undo-transaction undo-id)
                              (dwm/apply-wasm-modifiers modifiers
                                                        :snap-ignore-axis snap-ignore-axis
-                                                       :undo-transation? false)
+                                                       :undo-transation? false
+                                                       :subtree-ids-by-id subtree-ids-by-id)
                              (move-shapes-to-frame ids target-frame drop-index drop-cell)
                              (finish-transform)
                              (dwu/commit-undo-transaction undo-id))))))))
 
                (rx/merge
                 (->> modifiers-stream
+                     ;; Throttle the live preview to limit re-renders.
+                     (rx/sample mconst/move-sample-time)
                      (rx/map
                       (fn [[modifiers snap-ignore-axis]]
                         (dwm/set-modifiers modifiers false false {:snap-ignore-axis snap-ignore-axis}))))
@@ -816,10 +864,13 @@
                 ;; Last event will write the modifiers creating the changes
                 (->> move-stream
                      (rx/last)
+                     (rx/with-latest-from modifiers-stream)
                      (rx/mapcat
-                      (fn [[_ target-frame drop-index drop-cell]]
+                      (fn [[[_ target-frame drop-index drop-cell] [modifiers snap-ignore-axis]]]
                         (let [undo-id (js/Symbol)]
                           (rx/of (dwu/start-undo-transaction undo-id)
+                                 ;; Apply the exact final modifiers; the preview may drop the last frame.
+                                 (dwm/set-modifiers modifiers false false {:snap-ignore-axis snap-ignore-axis})
                                  (dwm/apply-modifiers {:undo-transation? false})
                                  (move-shapes-to-frame ids target-frame drop-index drop-cell)
                                  (finish-transform)
@@ -971,6 +1022,9 @@
                 (rx/concat
                  (rx/merge
                   (->> modif-stream
+                       ;; Sample at a fixed cadence to cap re-renders, mirroring the
+                       ;; drag/resize/rotation paths throttled in #10560.
+                       (rx/sample mconst/move-sample-time)
                        (rx/map #(dwm/set-wasm-modifiers % {:ignore-snap-pixel true})))
 
                   (->> modif-stream
@@ -979,17 +1033,28 @@
                   (rx/of (nudge-selected-shapes direction shift?)))
                  (rx/of (finish-transform))))
 
-              (rx/concat
-               (rx/merge
-                (->> move-events
-                     (rx/scan #(gpt/add %1 mov-vec) (gpt/point 0 0))
-                     (rx/map #(dwm/create-modif-tree selected (ctm/move-modifiers %)))
-                     (rx/map #(dwm/set-modifiers % false true))
-                     (rx/take-until stopper))
-                (rx/of (nudge-selected-shapes direction shift?)))
+              (let [modif-stream
+                    (->> move-events
+                         (rx/scan #(gpt/add %1 mov-vec) (gpt/point 0 0))
+                         (rx/map #(dwm/create-modif-tree selected (ctm/move-modifiers %)))
+                         (rx/take-until stopper))]
+                (rx/concat
+                 (rx/merge
+                  (->> modif-stream
+                       ;; Sample at a fixed cadence to cap re-renders, mirroring the
+                       ;; drag/resize/rotation paths throttled in #10560.
+                       (rx/sample mconst/move-sample-time)
+                       (rx/map #(dwm/set-modifiers % false true)))
+                  ;; Un-sampled final write ensures the modifiers atom holds the
+                  ;; exact cumulative position before `apply-modifiers` commits,
+                  ;; even if `sample` drops the tail value on completion.
+                  (->> modif-stream
+                       (rx/last)
+                       (rx/map #(dwm/set-modifiers % false true)))
+                  (rx/of (nudge-selected-shapes direction shift?)))
 
-               (rx/of (dwm/apply-modifiers)
-                      (finish-transform)))))
+                 (rx/of (dwm/apply-modifiers)
+                        (finish-transform))))))
           (rx/empty))))))
 
 (defn move-selected
@@ -1028,7 +1093,7 @@
   The position is a map that can have a partial position (it means it
   can receive {:x 10}."
   ([id position] (update-position id position nil))
-  ([id position options]
+  ([id position {:keys [no-wasm?] :as options}]
    (assert (uuid? id) "expected a valid uuid for `id`")
    (assert (map? position) "expected a valid map for `position`")
 
@@ -1048,7 +1113,7 @@
              delta     (calculate-delta position bbox frame)
              modifiers (dwm/create-modif-tree [id] (ctm/move-modifiers delta))]
 
-         (if (features/active-feature? state "render-wasm/v1")
+         (if (and (features/active-feature? state "render-wasm/v1") (not no-wasm?))
            (rx/of (dwm/apply-wasm-modifiers modifiers
                                             {:ignore-constraints false
                                              :ignore-touched (:ignore-touched options)
@@ -1060,19 +1125,169 @@
                                         :ignore-touched (:ignore-touched options)
                                         :ignore-snap-pixel true}))))))))
 
+;; -- Sidebar measures transform coalescing ----------------------------
+
+;; The sidebar measures panel numeric inputs emit one event per DOM
+;; gesture tick (held arrow keys, mouse wheel, scrub drags). Committing
+;; each tick would run a full `apply-modifiers` per DOM event and starve
+;; the renderer (React error #185). The events in this section coalesce
+;; those bursts at the data layer: the first event of a burst commits
+;; immediately (leading edge, so single edits stay synchronous), further
+;; ticks commit at most once per `mconst/sidebar-transform-sample-time`
+;; (throttle), and a trailing debounced flush guarantees the exact final
+;; value lands. All payloads are absolute values, so keeping only the
+;; latest queued value per shape/attribute is lossless.
+
+(defn- sidebar-commit-events
+  "Build the real commit events for a drained pending entry of `kind`,
+  skipping shapes that no longer exist on the queued page."
+  [state kind entry]
+  (let [options  (:options entry)
+        page-id  (or (:page-id options) (:current-page-id state))
+        objects  (dsh/lookup-page-objects state page-id)
+        options  (assoc options :page-id page-id)
+        live-ids (fn [ids] (into [] (filter #(contains? objects %)) ids))]
+    (case kind
+      ::positions
+      (keep (fn [[id position]]
+              (when (contains? objects id)
+                (update-position id position options)))
+            (:positions entry))
+
+      ::dimensions
+      (let [ids (live-ids (:ids entry))]
+        (when (seq ids)
+          (map (fn [[attr value]]
+                 (update-dimensions ids attr value options))
+               (:values entry))))
+
+      ::rotation
+      (let [ids (live-ids (:ids entry))]
+        (when (seq ids)
+          [(increase-rotation ids (:value entry) nil :page-id page-id)])))))
+
+(defn- flush-sidebar-transforms
+  "Internal: atomically drain the pending sidebar transform payloads and
+  emit their commit events. No-op when nothing is pending."
+  []
+  (ptk/reify ::flush-sidebar-transforms
+    ptk/UpdateEvent
+    (update [_ state]
+      (let [pending (::pending-sidebar-transforms state)]
+        (-> state
+            (dissoc ::pending-sidebar-transforms)
+            (assoc ::flushing-sidebar-transforms pending))))
+
+    ptk/WatchEvent
+    (watch [_ state _]
+      (let [pending (::flushing-sidebar-transforms state)]
+        (rx/concat
+         (if (empty? pending)
+           (rx/empty)
+           (->> pending
+                (mapcat (fn [[kind entry]] (sidebar-commit-events state kind entry)))
+                (rx/from)))
+         (rx/of (fn [state] (dissoc state ::flushing-sidebar-transforms))))))))
+
+(defn- queue-sidebar-transform
+  "Internal: accumulate the latest payload of `kind` with `update-entry`
+  (a fn from the previous pending entry to the new one).
+
+  The very first queued event of the workspace session also installs the
+  drain stream that commits pending payloads: a leading flush for the
+  first event, at most one flush per
+  `mconst/sidebar-transform-sample-time` while a burst is ongoing
+  (throttle), and a trailing flush (debounce) that guarantees the exact
+  final value lands. The drain stream lives until the workspace is
+  finalized, so subsequent bursts reuse it."
+  [kind update-entry]
+  (let [cur-event (js/Symbol)]
+    (ptk/reify ::queue-sidebar-transform
+      ptk/UpdateEvent
+      (update [_ state]
+        (let [state (update-in state [::pending-sidebar-transforms kind]
+                               (fn [entry] (update-entry (or entry {}))))]
+          (if (nil? (::sidebar-transform-drain state))
+            (assoc state ::sidebar-transform-drain cur-event)
+            state)))
+
+      ptk/WatchEvent
+      (watch [_ state stream]
+        (if (= cur-event (::sidebar-transform-drain state))
+          (let [stopper (->> stream (rx/filter (ptk/type? :app.main.data.workspace/finalize)))]
+            (rx/merge
+             ;; Leading edge: commit the payload this first event queued.
+             (rx/of (flush-sidebar-transforms))
+             ;; At most one commit per window while a burst is ongoing.
+             (->> stream
+                  (rx/filter (ptk/type? ::queue-sidebar-transform))
+                  (rx/throttle mconst/sidebar-transform-sample-time)
+                  (rx/map (fn [_] (flush-sidebar-transforms)))
+                  (rx/take-until stopper))
+             ;; Trailing edge: guarantee the exact final value lands.
+             (->> stream
+                  (rx/filter (ptk/type? ::queue-sidebar-transform))
+                  (rx/debounce mconst/sidebar-transform-sample-time)
+                  (rx/map (fn [_] (flush-sidebar-transforms)))
+                  (rx/take-until stopper))))
+          (rx/empty))))))
+
 (defn update-positions
-  "Move multiple shapes to a new position."
+  "Move multiple shapes to a new position, from the sidebar options form.
+
+  Burst-coalesced (see `queue-sidebar-transform`): rapid successive calls
+  from the sidebar numeric inputs commit at most once per
+  `mconst/sidebar-transform-sample-time`, and the trailing flush commits
+  the exact final position. A single call still commits synchronously."
   ([ids position] (update-positions ids position nil))
   ([ids position options]
    (assert (every? uuid? ids)
            "expected valid coll of uuids")
    (assert (map? position) "expected a valid map for `position`")
-   (ptk/reify ::update-positions
-     ptk/WatchEvent
-     (watch [_ _ _]
-       (->> ids
-            (map (fn [id] (update-position id position options)))
-            (rx/from))))))
+   (queue-sidebar-transform
+    ::positions
+    (fn [entry]
+      (-> entry
+          (update :positions
+                  (fn [positions]
+                    (reduce (fn [positions id]
+                              (update positions id merge position))
+                            (or positions {})
+                            ids)))
+          (assoc :options options))))))
+
+(defn update-dimensions-coalesced
+  "Like `update-dimensions`, but burst-coalesced (see
+  `queue-sidebar-transform`); used by the sidebar measures panel numeric
+  inputs. The latest queued value per attribute wins."
+  ([ids attr value] (update-dimensions-coalesced ids attr value nil))
+  ([ids attr value options]
+   (assert (number? value))
+   (assert (every? uuid? ids)
+           "expected valid coll of uuids")
+   (assert (contains? #{:width :height} attr)
+           "expected valid attr")
+   (queue-sidebar-transform
+    ::dimensions
+    (fn [entry]
+      (-> entry
+          (assoc-in [:values attr] value)
+          (assoc :ids ids :options options))))))
+
+(defn increase-rotation-coalesced
+  "Like `increase-rotation` with an absolute rotation value, but
+  burst-coalesced (see `queue-sidebar-transform`); used by the sidebar
+  measures panel rotation input. The latest queued absolute value wins;
+  the delta is recomputed from the current rotation when the burst
+  commits."
+  [ids rotation]
+  (assert (every? uuid? ids)
+          "expected valid coll of uuids")
+  (assert (number? rotation))
+  (queue-sidebar-transform
+   ::rotation
+   (fn [entry]
+     (assoc entry :value rotation :ids ids :options nil))))
 
 (defn position-shapes
   [shapes]

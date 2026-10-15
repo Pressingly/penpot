@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.rpc.commands.management
   "A collection of RPC methods for manage the files, projects and team organization."
@@ -72,10 +72,14 @@
       (doseq [params (sequence (comp
                                 (map #(bfc/remap-id % :file-id))
                                 (map #(bfc/remap-id % :library-file-id))
-                                (map #(assoc % :synced-at timestamp))
                                 (map #(assoc % :created-at timestamp)))
                                flibs)]
-        (db/insert! conn :file-library-rel params ::db/return-keys false))
+        (let [rel-params (dissoc params :synced-at)]
+          (db/insert! conn :file-library-rel rel-params ::db/return-keys false)
+          (bfc/upsert-file-library-sync! conn {:file-id (:file-id rel-params)
+                                               :library-file-id (:library-file-id rel-params)
+                                               :synced-at (or (:synced-at params)
+                                                              timestamp)})))
 
       (doseq [params (sequence (comp
                                 (map #(bfc/remap-id % :id))
@@ -172,7 +176,7 @@
   ;; profile-id is present; it can be ommited if this function is
   ;; called from SREPL helpers where no profile is available
   (when (uuid? profile-id)
-    (teams/check-read-permissions! conn profile-id team-id))
+    (teams/check-read-permissions! cfg profile-id team-id))
 
   (binding [bfc/*state* (volatile! {:index {team-id (uuid/next)}})]
     (let [projs (bfc/get-team-projects cfg team-id)
@@ -207,8 +211,7 @@
                          (update :team-id bfc/lookup-index)
                          (assoc :created-at timestamp)
                          (assoc :modified-at timestamp))]
-          (db/insert! conn :team-profile-rel params
-                      {::db/return-keys false})))
+          (teams/add-profile-to-team! cfg params {::db/return-keys false})))
 
       ;; Duplicate team fonts
       (doseq [font fonts]
@@ -339,6 +342,21 @@
 ;; --- COMMAND: Move project
 
 (defn move-project
+  "Moves a project from one team to another.
+
+  Performs comprehensive validation including:
+  - Permission checks on both source and destination teams
+  - Team compatibility verification between source and destination
+  - File features compatibility with destination team
+
+  The operation also:
+  - Updates the project's team assignment
+  - Cleans up any broken library relations after the move
+
+  Throws:
+  - :cant-move-to-same-team if trying to move project to its current team
+  - Permission exceptions if user lacks required permissions
+  - Team compatibility exceptions if teams are incompatible"
   [{:keys [::db/conn] :as cfg} {:keys [profile-id team-id project-id] :as params}]
   (let [project (db/get-by-id conn :project project-id {:columns [:id :team-id]})
         pids    (->> (db/query conn :project {:team-id (:team-id project)} {:columns [:id]})
@@ -408,7 +426,9 @@
                      (assoc ::bfc/project-id project-id)
                      (assoc ::bfc/profile-id profile-id)
                      (assoc ::bfc/input template)
-                     (assoc ::bfc/features (cfeat/get-team-enabled-features cf/flags team)))
+                     (assoc ::bfc/features (cfeat/get-team-enabled-features cf/flags team))
+                     (assoc ::bfc/import-max-object-size (cf/get :binfile-import-max-object-size))
+                     (assoc ::bfc/import-max-zip-entries (cf/get :binfile-import-max-zip-entries)))
 
         result   (if (= format :binfile-v3)
                    (bf.v3/import-files! cfg)

@@ -2,13 +2,15 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.util.debug
   (:require
-   [app.main.store :as st]))
+   [app.main.store :as st]
+   [app.util.storage :as storage]
+   [okulary.core :as l]))
 
-(defonce state (atom #{#_:events}))
+(def ^:private storage-key :app.util.debug/enabled-options)
 
 (def options
   #{;; Displays the bounding box for the shapes
@@ -87,6 +89,9 @@
     ;; Show info about shapes
     :shape-panel
 
+    ;; Show the floating components debugger window
+    :components-debugger
+
     ;; Show what is touched in copies
     :display-touched
 
@@ -105,6 +110,17 @@
     ;; Event times
     :events-times})
 
+(defn- load-state
+  []
+  (let [stored (get storage/user storage-key #{})]
+    (into #{} (filter options) stored)))
+
+(defonce state (l/atom (load-state)))
+
+(defn- persist-state!
+  [state]
+  (swap! storage/user assoc storage-key state))
+
 (defn handle-change
   []
   (set! st/*debug-events* (contains? @state :events))
@@ -112,7 +128,9 @@
 
 (when *assert*
   (handle-change)
-  (add-watch state :watcher handle-change))
+  (add-watch state :watcher handle-change)
+  (add-watch state :persistence (fn [_ _ _ new-state]
+                                  (persist-state! new-state))))
 
 (defn enable!
   [option]

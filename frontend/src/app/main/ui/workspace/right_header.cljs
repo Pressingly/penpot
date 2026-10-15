@@ -2,15 +2,15 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.ui.workspace.right-header
   (:require-macros [app.main.style :as stl])
   (:require
    [app.main.data.common :as dcm]
    [app.main.data.event :as ev]
-   [app.main.data.modal :as modal]
    [app.main.data.shortcuts :as scd]
+   [app.main.data.team :as dtm]
    [app.main.data.workspace :as dw]
    [app.main.data.workspace.drawing.common :as dwc]
    [app.main.data.workspace.history :as dwh]
@@ -25,7 +25,7 @@
    [app.main.ui.exports.assets :refer [progress-widget]]
    [app.main.ui.formats :as fmt]
    [app.main.ui.icons :as deprecated-icon]
-   [app.main.ui.workspace.presence :refer [active-sessions]]
+   [app.main.ui.workspace.presence :refer [active-sessions*]]
    [app.util.dom :as dom]
    [app.util.i18n :as i18n :refer [tr]]
    [okulary.core :as l]
@@ -40,8 +40,10 @@
   {::mf/wrap [mf/memo]
    ::mf/wrap-props false}
   [{:keys [zoom on-increase on-decrease on-zoom-reset on-zoom-fit on-zoom-selected]}]
-  (let [open*           (mf/use-state false)
-        open?           (deref open*)
+  (let [open*            (mf/use-state false)
+        open?            (deref open*)
+        custom-shortcuts (mf/deref refs/custom-shortcuts)
+        get-tt           #(sc/get-effective-tooltip % custom-shortcuts)
 
         open-dropdown
         (mf/use-fn
@@ -97,28 +99,29 @@
              :on-click on-zoom-fit}
         (tr "workspace.header.zoom-fit-all")
         [:span {:class (stl/css :shortcuts)}
-         (for [sc (scd/split-sc (sc/get-tooltip :fit-all))]
+         (for [sc (scd/split-sc (get-tt :fit-all))]
            [:span {:class (stl/css :shortcut-key)
                    :key (str "zoom-fit-" sc)} sc])]]
        [:li {:class (stl/css :zoom-option)
              :on-click on-zoom-selected}
         (tr "workspace.header.zoom-selected")
         [:span {:class (stl/css :shortcuts)}
-         (for [sc (scd/split-sc (sc/get-tooltip :zoom-selected))]
+         (for [sc (scd/split-sc (get-tt :zoom-selected))]
            [:span {:class (stl/css :shortcut-key)
                    :key (str "zoom-selected-" sc)} sc])]]]]]))
 
 ;; --- Header Component
 
 (mf/defc right-header*
-  [{:keys [file layout page-id]}]
-  (let [file-id           (:id file)
-
-        threads-map       (mf/deref refs/comment-threads)
+  [{:keys [file-id layout page-id]}]
+  (let [threads-map       (mf/deref refs/comment-threads)
 
         zoom              (mf/deref refs/selected-zoom)
         read-only?        (mf/use-ctx ctx/workspace-read-only?)
         selected-drawtool (mf/deref refs/selected-drawing-tool)
+
+        custom-shortcuts  (mf/deref refs/custom-shortcuts)
+        get-tt            #(sc/get-effective-tooltip % custom-shortcuts)
 
         on-increase       (mf/use-fn #(st/emit! (dw/increase-zoom nil)))
         on-decrease       (mf/use-fn #(st/emit! (dw/decrease-zoom nil)))
@@ -188,9 +191,8 @@
         (mf/use-fn
          (mf/deps team)
          (fn []
-           (st/emit! (modal/show {:type :invite-members
-                                  :team team
-                                  :origin :workspace}))))]
+           (st/emit! (dtm/check-and-invite-members {:team-id (:id team)
+                                                    :origin :workspace}))))]
 
     (mf/with-effect [editing?]
       (when ^boolean editing?
@@ -198,7 +200,7 @@
 
     [:div {:class (stl/css :workspace-header-right)}
      [:div {:class (stl/css :users-section)}
-      [:& active-sessions]]
+      [:> active-sessions*]]
 
      [:& progress-widget]
 
@@ -214,8 +216,8 @@
         :on-zoom-selected on-zoom-selected}]]
 
      [:div {:class (stl/css :comments-section)}
-      [:button {:title (tr "workspace.toolbar.comments" (sc/get-tooltip :add-comment))
-                :aria-label (tr "workspace.toolbar.comments" (sc/get-tooltip :add-comment))
+      [:button {:title (tr "workspace.toolbar.comments" (get-tt :add-comment))
+                :aria-label (tr "workspace.toolbar.comments" (get-tt :add-comment))
                 :class (stl/css-case :comments-btn true
                                      :selected (= selected-drawtool :comments))
                 :on-click toggle-comments
@@ -242,7 +244,7 @@
         deprecated-icon/share])
 
      [:a {:class (stl/css :viewer-btn)
-          :title (tr "workspace.header.viewer" (sc/get-tooltip :open-viewer))
+          :title (tr "workspace.header.viewer" (get-tt :open-viewer))
           :on-click nav-to-viewer}
       deprecated-icon/play]]))
 

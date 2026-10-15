@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.data.changes
   (:require
@@ -18,15 +18,17 @@
    [app.main.data.helpers :as dsh]
    [app.main.features :as features]
    [app.main.worker :as mw]
+   [app.render-wasm.api :as wasm.api]
    [app.render-wasm.shape :as wasm.shape]
    [beicon.v2.core :as rx]
    [potok.v2.core :as ptk]))
 
 ;; Change this to :info :debug or :trace to debug this module
-(log/set-level! :info)
+(log/set-level! :warn)
 
 (def page-change?
   #{:add-page :mod-page :del-page :mov-page})
+
 (def update-layout-attr?
   #{:hidden})
 
@@ -75,6 +77,32 @@
 (def ^:private xf:map-page-id
   (map :page-id))
 
+(def ^:private wasm-structural-change-types
+  #{:add-obj :mov-objects})
+
+(defn- redo-changes-need-wasm-object-sync?
+  [redo-changes]
+  (some #(contains? wasm-structural-change-types (:type %)) redo-changes))
+
+(defn- sync-wasm-structural-changes
+  [{:keys [redo-changes]}]
+  (ptk/reify ::sync-wasm-structural-changes
+    ptk/EffectEvent
+    (effect [_ state _]
+      (when (wasm.api/initialized?)
+        (let [objects (dsh/lookup-page-objects state)
+              shapes
+              (into []
+                    (keep (fn [{:keys [type id parent-id]}]
+                            (when (contains? wasm-structural-change-types type)
+                              (get objects (case type
+                                             :add-obj id
+                                             :mov-objects parent-id)))))
+                    redo-changes)]
+
+          (wasm.api/process-objects shapes)
+          (wasm.api/request-render "sync-wasm-structural-changes"))))))
+
 (defn- apply-changes-localy
   [{:keys [file-id redo-changes ignore-wasm?] :as commit} pending]
   (ptk/reify ::apply-changes-localy
@@ -117,12 +145,22 @@
             state)
 
           ;; wasm renderer deactivated
-          (update-in state [:files file-id :data] apply-changes))))))
+          (update-in state [:files file-id :data] apply-changes))))
+
+    ptk/WatchEvent
+    (watch [_ state _]
+      ;; `:add-obj` / `:mov-objects` are not tracked via `*shape-changes*`.
+      ;; Emit only for structural commits, after file data is in state.
+      (when (and (not ignore-wasm?)
+                 (features/active-feature? state "render-wasm/v1")
+                 (redo-changes-need-wasm-object-sync? redo-changes))
+        (rx/of (sync-wasm-structural-changes {:redo-changes redo-changes}))))))
 
 (defn commit
   "Create a commit event instance"
   [{:keys [commit-id redo-changes undo-changes origin save-undo? features
-           file-id file-revn file-vern undo-group tags stack-undo? source ignore-wasm?]}]
+           file-id file-revn file-vern undo-group tags stack-undo? source ignore-wasm?
+           selected-before translation?]}]
 
   (assert (cpc/check-changes redo-changes)
           "expect valid vector of changes for redo-changes")
@@ -148,7 +186,9 @@
                    :undo-group undo-group
                    :tags tags
                    :stack-undo? stack-undo?
-                   :ignore-wasm? ignore-wasm?}]
+                   :ignore-wasm? ignore-wasm?
+                   :selected-before selected-before
+                   :translation? translation?}]
 
     (ptk/reify ::commit
       cljs.core/IDeref
@@ -186,7 +226,8 @@
    - undo-group: if some consecutive changes (or even transactions) share the same
                  undo-group, they will be undone or redone in a single step
    "
-  [{:keys [redo-changes undo-changes save-undo? undo-group tags stack-undo? file-id]
+  [{:keys [redo-changes undo-changes save-undo? undo-group tags stack-undo? file-id
+           translation?]
     :or {save-undo? true
          stack-undo? false
          undo-group (uuid/next)
@@ -203,17 +244,23 @@
             features    (get state :features)
             permissions (get state :permissions)]
 
-        ;; Prevent commit changes by a viewer team member (it really should never happen)
-        (when (:can-edit permissions)
-          (rx/of (-> params
-                     (assoc :undo-group undo-group)
-                     (assoc :features features)
-                     (assoc :tags tags)
-                     (assoc :stack-undo? stack-undo?)
-                     (assoc :save-undo? save-undo?)
-                     (assoc :file-id file-id)
-                     (assoc :file-revn (resolve-file-revn state file-id))
-                     (assoc :file-vern (resolve-file-vern state file-id))
-                     (assoc :undo-changes uchg)
-                     (assoc :redo-changes rchg)
-                     (commit))))))))
+        ;; Historical previews must not create edits to the live file. Check
+        ;; this when creating commits so previously queued edits can still save.
+        (when (and (:can-edit permissions)
+                   (not (dm/get-in state [:workspace-global :preview-id])))
+          (log/trace :hint "commit-changes" :redo-changes redo-changes)
+          (let [selected (dm/get-in state [:workspace-local :selected])]
+            (rx/of (-> params
+                       (assoc :undo-group undo-group)
+                       (assoc :features features)
+                       (assoc :tags tags)
+                       (assoc :stack-undo? stack-undo?)
+                       (assoc :save-undo? save-undo?)
+                       (assoc :file-id file-id)
+                       (assoc :file-revn (resolve-file-revn state file-id))
+                       (assoc :file-vern (resolve-file-vern state file-id))
+                       (assoc :undo-changes uchg)
+                       (assoc :redo-changes rchg)
+                       (assoc :selected-before selected)
+                       (assoc :translation? translation?)
+                       (commit)))))))))

@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.ui
   (:require
@@ -10,6 +10,7 @@
    [app.common.uuid :as uuid]
    [app.config :as cf]
    [app.main.data.common :as dcm]
+   [app.main.data.nitrate :as dnt]
    [app.main.data.team :as dtm]
    [app.main.errors :as errors]
    [app.main.refs :as refs]
@@ -17,15 +18,16 @@
    [app.main.router :as rt]
    [app.main.store :as st]
    [app.main.ui.context :as ctx]
-   [app.main.ui.debug.icons-preview :refer [icons-preview]]
-   [app.main.ui.debug.playground :refer [playground]]
+   [app.main.ui.debug.icons-preview :refer [icons-preview*]]
+   [app.main.ui.debug.playground :refer [playground*]]
    [app.main.ui.ds.product.loader :refer [loader*]]
    [app.main.ui.error-boundary :refer [error-boundary*]]
    [app.main.ui.exports.files]
    [app.main.ui.frame-preview :as frame-preview]
+   [app.main.ui.nitrate.entry :as nitrate-entry]
    [app.main.ui.notifications :as notifications]
    [app.main.ui.onboarding.questions :refer [questions-modal]]
-   [app.main.ui.onboarding.team-choice :refer [onboarding-team-modal]]
+   [app.main.ui.onboarding.team-choice :refer [onboarding-team-modal*]]
    [app.main.ui.releases :refer [release-notes-modal]]
    [app.main.ui.static :as static]
    [app.util.dom :as dom]
@@ -131,18 +133,21 @@
    ::mf/private true}
   [{:keys [team-id children]}]
   (mf/with-effect [team-id]
-    (st/emit! (dtm/initialize-team team-id))
-    (fn []
-      (st/emit! (dtm/finalize-team team-id))))
+    (when (uuid? team-id)
+      (st/emit! (dtm/initialize-team team-id))
+      (fn []
+        (st/emit! (dtm/finalize-team team-id)))))
 
-  (let [{:keys [permissions] :as team} (mf/deref refs/team)]
-    (when (= team-id (:id team))
-      [:> (mf/provider ctx/current-team-id) {:value team-id}
-       [:> (mf/provider ctx/permissions) {:value permissions}
-        [:> (mf/provider ctx/can-edit?) {:value (:can-edit permissions)}
-         ;; The `:key` is mandatory here because we want to reinitialize
-         ;; all dom tree instead of simple rerender.
-         [:* {:key (str team-id)} children]]]])))
+  (if-not (uuid? team-id)
+    nil
+    (let [{:keys [permissions] :as team} (mf/deref refs/team)]
+      (when (= team-id (:id team))
+        [:> (mf/provider ctx/current-team-id) {:value team-id}
+         [:> (mf/provider ctx/permissions) {:value permissions}
+          [:> (mf/provider ctx/can-edit?) {:value (:can-edit permissions)}
+           ;; The `:key` is mandatory here because we want to reinitialize
+           ;; all dom tree instead of simple rerender.
+           [:* {:key (str team-id)} children]]]]))))
 
 (mf/defc page*
   {::mf/props :obj
@@ -152,6 +157,7 @@
         props   (get profile :props)
         section (get data :name)
         team    (mf/deref refs/team)
+        nitrate-entry-active? (dnt/nitrate-entry-popup-pending?)
 
         ;; Dashboard / workspace pass ?team-id=… while `initialize-team`
         ;; applies it asynchronously. On the first render `refs/team` can still
@@ -173,11 +179,13 @@
 
         show-question-modal?
         (and (contains? cf/flags :onboarding)
+             (not nitrate-entry-active?)
              (not (:onboarding-viewed props))
              (not (contains? props :onboarding-questions)))
 
         show-team-modal?
         (and (contains? cf/flags :onboarding)
+             (not nitrate-entry-active?)
              (not (:onboarding-viewed props))
              (not (contains? props :onboarding-team-id))
              (not (contains? cf/flags :x-auth-request-headers))
@@ -187,6 +195,7 @@
 
         show-release-modal?
         (and (contains? cf/flags :onboarding)
+             (not nitrate-entry-active?)
              (not (contains? cf/flags :hide-release-modal))
              (:onboarding-viewed props)
              (not= (:release-notes-viewed props) (:main cf/version))
@@ -203,7 +212,10 @@
        [:? [:& auth-page {:route route}]]
 
        :auth-verify-token
-       [:? [:& verify-token-page* {:route route}]]
+       [:? [:> verify-token-page* {:route route}]]
+
+       :nitrate-entry
+       [:> nitrate-entry/nitrate-entry-page* {:profile profile}]
 
        (:settings-profile
         :settings-password
@@ -211,7 +223,8 @@
         :settings-feedback
         :settings-subscription
         :settings-integrations
-        :settings-notifications)
+        :settings-notifications
+        :settings-shortcuts)
        (let [params (get params :query)
              error-report-id (some-> params :error-report-id uuid/parse*)]
          [:? [:> settings-page*
@@ -222,11 +235,11 @@
 
        :debug-icons-preview
        (when *assert*
-         [:& icons-preview])
+         [:> icons-preview*])
 
        :debug-playground
        (when *assert*
-         [:& playground])
+         [:> playground*])
 
        (:dashboard-search
         :dashboard-recent
@@ -240,23 +253,24 @@
         :dashboard-settings
         :dashboard-deleted)
        (let [params        (get params :query)
-             team-id       (some-> params :team-id uuid/parse*)
-             project-id    (some-> params :project-id uuid/parse*)
-             search-term   (some-> params :search-term)
-             plugin-url    (some-> params :plugin)
-             template      (some-> params :template)]
+             team-id             (some-> params :team-id uuid/parse*)
+             project-id          (some-> params :project-id uuid/parse*)
+             search-term         (some-> params :search-term)
+             plugin-url          (some-> params :plugin)
+             template            (some-> params :template)
+             pending-action-id   (some-> params :pending-action-id uuid/parse*)]
          [:?
           #_[:& app.main.ui.releases/release-notes-modal {:version "2.5"}]
           #_[:& app.main.ui.onboarding/onboarding-templates-modal]
           #_[:& app.main.ui.onboarding/onboarding-modal]
-          #_[:& app.main.ui.onboarding.team-choice/onboarding-team-modal]
+          #_[:> app.main.ui.onboarding.team-choice/onboarding-team-modal*]
 
           (cond
             show-question-modal?
             [:& questions-modal]
 
             show-team-modal?
-            [:& onboarding-team-modal {:go-to-team true}]
+            [:> onboarding-team-modal* {:go-to-team true}]
 
             show-release-modal?
             [:& release-notes-modal {:version (:main cf/version)}])
@@ -268,7 +282,8 @@
                                 :search-term search-term
                                 :plugin-url plugin-url
                                 :project-id project-id
-                                :template template}]]])
+                                :template template
+                                :pending-action-id pending-action-id}]]])
 
        :workspace
        (let [params     (get params :query)
@@ -276,24 +291,12 @@
              file-id    (some-> params :file-id uuid/parse*)
              page-id    (some-> params :page-id uuid/parse*)
              layout     (some-> params :layout keyword)]
-         [:? {}
-          (when (cf/external-feature-flag "onboarding-03" "test")
-            (cond
-              show-question-modal?
-              [:& questions-modal]
-
-              show-team-modal?
-              [:& onboarding-team-modal {:go-to-team false}]
-
-              show-release-modal?
-              [:& release-notes-modal {:version (:main cf/version)}]))
-
-          [:> team-container* {:team-id team-id}
-           [:> workspace-page* {:team-id team-id
-                                :file-id file-id
-                                :page-id page-id
-                                :layout-name layout
-                                :key file-id}]]])
+         [:> team-container* {:team-id team-id}
+          [:> workspace-page* {:team-id team-id
+                               :file-id file-id
+                               :page-id page-id
+                               :layout-name layout
+                               :key file-id}]])
 
        :viewer
        (let [params   (get params :query)
@@ -373,7 +376,7 @@
            :share share}])
 
        :frame-preview
-       [:& frame-preview/frame-preview]
+       [:> frame-preview/frame-preview*]
 
        nil)]))
 

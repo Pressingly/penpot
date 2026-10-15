@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.data.comments
   (:require
@@ -441,7 +441,6 @@
                (rx/catch #(rx/throw {:type :comment-error}))))))))
 
 
-;; FIXME: revisit
 (defn retrieve-unread-comment-threads
   "A event used mainly in dashboard for retrieve all unread threads of a team."
   [team-id]
@@ -449,18 +448,9 @@
   (ptk/reify ::retrieve-unread-comment-threads
     ptk/WatchEvent
     (watch [_ _ _]
-      (let [fetched-comments #(assoc %2 :comment-threads (d/index-by :id %1))
-            fetched-users #(assoc %2 :current-team-comments-users %1)]
+      (let [fetched-comments #(assoc %2 :comment-threads (d/index-by :id %1))]
         (->> (rp/cmd! :get-unread-comment-threads {:team-id team-id})
-             (rx/merge-map
-              (fn [comments]
-                (rx/concat
-                 (rx/of (partial fetched-comments comments))
-
-                 (->> (rx/from (into #{} (map :file-id) comments))
-                      (rx/merge-map #(rp/cmd! :get-profiles-for-file-comments {:file-id %}))
-                      (rx/reduce #(merge %1 (d/index-by :id %2)) {})
-                      (rx/map #(partial fetched-users %))))))
+             (rx/map #(partial fetched-comments %))
              (rx/catch #(rx/throw {:type :comment-error})))))))
 
 (defn mark-all-threads-as-read
@@ -503,7 +493,7 @@
       (-> state
           (update :comments-local assoc :open id)
           (update :comments-local assoc :options nil)
-          (update :comments-local dissoc :draft)))))
+          (update :comments-local dissoc :draft :expanded)))))
 
 (defn close-thread
   []
@@ -511,7 +501,25 @@
     ptk/UpdateEvent
     (update [_ state]
       (-> state
+          (update :comments-local dissoc :open :draft :options :expanded)))))
+
+(defn expand-comment-group
+  "Temporarily mark a proximity cluster of threads as expanded so its bubbles
+   can be laid out visually without altering their stored positions."
+  [thread-ids]
+  (ptk/reify ::expand-comment-group
+    ptk/UpdateEvent
+    (update [_ state]
+      (-> state
+          (update :comments-local assoc :expanded (set thread-ids))
           (update :comments-local dissoc :open :draft :options)))))
+
+(defn collapse-comment-group
+  []
+  (ptk/reify ::collapse-comment-group
+    ptk/UpdateEvent
+    (update [_ state]
+      (update state :comments-local dissoc :expanded))))
 
 (defn update-filters
   [{:keys [mode show list] :as params}]

@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.loggers.audit
   "Services related to the user activity (audit log)."
@@ -35,6 +35,16 @@
 
 (def ^:private filter-auth-events
   #{"login-with-oidc" "login-with-password" "register-profile" "update-profile"})
+
+(def ^:private organization-sso-failure-reasons
+  #{"access-denied"
+    "provider-unavailable"
+    "invalid-configuration"
+    "provider-error"
+    "token-exchange-failed"
+    "user-info-failed"
+    "incomplete-user-info"
+    "unexpected-error"})
 
 (def ^:private safe-backend-context-keys
   #{:version
@@ -88,7 +98,8 @@
   #{:session-id
     :password
     :old-password
-    :token})
+    :token
+    :client-secret})
 
 (defn extract-utm-params
   "Extracts additional data from params and namespace them under
@@ -153,7 +164,7 @@
 ;; COLLECTOR API
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(declare ^:private prepare-context-from-request)
+(declare prepare-context-from-request)
 
 ;; Defines a service that collects the audit/activity log using
 ;; internal database. Later this audit log can be transferred to
@@ -182,7 +193,7 @@
 (def valid-event?
   (sm/validator schema:event))
 
-(defn- prepare-context-from-request
+(defn prepare-context-from-request
   "Prepare backend event context from request"
   [request]
   (let [client-event-origin (get-client-event-origin request)
@@ -193,7 +204,7 @@
         token-id            (::actoken/id request)
         token-type          (::actoken/type request)]
     {:external-session-id session-id
-     :initiator (or key-id "app")
+     :initiator (or (d/name key-id) "app")
      :access-token-id (some-> token-id str)
      :access-token-type (some-> token-type str)
      :client-event-origin client-event-origin
@@ -296,6 +307,14 @@
 (defn filter-telemetry-props
   [{:keys [source name props type] :as params}]
   (cond
+    (and (= source "backend")
+         (= name "organization-sso-auth-failed"))
+    (let [props' (into {} xf:filter-telemetry-props props)
+          props' (cond-> props'
+                   (contains? organization-sso-failure-reasons (:failure-reason props))
+                   (assoc :failure-reason (:failure-reason props)))]
+      (assoc params :props props'))
+
     (or (and (= source "frontend")
              (= type "identify"))
         (and (= source "backend")
@@ -331,12 +350,44 @@
                   {})]
     (assoc params :context context)))
 
+(defn- coerce-profile-id
+  "Normalize a hand-written `::audit/profile-id` override to a uuid.
+
+  `schema:event` requires a uuid and `submit*` swallows the validation
+  error, so a value that is not a uuid loses the event instead of
+  failing loudly. Commands read the override from places that are not
+  typed by us (token claims, stringly-typed drivers), so a string has
+  to be accepted. Anything that cannot become a uuid is discarded, and
+  the event falls back to the caller, which is always a valid uuid."
+  [v]
+  (let [coerced (cond
+                  ;; Fast path: the override comes straight from a `profile`
+                  ;; row in almost every command, so it is already a uuid.
+                  (uuid? v)
+                  v
+
+                  (string? v)
+                  (uuid/parse* v)
+
+                  :else
+                  nil)]
+    (when (and (nil? coerced) (some? v))
+      (l/error :hint "ignoring unusable ::audit/profile-id"
+               :profile-id v))
+
+    coerced))
+
 (defn prepare-rpc-event
   [cfg mdata params result]
   (let [resultm      (meta result)
         request      (-> params meta ::http/request)
-        profile-id   (or (::profile-id resultm)
-                         (:profile-id result)
+        ;; SECURITY: the event belongs to whoever made the request. The only
+        ;; sanctioned override is the `::audit/profile-id` metadata, set
+        ;; explicitly by the command. Never derive it from the response:
+        ;; results can carry a `:profile-id` that belongs to somebody else
+        ;; (the owner of an error report, the inviter of an invitation, ...)
+        ;; and that silently misattributes the action.
+        profile-id   (or (coerce-profile-id (::profile-id resultm))
                          (::rpc/profile-id params)
                          uuid/zero)
 
@@ -411,7 +462,7 @@
                   (update :ip-addr d/nilv "0.0.0.0")
                   (update :props d/nilv {})
                   (update :context d/nilv {})
-                  (assoc :source "backend")
+                  (update :source d/nilv "backend")
                   (d/without-nils))]
     (submit* cfg event)))
 
@@ -428,7 +479,7 @@
                     (update :profile-id d/nilv uuid/zero)
                     (update :props d/nilv {})
                     (update :context d/nilv {})
-                    (assoc :source "backend")
+                    (update :source d/nilv "backend")
                     (select-keys event-keys)
                     (check-event))]
       (db/run! cfg append-audit-entry event))))

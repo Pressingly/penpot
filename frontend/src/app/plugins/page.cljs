@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.plugins.page
   (:require
@@ -19,6 +19,7 @@
    [app.main.data.workspace :as dw]
    [app.main.data.workspace.guides :as dwgu]
    [app.main.data.workspace.interactions :as dwi]
+   [app.main.data.workspace.pages :as dwpg]
    [app.main.repo :as rp]
    [app.main.router :as-alias rt]
    [app.main.store :as st]
@@ -32,7 +33,8 @@
    [app.plugins.utils :as u]
    [app.util.object :as obj]
    [beicon.v2.core :as rx]
-   [cuerdas.core :as str]))
+   [cuerdas.core :as str]
+   [potok.v2.core :as ptk]))
 
 (declare page-proxy)
 
@@ -62,6 +64,9 @@
          (or (not (string? value)) (empty? value))
          (u/not-valid plugin-id :name value)
 
+         (not (r/check-permission plugin-id "content:write"))
+         (u/not-valid plugin-id :name "Plugin doesn't have 'content:write' permission")
+
          :else
          (st/emit! (dwi/update-flow page-id id #(assoc % :name value)))))}
 
@@ -70,19 +75,27 @@
      :get
      (fn [self]
        (when-let [frame (-> self u/proxy->flow :starting-frame)]
-         (shape/shape-proxy file-id page-id frame)))
+         (shape/shape-proxy plugin-id file-id page-id frame)))
      :set
      (fn [_ value]
        (cond
          (not (shape/shape-proxy? value))
          (u/not-valid plugin-id :startingBoard value)
 
+         (not (r/check-permission plugin-id "content:write"))
+         (u/not-valid plugin-id :startingBoard "Plugin doesn't have 'content:write' permission")
+
          :else
          (st/emit! (dwi/update-flow page-id id #(assoc % :starting-frame (obj/get value "$id"))))))}
 
     :remove
     (fn []
-      (st/emit! (dwi/remove-flow page-id id)))))
+      (cond
+        (not (r/check-permission plugin-id "content:write"))
+        (u/not-valid plugin-id :remove "Plugin doesn't have 'content:write' permission")
+
+        :else
+        (st/emit! (dwi/remove-flow page-id id))))))
 
 (defn page-proxy? [proxy]
   (obj/type-of? proxy "PageProxy"))
@@ -120,6 +133,22 @@
     {:this true
      :enumerable false
      :get #(.getRoot ^js %)}
+
+    :remove
+    (fn []
+      (let [pages (-> (u/locate-file file-id) :data :pages)]
+        (cond
+          (not (r/check-permission plugin-id "content:write"))
+          (u/not-valid plugin-id :remove "Plugin doesn't have 'content:write' permission")
+
+          (nil? (u/locate-page file-id id))
+          (u/not-valid plugin-id :remove "Page not found")
+
+          (<= (count pages) 1)
+          (u/not-valid plugin-id :remove "Cannot remove the last page of the file")
+
+          :else
+          (st/emit! (dw/delete-page id)))))
 
     :background
     {:this true
@@ -254,13 +283,13 @@
         (st/emit! (dp/set-plugin-data file-id :page id (keyword "shared" namespace) key value))))
 
     :getSharedPluginDataKeys
-    (fn [self namespace]
+    (fn [namespace]
       (cond
         (not (string? namespace))
         (u/not-valid plugin-id :page-plugin-data-namespace namespace)
 
         :else
-        (let [page (u/proxy->page self)]
+        (let [page (u/locate-page file-id id)]
           (apply array (keys (dm/get-in page [:plugin-data (keyword "shared" namespace)]))))))
 
     :openPage
@@ -269,9 +298,24 @@
         (not (r/check-permission plugin-id "content:read"))
         (u/not-valid plugin-id :openPage "Plugin doesn't have 'content:read' permission")
 
+        (true? new-window)
+        (do (st/emit! (dcm/go-to-workspace :page-id id ::rt/new-window true))
+            (js/Promise.resolve nil))
+
+        ;; Navigating to the already-active page emits no initialization
+        ;; event, so resolve right away instead of waiting forever.
+        (u/page-active? id)
+        (js/Promise.resolve nil)
+
         :else
-        (let [new-window (if (boolean? new-window) new-window false)]
-          (st/emit! (dcm/go-to-workspace :page-id id ::rt/new-window new-window)))))
+        (js/Promise.
+         (fn [resolve _]
+           (->> st/stream
+                (rx/filter (ptk/type? ::dwpg/initialized))
+                (rx/filter #(= (deref %) id))
+                (rx/take 1)
+                (rx/subs! #(resolve nil)))
+           (st/emit! (dcm/go-to-workspace :page-id id))))))
 
     :createFlow
     (fn [name frame]
@@ -281,6 +325,9 @@
 
         (not (shape/shape-proxy? frame))
         (u/not-valid plugin-id :createFlow-frame frame)
+
+        (not (r/check-permission plugin-id "content:write"))
+        (u/not-valid plugin-id :createFlow "Plugin doesn't have 'content:write' permission")
 
         :else
         (let [flow-id (uuid/next)]
@@ -294,6 +341,9 @@
       (cond
         (not (flow-proxy? flow))
         (u/not-valid plugin-id :removeFlow-flow flow)
+
+        (not (r/check-permission plugin-id "content:write"))
+        (u/not-valid plugin-id :removeFlow "Plugin doesn't have 'content:write' permission")
 
         :else
         (st/emit!
@@ -318,6 +368,9 @@
           (not (r/check-permission plugin-id "content:write"))
           (u/not-valid plugin-id :addRulerGuide "Plugin doesn't have 'content:write' permission")
 
+          (not (u/page-active? id))
+          (u/not-valid plugin-id :addRulerGuide "Cannot modify a page that is not currently active")
+
           :else
           (let [ruler-id (uuid/next)]
             (st/emit!
@@ -338,6 +391,9 @@
 
         (not (r/check-permission plugin-id "content:write"))
         (u/not-valid plugin-id :removeRulerGuide "Plugin doesn't have 'comment:write' permission")
+
+        (not (u/page-active? id))
+        (u/not-valid plugin-id :removeRulerGuide "Cannot modify a page that is not currently active")
 
         :else
         (let [guide (u/proxy->ruler-guide value)]
@@ -394,8 +450,7 @@
         (js/Promise.
          (fn [resolve]
            (let [thread-id (obj/get thread "$id")]
-             (js/Promise.
-              (st/emit! (dc/delete-comment-thread-on-workspace {:id thread-id} #(resolve)))))))))
+             (st/emit! (dc/delete-comment-thread-on-workspace {:id thread-id} #(resolve))))))))
 
     :findCommentThreads
     (fn [criteria]

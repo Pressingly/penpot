@@ -2,12 +2,12 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.handlers.resources
   "Temporal resources management."
   (:require
-   ["archiver$default" :as arc]
+   ["archiver" :as arc]
    ["node:fs" :as fs]
    ["node:fs/promises" :as fsp]
    ["node:path" :as path]
@@ -36,12 +36,12 @@
     {:path     path
      :mtype    (mime/get type)
      :name     name
-     :filename (str/concat (str/slug name) (mime/get-extension type))
+     :filename (str/concat (str/replace name #"[\\/:*?\"<>|]" "_") (mime/get-extension type))
      :id       task-id}))
 
 (defn create-zip
   [& {:keys [resource on-complete on-progress on-error]}]
-  (let [^js zip  (arc/create "zip")
+  (let [^js zip  (new arc/ZipArchive)
         ^js out  (fs/createWriteStream (:path resource))
         on-complete (or on-complete (constantly nil))
         progress (atom 0)]
@@ -68,7 +68,6 @@
   [auth-token resource]
   (->> (fsp/readFile (:path resource))
        (p/fmap (fn [buffer]
-                 (js/console.log buffer)
                  (new js/Blob #js [buffer] #js {:type (:mtype resource)})))
        (p/mcat (fn [blob]
                  (let [fdata  (new http/FormData)
@@ -80,7 +79,7 @@
                                     :method "POST"
                                     :body fdata
                                     :dispatcher agent}
-                       uri     (-> (cf/get :public-uri)
+                       uri     (-> (cf/get-internal-uri)
                                    (u/ensure-path-slash)
                                    (u/join "api/management/methods/upload-tempfile")
                                    (str))]

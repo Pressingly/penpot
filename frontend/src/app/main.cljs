@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main
   (:require
@@ -58,6 +58,14 @@
   []
   (mf/render! app-root (mf/element ui/app)))
 
+(defn- initialize-rasterizer
+  []
+  (ptk/reify ::initialize-rasterizer
+    ptk/EffectEvent
+    (effect [_ _ _]
+      ;; The rasterizer is used for the dashboard thumbnails
+      (thr/init!))))
+
 (defn initialize
   []
   (ptk/reify ::initialize
@@ -90,19 +98,19 @@
             (rx/map deref)
             (rx/filter dp/is-authenticated?)
             (rx/take 1)
-            (rx/map #(ws/initialize)))))
+            (rx/map #(ws/initialize)))
 
-    ptk/EffectEvent
-    (effect [_ state _]
-      (when-not (feat/active-feature? state "render-wasm/v1")
-        (thr/init!)))))
+       (->> stream
+            (rx/filter (ptk/type? ::feat/initialize))
+            (rx/take 1)
+            (rx/map #(initialize-rasterizer)))))))
 
 (defn ^:export init
   [options]
-  ;; WORKAROUND: we set this really not usefull property for signal a
-  ;; sideffect and prevent GCC remove it. We need it because we need
+  ;; WORKAROUND: we set this really not useful property for signal a
+  ;; side effect and prevent GCC remove it. We need it because we need
   ;; to populate the Date prototype with transit related properties
-  ;; before SES hardning is applied on loading MCP plugin
+  ;; before SES hardening is applied on loading MCP plugin
   (unchecked-set js/globalThis "penpotStartDate"
                  (-> (ct/now)
                      (t/encode-str)
@@ -118,7 +126,6 @@
     (do
       (some-> (unchecked-get options "defaultTranslations")
               (i18n/set-default-translations))
-
       (mw/init!)
       (i18n/init)
       (cur/init-styles)

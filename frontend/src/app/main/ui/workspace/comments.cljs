@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.ui.workspace.comments
   (:require-macros [app.main.style :as stl])
@@ -11,6 +11,7 @@
    [app.main.data.event :as ev]
    [app.main.data.workspace :as dw]
    [app.main.data.workspace.comments :as dwcm]
+   [app.main.data.workspace.drawing.common :as dwdc]
    [app.main.refs :as refs]
    [app.main.store :as st]
    [app.main.ui.comments :as cmt]
@@ -99,7 +100,8 @@
          (fn []
            (if from-viewer
              (st/emit! (dcmt/update-options {:show-sidebar? false}))
-             (st/emit! (dw/clear-edition-mode)
+             (st/emit! (dwdc/clear-drawing)
+                       (dw/clear-edition-mode)
                        (dw/deselect-all true)))))
 
         tgroups     (->> threads

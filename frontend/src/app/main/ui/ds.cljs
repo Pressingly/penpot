@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.ui.ds
   (:require
@@ -25,6 +25,7 @@
    [app.main.ui.ds.foundations.typography.text :refer [text*]]
    [app.main.ui.ds.foundations.utilities.token.token-status :refer [token-status-icon*
                                                                     token-status-list]]
+   [app.main.ui.ds.layout.modal :refer [modal* modal-header* modal-content* modal-footer*]]
    [app.main.ui.ds.layout.tab-switcher :refer [tab-switcher*]]
    [app.main.ui.ds.notifications.actionable :refer [actionable*]]
    [app.main.ui.ds.notifications.context-notification :refer [context-notification*]]
@@ -83,6 +84,10 @@
     :MilestoneGroup milestone-group*
     :Date date*
     :PanelTitle panel-title*
+    :Modal modal*
+    :ModalHeader modal-header*
+    :ModalContent modal-content*
+    :ModalFooter modal-footer*
 
     :set-default-translations
     (fn [data]

@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.data.workspace.selection
   (:require
@@ -27,7 +27,9 @@
    [app.main.data.workspace.pages :as-alias dwpg]
    [app.main.data.workspace.specialized-panel :as-alias dwsp]
    [app.main.data.workspace.undo :as dwu]
+   [app.main.data.workspace.viewport-wasm :as dwvw]
    [app.main.data.workspace.zoom :as dwz]
+   [app.main.features :as features]
    [app.main.refs :as refs]
    [app.main.router :as rt]
    [app.main.streams :as ms]
@@ -173,13 +175,17 @@
              current        (get objects first-selected)
              parent         (get objects (:parent-id current))
              sibling-ids    (:shapes parent)
-             current-index  (d/index-of sibling-ids first-selected)
-             sibling        (if (= (dec (count sibling-ids)) current-index)
-                              (first sibling-ids)
-                              (nth sibling-ids (inc current-index)))]
+             ;; `index-of` is nil when the shape is not listed under the parent (stale
+             ;; selection or inconsistent tree). Do not call `nth` with `(dec nil)` — in
+             ;; ClojureScript that is -1 and throws (see penpot#7064).
+             current-index  (some-> sibling-ids (d/index-of first-selected))
+             sibling        (when (some? current-index)
+                              (if (= (dec (count sibling-ids)) current-index)
+                                (first sibling-ids)
+                                (nth sibling-ids (inc current-index) nil)))]
 
          (cond
-           (= 1 count-selected)
+           (and (= 1 count-selected) (some? sibling))
            (rx/of (select-shape sibling))
 
            (> count-selected 1)
@@ -198,12 +204,13 @@
              current        (get objects first-selected)
              parent         (get objects (:parent-id current))
              sibling-ids    (:shapes parent)
-             current-index  (d/index-of sibling-ids first-selected)
-             sibling        (if (= 0 current-index)
-                              (last sibling-ids)
-                              (nth sibling-ids (dec current-index)))]
+             current-index  (some-> sibling-ids (d/index-of first-selected))
+             sibling        (when (some? current-index)
+                              (if (= 0 current-index)
+                                (last sibling-ids)
+                                (nth sibling-ids (dec current-index) nil)))]
          (cond
-           (= 1 count-selected)
+           (and (= 1 count-selected) (some? sibling))
            (rx/of (select-shape sibling))
 
            (> count-selected 1)
@@ -215,7 +222,7 @@
   (ptk/reify ::deselect-shape
     ptk/WatchEvent
     (watch [_ _ _]
-      (rx/of ::dwsp/interrupt))
+      (rx/of :interrupt ::dwsp/interrupt))
     ptk/UpdateEvent
     (update [_ state]
       (-> state
@@ -230,7 +237,7 @@
    (ptk/reify ::shift-select-shapes
      ptk/WatchEvent
      (watch [_ _ _]
-       (rx/of ::dwsp/interrupt))
+       (rx/of :interrupt ::dwsp/interrupt))
      ptk/UpdateEvent
      (update [_ state]
        (let [objects (or objects (dsh/lookup-page-objects state))
@@ -269,7 +276,11 @@
             ;; the event loop
             expand-s (->> (rx/of (dwc/expand-all-parents ids objects))
                           (rx/observe-on :async))
-            interrupt-s (rx/of ::dwsp/interrupt)]
+            ;; :interrupt aborts drag-stopper; only emit it when clearing edition
+            ;; (unconditional emit broke marquee selection after #10798).
+            interrupt-s (if (some? (dm/get-in state [:workspace-local :edition]))
+                          (rx/of :interrupt ::dwsp/interrupt)
+                          (rx/of ::dwsp/interrupt))]
         (rx/merge expand-s interrupt-s)))))
 
 (defn select-all
@@ -442,6 +453,16 @@
 
         (gpt/subtract new-pos pt-obj)))))
 
+(defn- get-new-dom-text-ids
+  [state changes]
+  (when-not (features/active-feature? state "render-wasm/v1")
+    (->> (:redo-changes changes)
+         (keep (fn [{:keys [type obj]}]
+                 (when (and (= type :add-obj)
+                            (cfh/text-shape? obj))
+                   (:id obj))))
+         (not-empty))))
+
 (defn duplicate-shapes
   [ids & {:keys [move-delta? alt-duplication? change-selection? return-ref]
           :or {move-delta? false alt-duplication? false change-selection? true return-ref nil}}]
@@ -483,6 +504,9 @@
                                      (map #(get-in % [:obj :id]))
                                      (into (d/ordered-set)))
 
+                new-dom-text-ids
+                (get-new-dom-text-ids state changes)
+
                 id-duplicated   (first new-ids)
 
                 frames          (into #{}
@@ -521,6 +545,11 @@
              ;; Warning: This order is important for the focus mode.
              (->> (rx/of
                    (dwu/start-undo-transaction undo-id)
+                   ;; Track cloned texts before they mount.
+                   (when new-dom-text-ids
+                     (ptk/data-event :text/reflow
+                                     {:ids new-dom-text-ids
+                                      :page-id (:id page)}))
                    (dch/commit-changes changes)
                    (when change-selection?
                      (select-shapes new-ids))
@@ -596,6 +625,10 @@
                 (assoc :workspace-focus-selected selected)
                 (assoc :workspace-pre-focus (:workspace-local state)))
             state))))
+
+    ptk/EffectEvent
+    (effect [_ state _]
+      (dwvw/maybe-sync-workspace-local-viewport! state))
 
     ptk/WatchEvent
     (watch [_ state stream]

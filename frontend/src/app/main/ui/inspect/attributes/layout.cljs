@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.ui.inspect.attributes.layout
   (:require-macros [app.main.style :as stl])
@@ -49,7 +49,7 @@
           [:> copy-button* {:data (css/get-css-property objects shape property)}
            [:div {:class (stl/css :button-children)} value]]]]))))
 
-(mf/defc layout-panel
+(mf/defc layout-panel*
   [{:keys [objects shapes]}]
   (let [shapes (->> shapes (filter ctl/any-layout?))]
 

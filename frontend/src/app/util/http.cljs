@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.util.http
   "A http client with rx streams interface."
@@ -206,6 +206,11 @@
 (defn client-error?
   [{:keys [status]}]
   (<= 400 status 499))
+
+(defn blob?
+  [^js v]
+  (when (some? v)
+    (instance? js/Blob v)))
 
 (defn as-promise
   [observable]

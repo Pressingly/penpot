@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.ui.workspace.sidebar.options.menus.fill
   (:require-macros [app.main.style :as stl])
@@ -52,16 +52,15 @@
   [n-props o-props]
   (and (identical? (unchecked-get n-props "ids")
                    (unchecked-get o-props "ids"))
+       (identical? (unchecked-get n-props "appliedTokens")
+                   (unchecked-get o-props "appliedTokens"))
        (let [o-vals  (unchecked-get o-props "values")
              n-vals  (unchecked-get n-props "values")
              o-fills (get o-vals :fills)
              n-fills (get n-vals :fills)
-             o-applied-tokens (get o-vals :applied-tokens)
-             n-applied-tokens (get n-vals :applied-tokens)
              o-hide  (get o-vals :hide-fill-on-export)
              n-hide  (get n-vals :hide-fill-on-export)]
          (and (identical? o-hide n-hide)
-              (identical? o-applied-tokens n-applied-tokens)
               (identical? o-fills n-fills)))))
 
 (mf/defc fill-menu*
@@ -85,8 +84,10 @@
         empty-fills?   (and (not multiple?)
                             (= 0 (count fills)))
 
-        open*          (mf/use-state has-fills?)
-        open?          (deref open*)
+        ;; Derive the open state from `has-fills?` on every render so it stays
+        ;; in sync even when the fills arrive after mount (editor v3)
+        open*          (mf/use-state true)
+        open?          (and has-fills? (deref open*))
 
         toggle-content (mf/use-fn #(swap! open* not))
         open-content   (mf/use-fn #(reset! open* true))
@@ -174,10 +175,10 @@
          (mf/deps ids)
          (fn [_ token]
            (st/emit!
-            (dwta/toggle-token {:token token
-                                :attrs #{:fill}
-                                :shape-ids ids
-                                :expand-with-children true}))))
+            (dwta/apply-token-from-input {:token token
+                                          :attrs #{:fill}
+                                          :shape-ids ids
+                                          :expand-with-children true}))))
 
         on-detach-token
         (mf/use-fn
@@ -195,7 +196,8 @@
           (dom/set-attribute! checkbox "indeterminate" true)
           (dom/remove-attribute! checkbox "indeterminate"))))
 
-    [:div {:class (stl/css :fill-section)}
+    [:section {:class (stl/css :fill-section)
+               :aria-label (tr "workspace.options.fill.section")}
      [:div {:class (stl/css :fill-title)}
       [:> title-bar* {:collapsable  has-fills?
                       :collapsed    (not open?)

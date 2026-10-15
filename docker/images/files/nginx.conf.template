@@ -3,7 +3,7 @@ pid /tmp/nginx.pid;
 include /etc/nginx/overrides/main.d/*.conf;
 
 events {
-    worker_connections 2048;
+    worker_connections 65535;
     multi_accept on;
 }
 
@@ -31,7 +31,17 @@ http {
     default_type application/octet-stream;
 
     error_log /dev/stderr;
-    access_log /dev/stdout;
+
+    # Access log enriched with upstream diagnostics: what the backend
+    # answered (us), how long it took to connect to it (uct), how long it
+    # took to answer (urt) and which internal address served the request
+    # (ua). With proxy_pass on variables there is no upstream keepalive,
+    # so uct measures one real TCP connection per request.
+    log_format penpot_upstream '$remote_addr - $remote_user [$time_local] "$request" '
+                               '$status $body_bytes_sent "$http_referer" "$http_user_agent" '
+                               'us=$upstream_status uct=$upstream_connect_time '
+                               'urt=$upstream_response_time ua=$upstream_addr';
+    access_log /dev/stdout penpot_upstream;
 
     proxy_connect_timeout 300s;
     proxy_send_timeout 300s;
@@ -72,8 +82,8 @@ http {
     include /etc/nginx/overrides/http.d/*.conf;
 
     server {
-        listen 8080 default_server;
-        listen [::]:8080 default_server;
+        listen 8080 default_server reuseport backlog=16384;
+        ${PENPOT_IPV6_LISTEN_DIRECTIVE}
         server_name _;
 
         client_max_body_size $PENPOT_HTTP_SERVER_MAX_BODY_SIZE;
@@ -95,6 +105,7 @@ http {
 
             proxy_set_header Host "$redirect_host";
             proxy_set_header X-Forwarded-Host "";
+            proxy_set_header Authorization "";
             proxy_hide_header etag;
             proxy_hide_header x-amz-id-2;
             proxy_hide_header x-amz-request-id;
@@ -111,6 +122,7 @@ http {
         }
 
         location /assets {
+            proxy_set_header Host $proxy_host;
             proxy_pass $PENPOT_BACKEND_URI/assets;
             recursive_error_pages on;
             proxy_intercept_errors on;
@@ -127,10 +139,12 @@ http {
         }
 
         location /api/export {
+            proxy_set_header Host $proxy_host;
             proxy_pass $PENPOT_EXPORTER_URI;
         }
 
         location /api {
+            proxy_set_header Host $proxy_host;
             proxy_pass $PENPOT_BACKEND_URI/api;
             proxy_buffering off;
         }
@@ -140,46 +154,33 @@ http {
             proxy_http_version 1.1;
         }
 
-        location /mcp/ws {
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection 'upgrade';
-            proxy_pass $PENPOT_MCP_URI_WS;
-            proxy_http_version 1.1;
-        }
-
-        location /mcp/stream {
-            proxy_pass $PENPOT_MCP_URI/mcp;
-            proxy_http_version 1.1;
-        }
-
-        location /mcp/sse {
-            proxy_pass $PENPOT_MCP_URI/sse;
-            proxy_http_version 1.1;
-        }
-
         location /readyz {
             access_log off;
+            proxy_set_header Host $proxy_host;
             proxy_pass $PENPOT_BACKEND_URI$request_uri;
         }
 
         location /ws/notifications {
+            proxy_set_header Host $proxy_host;
             proxy_set_header Upgrade $http_upgrade;
             proxy_set_header Connection 'upgrade';
             proxy_pass $PENPOT_BACKEND_URI/ws/notifications;
-        }
-
-        location /control-center {
-            proxy_http_version 1.1;
-            proxy_set_header Host $http_host;
-            proxy_set_header X-Real-IP $http_cf_connecting_ip;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_pass $PENPOT_NITRATE_URI$request_uri;
         }
 
         include /etc/nginx/overrides/server.d/*.conf;
 
         location / {
             include /etc/nginx/overrides/location.d/*.conf;
+
+            # Regenerated from the environment on every container start
+            # (see nginx-entrypoint.sh) while its URL is only versioned by
+            # the build, so a flags only restart leaves the URL untouched.
+            # Caching it like a build asset would keep returning users on
+            # the previous PENPOT_FLAGS for up to a week.
+            location = /js/config.js {
+                include /etc/nginx/nginx-security-headers.conf;
+                add_header Cache-Control "no-store, no-cache, max-age=0" always;
+            }
 
             location ~* \.(js|css|jpg|png|svg|gif|ttf|woff|woff2|wasm|map)$ {
                 include /etc/nginx/nginx-security-headers.conf;
@@ -194,6 +195,24 @@ http {
             add_header Cache-Control "no-store, no-cache, max-age=0" always;
             try_files $uri /index.html$is_args$args /index.html =404;
 
+        }
+    }
+
+    # Dedicated health endpoint consumed by the nginx-prometheus-exporter
+    # sidecar (deployed by ops, scraping http://127.0.0.1:8082/stub_status).
+    # `listen 8082` binds every interface and sits out of the public server:
+    # a compose port mapping delivers traffic to the container address, never
+    # to loopback, so only the published port decides who gets in from
+    # outside the host. Counts client-side connections only; it says nothing
+    # about the upstream pools.
+    server {
+        listen 8082;
+        server_name _;
+
+        access_log off;
+
+        location = /stub_status {
+            stub_status;
         }
     }
 }

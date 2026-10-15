@@ -3,7 +3,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  *
- * Copyright (c) KALEIDOS INC
+ * Copyright (c) KALEIDOS INC Sucursal en España SL
  */
 
 import { SafeGuard } from "../../controllers/SafeGuard.js";
@@ -290,6 +290,13 @@ export class TextNodeIterator {
       } else {
         break;
       }
+    }
+    // The loop exits when currentNode === endNode without yielding endNode.
+    // Callers (e.g. selection style merge) must visit every text/BR node in the
+    // range, including the last one, or the final span is omitted (e.g. empty
+    // paragraph with only <br>) and the sidebar shows "mixed" incorrectly.
+    if (this.#currentNode === endNode) {
+      yield this.#currentNode;
     }
   }
 }

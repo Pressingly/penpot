@@ -2,13 +2,14 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.data.workspace.colors
   (:require
    [app.common.data :as d]
    [app.common.data.macros :as dm]
    [app.common.files.helpers :as cfh]
+   [app.common.math :as mth]
    [app.common.schema :as sm]
    [app.common.types.color :as clr]
    [app.common.types.fills :as types.fills]
@@ -40,6 +41,20 @@
     ptk/WatchEvent
     (watch [_ _ _]
       (rx/of (layout/toggle-layout-flag :colorpalette :force? true)
+             (mbc/event colorpalette-selected-broadcast-key selected)))
+
+    ptk/EffectEvent
+    (effect [_ state _]
+      (let [wglobal (:workspace-global state)]
+        (layout/persist-layout-state! wglobal)))))
+
+(defn toggle-palette
+  "Toggle the palette tool and change the library it uses"
+  [selected]
+  (ptk/reify ::toggle-palette
+    ptk/WatchEvent
+    (watch [_ _ _]
+      (rx/of (layout/toggle-layout-flag :colorpalette)
              (mbc/event colorpalette-selected-broadcast-key selected)))
 
     ptk/EffectEvent
@@ -318,6 +333,11 @@
   [:stroke-style
    :stroke-alignment
    :stroke-width
+   :stroke-per-side
+   :stroke-width-top
+   :stroke-width-right
+   :stroke-width-bottom
+   :stroke-width-left
    :stroke-cap-start
    :stroke-cap-end])
 
@@ -738,7 +758,7 @@
         [h s v] (clr/hex->hsv value)]
     (merge data
            {:hex (or value "000000")
-            :alpha (or opacity 1)
+            :alpha (if (d/nan? opacity) 1 (or opacity 1))
             :r r :g g :b b
             :h h :s s :v v})))
 
@@ -815,7 +835,6 @@
               (rx/filter (ptk/type? ::update-colorpicker-add-stop) stream)
               (rx/filter (ptk/type? ::update-colorpicker-add-auto) stream)
               (rx/filter (ptk/type? ::remove-gradient-stop) stream))
-             (rx/debounce 40)
              (rx/map (constantly (colorpicker-onchange-runner on-change)))
              (rx/take-until stopper))))
 
@@ -937,7 +956,8 @@
                       (or (not cap-stops?) (< (count stops) types.fills/MAX-GRADIENT-STOPS))]
 
                   (if can-add-stop?
-                    (let [new-stop (-> (clr/interpolate-gradient stops offset)
+                    (let [offset (mth/clamp offset 0 1)
+                          new-stop (-> (clr/interpolate-gradient stops offset)
                                        (split-color-components))
                           stops (conj stops new-stop)
                           stops (into [] (sort-by :offset stops))
@@ -960,7 +980,8 @@
                       stops (mapv split-color-components
                                   (if cap-stops?
                                     (take types.fills/MAX-GRADIENT-STOPS stops)
-                                    stops))]
+                                    stops))
+                      stops (mapv #(update % :offset (fn [o] (mth/clamp o 0 1))) stops)]
                   (-> state
                       (assoc :current-color (get stops stop))
                       (assoc :stops stops))))))))
@@ -1048,7 +1069,15 @@
           (when-let [color (-> state
                                (select-keys [:image :gradient :color :opacity])
                                (not-empty))]
-            (rx/of (add-recent-color color))))))))
+            ;; Closing the dialog while an image-fill upload is still in
+            ;; flight (or a gradient is mid-edit) leaves the colorpicker
+            ;; with a partial selection — opacity-only, or with stops not
+            ;; yet committed. ``add-recent-color`` runs the value through
+            ;; ``check-color`` and asserts; gate on the same schema here
+            ;; so the partial value is silently dropped instead of crashing
+            ;; the workspace.
+            (when (clr/valid-color? color)
+              (rx/of (add-recent-color color)))))))))
 
 (defn update-colorpicker-gradient
   [changes]

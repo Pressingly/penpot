@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.data.media
   (:require
@@ -69,6 +69,9 @@
 
               (= (:code error) :media-type-mismatch)
               (tr "errors.media-type-mismatch")
+
+              (= (:code error) :invalid-image)
+              (tr "errors.media-type-not-allowed")
 
               :else
               (tr "errors.unexpected-error"))]

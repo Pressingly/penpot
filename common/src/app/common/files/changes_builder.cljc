@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.common.files.changes-builder
   (:require
@@ -19,6 +19,7 @@
    [app.common.types.component :as ctk]
    [app.common.types.file :as ctf]
    [app.common.types.path :as path]
+   [app.common.types.shape :as cts]
    [app.common.types.shape.layout :as ctl]
    [app.common.types.tokens-lib :as ctob]
    [app.common.uuid :as uuid]
@@ -46,8 +47,8 @@
      (with-meta changes
        {::page-id page-id})))
   ([]
-   {:redo-changes []
-    :undo-changes '()})
+   {:redo-changes []     ;; redo-changes is a vector so that conj adds things at the end, in order of execution
+    :undo-changes '()})  ;; undo-changes is a list to conj things at the beginning, so they execute in the reverse order when undoing several changes
   ([origin]
    {:redo-changes []
     :undo-changes '()
@@ -66,6 +67,12 @@
   (cond-> changes
     (some? undo-group)
     (assoc :undo-group undo-group)))
+
+(defn set-translation?
+  [changes translation?]
+  (cond-> changes
+    translation?
+    (assoc :translation? true)))
 
 (defn with-page
   [changes page]
@@ -162,7 +169,7 @@
    (contains? (meta changes) ::file-data)
    "Call (with-file-data) before using this function"))
 
-(defn- lookup-objects
+(defn lookup-objects
   [changes]
   (let [data (::file-data (meta changes))]
     (dm/get-in data [:pages-index uuid/zero :objects])))
@@ -191,6 +198,20 @@
                  ::applied-changes-count (count redo-changes)))
     changes))
 
+(defn- without-changes-local
+  "Append changes through `f` without applying them to the mounted page's
+  working state."
+  [changes f]
+  (if (contains? (meta changes) ::file-data)
+    (let [changes (-> changes (apply-changes-local) (f))]
+      (vary-meta changes assoc ::applied-changes-count (count (:redo-changes changes))))
+    (f changes)))
+
+(defn concat-changes-without-local
+  "Append `other` without applying it to the mounted page's working state."
+  [changes other]
+  (without-changes-local changes #(concat-changes % other)))
+
 ;; Page changes
 
 (defn add-empty-page
@@ -213,21 +234,33 @@
    (let [page (::page (meta changes))]
      (mod-page changes page options)))
 
-  ([changes page {:keys [name background]}]
+  ([changes page {:keys [name background pixel-grid-color pixel-grid-opacity]}]
    (let [change {:type :mod-page :id (:id page)}
          redo   (cond-> change
                   (some? name)
                   (assoc :name name)
 
                   (some? background)
-                  (assoc :background background))
+                  (assoc :background background)
+
+                  (some? pixel-grid-color)
+                  (assoc :pixel-grid-color pixel-grid-color)
+
+                  (some? pixel-grid-opacity)
+                  (assoc :pixel-grid-opacity pixel-grid-opacity))
 
          undo   (cond-> change
                   (some? name)
                   (assoc :name (:name page))
 
                   (some? background)
-                  (assoc :background (:background page)))]
+                  (assoc :background (:background page))
+
+                  (some? pixel-grid-color)
+                  (assoc :pixel-grid-color (:pixel-grid-color page))
+
+                  (some? pixel-grid-opacity)
+                  (assoc :pixel-grid-opacity (:pixel-grid-opacity page)))]
 
      (-> changes
          (update :redo-changes conj redo)
@@ -293,10 +326,12 @@
 
 (defn del-page
   [changes page]
-  (-> changes
-      (update :redo-changes conj {:type :del-page :id (:id page)})
-      (update :undo-changes conj {:type :add-page :id (:id page) :page page})
-      (apply-changes-local)))
+  (let [page-id (:id page)]
+    (assert (some? page-id) "page must have a valid :id")
+    (-> changes
+        (update :redo-changes conj {:type :del-page :id page-id})
+        (update :undo-changes conj {:type :add-page :id page-id :page page})
+        (apply-changes-local))))
 
 (defn move-page
   [changes page-id index prev-index]
@@ -392,12 +427,9 @@
    (add-object changes obj nil))
 
   ([changes obj {:keys [index ignore-touched] :or {index ::undefined ignore-touched false}}]
-
-   ;; FIXME: add shape validation
-
    (assert-page-id! changes)
    (assert-objects! changes)
-   (let [obj (cond-> obj
+   (let [obj (cond-> (cts/check-shape obj)
                (not= index ::undefined)
                (assoc ::index index))
 
@@ -585,68 +617,72 @@
      (-> (reduce update-shape changes ids)
          (apply-changes-local)))))
 
+(defn- add-remove-objects-changes
+  [changes page-id objects ids {:keys [ignore-touched allow-altering-copies]
+                                :or {ignore-touched false
+                                     allow-altering-copies false}}]
+  (let [add-redo-change
+        (fn [change-set id]
+          (conj change-set
+                (cond-> {:type :del-obj
+                         :page-id page-id
+                         :id id}
+                  ignore-touched
+                  (assoc :ignore-touched true))))
+
+        add-undo-change-shape
+        (fn [change-set id]
+          (let [shape (get objects id)]
+            (cond-> change-set
+              (some? shape)
+              (conj {:type :add-obj
+                     :id id
+                     :page-id page-id
+                     :parent-id (:parent-id shape)
+                     :frame-id (:frame-id shape)
+                     :index (cfh/get-position-on-parent objects id)
+                     :obj (cond-> shape
+                            (contains? shape :shapes)
+                            (assoc :shapes []))}))))
+
+        add-undo-change-parent
+        (fn [change-set id]
+          (let [shape (get objects id)
+                prev-sibling (cfh/get-prev-sibling objects (:id shape))]
+            (cond-> change-set
+              (some? shape)
+              (conj (cond-> {:type :mov-objects
+                             :page-id page-id
+                             :parent-id (:parent-id shape)
+                             :shapes [id]
+                             :after-shape prev-sibling
+                             :index 0
+                             :ignore-touched true}
+                      allow-altering-copies
+                      (assoc :allow-altering-copies true))))))]
+
+    (-> changes
+        (update :redo-changes #(reduce add-redo-change % ids))
+        (update :undo-changes #(as-> % $
+                                 (reduce add-undo-change-parent $ ids)
+                                 (reduce add-undo-change-shape $ ids))))))
+
 (defn remove-objects
   ([changes ids] (remove-objects changes ids nil))
-  ([changes ids {:keys [ignore-touched] :or {ignore-touched false}}]
+  ([changes ids options]
    (assert-page-id! changes)
    (assert-objects! changes)
-   (let [page-id (::page-id (meta changes))
-         objects (lookup-objects changes)
-
-         add-redo-change
-         (fn [change-set id]
-           (conj change-set
-                 (cond-> {:type :del-obj
-                          :page-id page-id
-                          :id id}
-                   ignore-touched
-                   (assoc :ignore-touched true))))
-
-         add-undo-change-shape
-         (fn [change-set id]
-           (let [shape (get objects id)]
-             (conj
-              change-set
-              {:type :add-obj
-               :id id
-               :page-id page-id
-               :parent-id (:parent-id shape)
-               :frame-id (:frame-id shape)
-               :index (cfh/get-position-on-parent objects id)
-               :obj (cond-> shape
-                      (contains? shape :shapes)
-                      (assoc :shapes []))})))
-
-         add-undo-change-parent
-         (fn [change-set id]
-           (let [shape (get objects id)
-                 prev-sibling (cfh/get-prev-sibling objects (:id shape))]
-             (conj
-              change-set
-              {:type :mov-objects
-               :page-id page-id
-               :parent-id (:parent-id shape)
-               :shapes [id]
-               :after-shape prev-sibling
-               :index 0
-               :ignore-touched true})))]
-
-     (-> changes
-         (update :redo-changes #(reduce add-redo-change % ids))
-         (update :undo-changes #(as-> % $
-                                  (reduce add-undo-change-parent $ ids)
-                                  (reduce add-undo-change-shape $ ids)))
-         (apply-changes-local)))))
+   (-> changes
+       (add-remove-objects-changes (::page-id (meta changes))
+                                   (lookup-objects changes)
+                                   ids
+                                   options)
+       (apply-changes-local))))
 
 ;; FIXME: PERFORMANCE
-(defn resize-parents
-  [changes ids]
-  (assert-page-id! changes)
-  (assert-objects! changes)
-  (let [page-id (::page-id (meta changes))
-
-        objects (lookup-objects changes)
-        xform   (comp
+(defn- add-resize-parents-changes
+  [changes page-id objects ids]
+  (let [xform   (comp
                  (mapcat #(cons % (cfh/get-parent-ids objects %)))
                  (map (d/getf objects))
                  (filter #(contains? #{:group :bool} (:type %)))
@@ -680,9 +716,8 @@
                   (update :uops conj {:type :set :attr attr :val old-val :ignore-touched true})))))
 
         resize-parent
-        (fn [changes parent]
-          (let [objects (lookup-objects changes)
-                children (->> parent :shapes (map (d/getf objects)))
+        (fn [[changes objects] parent]
+          (let [children (->> parent :shapes (map (d/getf objects)))
                 resized-parent (cond
                                  (empty? children) ;; a parent with no children will be deleted,
                                  nil               ;; so it does not need resize
@@ -709,14 +744,24 @@
                             :id (:id parent)}]
 
                 (if (seq rops)
-                  (-> changes
-                      (update :redo-changes conj (assoc change :operations rops))
-                      (update :undo-changes conj (assoc change :operations uops))
-                      (apply-changes-local))
-                  changes))
-              changes)))]
+                  [(-> changes
+                       (update :redo-changes conj (assoc change :operations rops))
+                       (update :undo-changes conj (assoc change :operations uops)))
+                   (assoc objects (:id parent) resized-parent)]
+                  [changes objects]))
+              [changes objects])))]
 
-    (reduce resize-parent changes all-parents)))
+    (first (reduce resize-parent [changes objects] all-parents))))
+
+(defn resize-parents
+  [changes ids]
+  (assert-page-id! changes)
+  (assert-objects! changes)
+  (-> changes
+      (add-resize-parents-changes (::page-id (meta changes))
+                                  (lookup-objects changes)
+                                  ids)
+      (apply-changes-local)))
 
 ;; Library changes
 
@@ -1130,6 +1175,8 @@
         (->> ids
              (map (d/getf objects))
              (filter ctl/grid-layout?)
+             ;; Component sync owns copy child ordering.
+             (remove ctk/in-component-copy?)
              (reduce reorder-grid changes))]
 
     changes))
@@ -1150,3 +1197,24 @@
   [changes]
   (::page-id (meta changes)))
 
+
+(defn set-text-content
+  [changes id content prev-content]
+  (assert-page-id! changes)
+  (let [page-id (::page-id (meta changes))
+
+        redo-change
+        {:type :mod-obj
+         :page-id page-id
+         :id id
+         :operations [{:type :set :attr :content :val content}]}
+
+        undo-change
+        {:type :mod-obj
+         :page-id page-id
+         :id id
+         :operations [{:type :set :attr :content :val prev-content}]}]
+
+    (-> changes
+        (update :redo-changes conj redo-change)
+        (update :undo-changes conj undo-change))))

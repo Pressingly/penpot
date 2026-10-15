@@ -19,8 +19,7 @@ permissions:
 
 jobs:
   release:
-    environment: release-admins
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.vars.outputs.gh_ref }}
       release_notes: ${{ steps.extract_release_notes.outputs.release_notes }}
@@ -63,7 +62,7 @@ jobs:
 
           echo "$PUB_DOCKER_PASSWORD" | skopeo login --username "$PUB_DOCKER_USERNAME" --password-stdin docker.io
 
-          IMAGES=("frontend" "backend" "exporter" "mcp" "storybook")
+          IMAGES=("frontend" "backend" "exporter" "admin-console" "mcp" "storybook")
           SHORT_TAG=${TAG%.*}
 
           for image in "${IMAGES[@]}"; do
@@ -104,7 +103,7 @@ jobs:
 
       - name: Notify Mattermost
         if: failure()
-        uses: mattermost/action-mattermost-notify@master
+        uses: mattermost/action-mattermost-notify@ae31bb6f9e26a54336e79696f108a2c91cf55b4e # v2.1.0
         with:
           MATTERMOST_WEBHOOK_URL: ${{ secrets.MATTERMOST_WEBHOOK }}
           MATTERMOST_CHANNEL: bot-alerts-cicd

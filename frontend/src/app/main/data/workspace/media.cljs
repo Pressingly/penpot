@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.data.workspace.media
   (:require
@@ -43,6 +43,17 @@
 (defn- optimize
   [input]
   (svgo/optimize input svgo/defaultOptions))
+
+(defn valid-svg-string?
+  "True when `text` parses as SVG XML. Lets callers reject malformed markup
+  up front instead of failing asynchronously inside the import pipeline."
+  [text]
+  (and (string? text)
+       (not (str/blank? text))
+       (try
+         (tubax/xml->clj text)
+         true
+         (catch :default _ false))))
 
 (defn svg->clj
   [[name text]]

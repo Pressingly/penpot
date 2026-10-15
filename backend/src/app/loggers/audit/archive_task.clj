@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.loggers.audit.archive-task
   (:require
@@ -81,7 +81,7 @@
 (def ^:private sql:get-audit-log-chunk
   "SELECT *
      FROM audit_log
-    WHERE archived_at is null
+    WHERE archived_at IS NULL
     ORDER BY created_at ASC
     LIMIT 128
       FOR UPDATE

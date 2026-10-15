@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main
   (:require
@@ -38,7 +38,7 @@
    [app.storage.gc-deleted :as-alias sto.gc-deleted]
    [app.storage.gc-touched :as-alias sto.gc-touched]
    [app.storage.s3 :as-alias sto.s3]
-   [app.svgo :as-alias svgo]
+   [app.system :as sys]
    [app.util.cron]
    [app.worker :as-alias wrk]
    [app.worker.executor]
@@ -46,7 +46,6 @@
    [clojure.tools.namespace.repl :as repl]
    [cuerdas.core :as str]
    [integrant.core :as ig]
-   [nrepl.server :as nrepl]
    [promesa.exec :as px])
   (:gen-class))
 
@@ -146,7 +145,42 @@
    {::mdef/name "penpot_http_server_dispatch_timing"
     ::mdef/help "Histogram of dispatch handler"
     ::mdef/labels []
-    ::mdef/type :histogram}})
+    ::mdef/type :histogram}
+
+   :http-worker-queue-size
+   {::mdef/name "penpot_http_worker_queue_size"
+    ::mdef/help "Current number of queued tasks in the http server xnio worker."
+    ::mdef/type :gauge}
+
+   :http-worker-busy-threads
+   {::mdef/name "penpot_http_worker_busy_threads"
+    ::mdef/help "Current number of busy threads in the http server xnio worker."
+    ::mdef/type :gauge}
+
+   :http-worker-pool-size
+   {::mdef/name "penpot_http_worker_pool_size"
+    ::mdef/help "Current number of threads in the http server xnio worker pool."
+    ::mdef/type :gauge}
+
+   :http-worker-max-pool-size
+   {::mdef/name "penpot_http_worker_max_pool_size"
+    ::mdef/help "Maximum number of threads of the http server xnio worker pool."
+    ::mdef/type :gauge}
+
+   :http-connector-active-connections
+   {::mdef/name "penpot_http_connector_active_connections"
+    ::mdef/help "Current number of active connections in the http listener."
+    ::mdef/type :gauge}
+
+   :http-connector-requests-total
+   {::mdef/name "penpot_http_connector_requests_total"
+    ::mdef/help "Total number of requests handled by the http listener."
+    ::mdef/type :counter}
+
+   :http-connector-errors-total
+   {::mdef/name "penpot_http_connector_errors_total"
+    ::mdef/help "Total number of handler errors in the http listener."
+    ::mdef/type :counter}})
 
 (def system-config
   {::db/pool
@@ -154,16 +188,16 @@
     ::db/username   (cf/get :database-username)
     ::db/password   (cf/get :database-password)
     ::db/read-only  (cf/get :database-readonly false)
-    ::db/min-size   (cf/get :database-min-pool-size 0)
-    ::db/max-size   (cf/get :database-max-pool-size 60)
+    ::db/min-size   (cf/get :database-min-pool-size)
+    ::db/max-size   (cf/get :database-max-pool-size)
     ::mtx/metrics   (ig/ref ::mtx/metrics)}
 
    ;; Default netty IO pool (shared between several services)
    ::wrk/netty-io-executor
    {:threads (cf/get :netty-io-threads)}
 
-   ::wrk/netty-executor
-   {:threads (cf/get :executor-threads)}
+   ::wrk/executor
+   {}
 
    :app.migrations/migrations
    {::db/pool (ig/ref ::db/pool)}
@@ -178,9 +212,6 @@
    {::rds/uri
     (cf/get :redis-uri)
 
-    ::wrk/netty-executor
-    (ig/ref ::wrk/netty-executor)
-
     ::wrk/netty-io-executor
     (ig/ref ::wrk/netty-io-executor)}
 
@@ -189,12 +220,12 @@
     ::mtx/metrics (ig/ref ::mtx/metrics)}
 
    ::mbus/msgbus
-   {::wrk/executor (ig/ref ::wrk/netty-executor)
+   {::wrk/executor (ig/ref ::wrk/executor)
     ::rds/client   (ig/ref ::rds/client)
     ::mtx/metrics  (ig/ref ::mtx/metrics)}
 
    :app.storage.tmp/cleaner
-   {::wrk/executor (ig/ref ::wrk/netty-executor)}
+   {::wrk/executor (ig/ref ::wrk/executor)}
 
    ::sto.gc-deleted/handler
    {::db/pool      (ig/ref ::db/pool)
@@ -204,7 +235,7 @@
    {::db/pool (ig/ref ::db/pool)}
 
    ::http.client/client
-   {}
+   {::wrk/executor (ig/ref ::wrk/executor)}
 
    ::session/manager
    {::db/pool (ig/ref ::db/pool)}
@@ -265,7 +296,8 @@
     ::oidc/providers     (ig/ref ::oidc/providers)
     ::session/manager    (ig/ref ::session/manager)
     ::email/blacklist    (ig/ref ::email/blacklist)
-    ::email/whitelist    (ig/ref ::email/whitelist)}
+    ::email/whitelist    (ig/ref ::email/whitelist)
+    :app.nitrate/client (ig/ref :app.nitrate/client)}
 
    ::mgmt/routes
    {::db/pool            (ig/ref ::db/pool)
@@ -302,16 +334,18 @@
     ::http.assets/cache-max-age     (ct/duration {:hours 24})
     ::http.assets/signature-max-age (ct/duration {:hours 24 :minutes 15})
     ::sto/storage                   (ig/ref ::sto/storage)
-    ::session/manager               (ig/ref ::session/manager)}
+    ::session/manager               (ig/ref ::session/manager)
+    ::setup/props                   (ig/ref ::setup/props)
+    ::db/pool                       (ig/ref ::db/pool)}
 
    ::rpc/climit
    {::mtx/metrics        (ig/ref ::mtx/metrics)
-    ::wrk/executor       (ig/ref ::wrk/netty-executor)
+    ::wrk/executor       (ig/ref ::wrk/executor)
     ::climit/config      (cf/get :rpc-climit-config)
     ::climit/enabled     (contains? cf/flags :rpc-climit)}
 
    :app.rpc/rlimit
-   {::wrk/executor (ig/ref ::wrk/netty-executor)
+   {::wrk/executor (ig/ref ::wrk/executor)
 
     :app.loggers.mattermost/reporter
     (ig/ref :app.loggers.mattermost/reporter)
@@ -323,8 +357,8 @@
    {::http.client/client (ig/ref ::http.client/client)
     ::db/pool            (ig/ref ::db/pool)
     ::rds/pool           (ig/ref ::rds/pool)
-    :app.nitrate/client (ig/ref :app.nitrate/client)
-    ::wrk/executor       (ig/ref ::wrk/netty-executor)
+    :app.nitrate/client  (ig/ref :app.nitrate/client)
+    ::wrk/executor       (ig/ref ::wrk/executor)
     ::session/manager    (ig/ref ::session/manager)
     ::ldap/provider      (ig/ref ::ldap/provider)
     ::sto/storage        (ig/ref ::sto/storage)
@@ -336,6 +370,7 @@
     ::rpc/rlimit         (ig/ref ::rpc/rlimit)
     ::setup/templates    (ig/ref ::setup/templates)
     ::setup/props        (ig/ref ::setup/props)
+    ::setup/shared-keys  (ig/ref ::setup/shared-keys)
 
     ::email/blacklist    (ig/ref ::email/blacklist)
     ::email/whitelist    (ig/ref ::email/whitelist)
@@ -354,12 +389,12 @@
    {::http.client/client (ig/ref ::http.client/client)
     ::db/pool            (ig/ref ::db/pool)
     ::rds/pool           (ig/ref ::rds/pool)
-    ::wrk/executor       (ig/ref ::wrk/netty-executor)
+    ::wrk/executor       (ig/ref ::wrk/executor)
     ::session/manager    (ig/ref ::session/manager)
     ::sto/storage        (ig/ref ::sto/storage)
     ::mtx/metrics        (ig/ref ::mtx/metrics)
     ::mbus/msgbus        (ig/ref ::mbus/msgbus)
-    :app.nitrate/client (ig/ref :app.nitrate/client)
+    :app.nitrate/client  (ig/ref :app.nitrate/client)
     ::rds/client         (ig/ref ::rds/client)
     ::setup/props        (ig/ref ::setup/props)}
 
@@ -392,6 +427,8 @@
 
      :delete-object
      (ig/ref :app.tasks.delete-object/handler)
+     :demo-purge
+     (ig/ref :app.tasks.demo-purge/handler)
      :process-webhook-event
      (ig/ref ::webhooks/process-event-handler)
      :run-webhook
@@ -429,6 +466,9 @@
    :app.tasks.delete-object/handler
    {::db/pool (ig/ref ::db/pool)}
 
+   :app.tasks.demo-purge/handler
+   {::db/pool (ig/ref ::db/pool)}
+
    :app.tasks.file-gc/handler
    {::db/pool     (ig/ref ::db/pool)
     ::sto/storage (ig/ref ::sto/storage)}
@@ -445,13 +485,17 @@
     ::http.client/client (ig/ref ::http.client/client)
     ::setup/props        (ig/ref ::setup/props)}
 
-   [::srepl/urepl ::srepl/server]
-   {::srepl/port (cf/get :urepl-port 6062)
-    ::srepl/host (cf/get :urepl-host "localhost")}
+   ::srepl/urepl
+   {:port (cf/get :urepl-port 6062)
+    :host (cf/get :urepl-host "localhost")}
 
-   [::srepl/prepl ::srepl/server]
-   {::srepl/port (cf/get :prepl-port 6063)
-    ::srepl/host (cf/get :prepl-host "localhost")}
+   ::srepl/prepl
+   {:port (cf/get :prepl-port 6063)
+    :host (cf/get :prepl-host "localhost")}
+
+   ::srepl/nrepl
+   {:port (cf/get :nrepl-port 6064)
+    :host (cf/get :nrepl-host "localhost")}
 
    ::setup/templates {}
 
@@ -464,10 +508,11 @@
     ::migrations (ig/ref :app.migrations/migrations)}
 
    ::setup/shared-keys
-   {::setup/props (ig/ref ::setup/props)
-    :nexus        (cf/get :nexus-shared-key)
-    :nitrate      (cf/get :nitrate-shared-key)
-    :exporter     (cf/get :exporter-shared-key)}
+   {::setup/props    (ig/ref ::setup/props)
+    :nexus           (cf/get :nexus-shared-key)
+    :admin-console   (cf/get :admin-console-shared-key)
+    :exporter        (cf/get :exporter-shared-key)
+    :media-processor (cf/get :media-processor-shared-key)}
 
    ::setup/clock
    {}
@@ -585,42 +630,70 @@
     ::db/pool         (ig/ref ::db/pool)}})
 
 
-(def system nil)
-
 (defn start
   []
   (cf/validate!)
   (ig/load-namespaces (merge system-config worker-config))
-  (alter-var-root #'system (fn [sys]
-                             (when sys (ig/halt! sys))
-                             (-> system-config
-                                 (cond-> (contains? cf/flags :backend-worker)
-                                   (merge worker-config))
-                                 (ig/expand)
-                                 (ig/init))))
+  (alter-var-root #'app.system/system
+                  (fn [sys]
+                    (some-> sys not-empty ig/halt!)
+                    (-> system-config
+                        (cond-> (contains? cf/flags :backend-worker)
+                          (merge worker-config))
+                        (ig/expand)
+                        (ig/init))))
+
   (l/inf :hint "welcome to penpot"
          :flags (str/join "," (map name cf/flags))
          :worker? (contains? cf/flags :backend-worker)
-         :version (:full cf/version)))
+         :version (:full cf/version))
+  :start)
+
+(defn resume
+  []
+  (cf/validate!)
+  (ig/load-namespaces (merge system-config worker-config))
+  (alter-var-root #'app.system/system
+                  (fn [sys]
+                    (let [config (-> system-config
+                                     (cond-> (contains? cf/flags :backend-worker)
+                                       (merge worker-config))
+                                     (ig/expand))]
+                      (if-let [sys (not-empty sys)]
+                        (ig/resume config sys)
+                        (ig/init config)))))
+  :resume)
 
 (defn start-custom
   [config]
   (ig/load-namespaces config)
-  (alter-var-root #'system (fn [sys]
-                             (when sys (ig/halt! sys))
-                             (-> config
-                                 (ig/expand)
-                                 (ig/init)))))
+  (alter-var-root #'app.system/system
+                  (fn [sys]
+                    (some-> sys not-empty ig/halt!)
+                    (-> config
+                        (ig/expand)
+                        (ig/init)))))
 
 (defn stop
   []
-  (alter-var-root #'system (fn [sys]
-                             (when sys (ig/halt! sys))
-                             nil)))
+  (alter-var-root #'app.system/system
+                  (fn [sys]
+                    (some-> sys not-empty ig/halt!)
+                    {}))
+  :stop)
+
+(defn suspend
+  []
+  (alter-var-root #'app.system/system
+                  (fn [sys]
+                    (some-> sys not-empty ig/suspend!)
+                    sys))
+  :suspend)
+
 (defn restart
   []
-  (stop)
-  (repl/refresh :after 'app.main/start))
+  (suspend)
+  (repl/refresh :after 'app.main/resume))
 
 (defn restart-all
   []
@@ -647,15 +720,15 @@
            (test/test-vars [(resolve o)]))
        (test/test-ns o)))))
 
-(repl/disable-reload! (find-ns 'integrant.core))
-
 (defn -main
   [& _args]
   (try
-    (let [p (promise)]
-      (l/inf :hint "start nrepl server" :port 6064)
-      (nrepl/start-server :bind "0.0.0.0" :port 6064)
+    (ex/ignoring
+     (repl/disable-reload! (find-ns 'integrant.core))
+     (repl/disable-reload! (find-ns 'app.system))
+     (repl/disable-reload! (find-ns 'app.common.debug)))
 
+    (let [p (promise)]
       (start)
       (deref p))
     (catch Throwable cause

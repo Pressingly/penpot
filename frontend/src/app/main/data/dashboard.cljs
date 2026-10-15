@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.data.dashboard
   (:require
@@ -23,6 +23,7 @@
    [app.main.data.helpers :as dsh]
    [app.main.data.modal :as modal]
    [app.main.data.notifications :as ntf]
+   [app.main.data.team :as dtm]
    [app.main.data.websocket :as dws]
    [app.main.repo :as rp]
    [app.main.store :as st]
@@ -684,25 +685,60 @@
       (rx/of (dcm/change-team-role params)
              (modal/hide)))))
 
-(defn handle-change-team-org
-  [{:keys [team-id organization-id organization-name]}]
-  (ptk/reify ::handle-change-team-org
-    ptk/UpdateEvent
-    (update [_ state]
-      (if (contains? cf/flags :nitrate)
-        (d/update-in-when state [:teams team-id] assoc
-                          :organization-id organization-id
-                          :organization-name organization-name)
-        state))))
+(defn- handle-user-organization-change
+  [{:keys [organization-id organization-name notification]}]
+  (ptk/reify ::handle-user-organization-change
+    ptk/WatchEvent
+    (watch [_ state _]
+      (when (and notification (contains? cf/flags :admin-console))
+        (let [team-id (:current-team-id state)
+              team    (dm/get-in state [:teams team-id])]
+          (rx/of (ntf/show {:content (tr notification organization-name)
+                            :type :toast
+                            :level :info
+                            :timeout nil})
+                 (dtm/fetch-teams)
+                 ;; When the user is currently on a team of the organization
+                 (when (= organization-id (dm/get-in team [:organization :id]))
+                   (dcm/go-to-dashboard-recent {:team-id :default}))))))))
 
+
+(defn- handle-organization-deleted
+  [{:keys [organization-id organization-name teams deleted-teams]}]
+  (ptk/reify ::handle-organization-deleted
+    ptk/WatchEvent
+    (watch [_ state _]
+      (when (contains? cf/flags :admin-console)
+        (let [team-id        (:current-team-id state)
+              current-team   (dm/get-in state [:teams team-id])
+              current-organization-id (dm/get-in current-team [:organization :id])
+              teams-set      (set teams)
+              notify?        (contains? teams-set team-id)
+              fetch?         (some (:teams state) teams)
+              go-to-default? (or (some #{team-id} deleted-teams)
+                                 (= organization-id current-organization-id))]
+          (rx/concat
+           (when go-to-default? ;; If the user is currently on one of the deleted teams
+             (rx/of (dcm/go-to-dashboard-recent {:team-id :default})))
+
+           (when notify? ;; If the user is currently on one of the organization teams
+             (rx/of (ntf/show {:content (tr "dashboard.organization-deleted" organization-name)
+                               :type :toast
+                               :level :info
+                               :timeout nil})))
+           (when fetch? ;; If the user belonged to the organization
+             (rx/of (dtm/fetch-teams)))))))))
 
 (defn- process-message
   [{:keys [type] :as msg}]
   (case type
-    :notification           (dcm/handle-notification msg)
-    :team-role-change       (handle-change-team-role msg)
-    :team-membership-change (dcm/team-membership-change msg)
-    :team-org-change        (handle-change-team-org msg)
+    :notification            (dcm/handle-notification msg)
+    :team-role-change        (handle-change-team-role msg)
+    :team-membership-change  (dcm/team-membership-change msg)
+    :team-organization-change         (dcm/handle-change-team-organization msg)
+    :user-organization-change         (handle-user-organization-change msg)
+    :organization-deleted    (handle-organization-deleted msg)
+    :organization-change-sso (dcm/handle-organization-change-sso msg)
     nil))
 
 

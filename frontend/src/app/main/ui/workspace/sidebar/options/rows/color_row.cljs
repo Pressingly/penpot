@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.ui.workspace.sidebar.options.rows.color-row
   (:require-macros [app.main.style :as stl])
@@ -11,14 +11,13 @@
    [app.common.data.macros :as dm]
    [app.common.types.color :as clr]
    [app.common.types.shape.attrs :refer [default-color]]
-   [app.common.types.token :as tk]
    [app.config :as cfg]
    [app.main.data.modal :as modal]
    [app.main.data.workspace.colors :as dwc]
    [app.main.refs :as refs]
    [app.main.store :as st]
    [app.main.ui.components.color-input :refer [color-input*]]
-   [app.main.ui.components.numeric-input :refer [numeric-input*]]
+   [app.main.ui.components.numeric-input :as deprecated-input]
    [app.main.ui.components.reorder-handler :refer [reorder-handler*]]
    [app.main.ui.context :as ctx]
    [app.main.ui.ds.buttons.icon-button :refer [icon-button*]]
@@ -27,6 +26,7 @@
    [app.main.ui.ds.utilities.swatch :refer [swatch*]]
    [app.main.ui.formats :as fmt]
    [app.main.ui.hooks :as h]
+   [app.main.ui.workspace.tokens.management.forms.controls.utils :as csu]
    [app.util.color :as uc]
    [app.util.dom :as dom]
    [app.util.i18n :as i18n :refer [tr]]
@@ -54,17 +54,17 @@
    (when opacity
      [:div {:class (stl/css :opacity-element-wrapper)}
       [:span {:class (stl/css :icon-text)} "%"]
-      [:> numeric-input* {:value (-> color :opacity opacity->string)
-                          :class (stl/css :opacity-input)
-                          :placeholder "--"
-                          :select-on-focus select-on-focus
-                          :on-focus on-focus
-                          :on-blur on-blur
-                          :on-change on-opacity-change
-                          :data-testid "opacity-input"
-                          :default 100
-                          :min 0
-                          :max 100}]])])
+      [:> deprecated-input/numeric-input* {:value (-> color :opacity opacity->string)
+                                           :class (stl/css :opacity-input)
+                                           :placeholder "--"
+                                           :select-on-focus select-on-focus
+                                           :on-focus on-focus
+                                           :on-blur on-blur
+                                           :on-change on-opacity-change
+                                           :data-testid "opacity-input"
+                                           :default 100
+                                           :min 0
+                                           :max 100}]])])
 
 (mf/defc color-token-row*
   {::mf/private true}
@@ -89,42 +89,72 @@
            (let [token-name (or (:name token) applied-token-name)]
              (detach-token token-name))))
 
-        has-errors (some? (:errors token))
         token-name (:name token)
         resolved (:resolved-value token)
-        not-active (or (empty? active-tokens)
-                       (nil? token))
+
+
+        ;; Tooltip content for the swatch and token name, based on the token's state
+        all-tokens-map (mf/deref refs/workspace-all-tokens-map)
+
+        token-exists? (contains? all-tokens-map applied-token-name)
+        has-errors (and token-exists?
+                        (some? (:errors token)))
+
+        not-active (and
+                    token-exists?
+                    (or (empty? active-tokens)
+                        (nil? token)))
+
         id (dm/str (:id token) "-name")
         token-name-ref (mf/use-ref nil)
+
+        broken-state (or (not token-exists?)
+                         has-errors
+                         not-active)
+
         swatch-tooltip-content (cond
                                  not-active
-                                 (tr "ds.inputs.token-field.no-active-token-option")
+                                 (tr "ds.inputs.token-field.no-active-token-option" applied-token-name)
+
+                                 (not token-exists?)
+                                 (tr "options.deleted-token-with-name" applied-token-name)
+
                                  has-errors
-                                 (tr "color-row.token-color-row.deleted-token")
+                                 (tr "workspace.tokens.ref-not-valid" applied-token-name)
+
                                  :else
                                  (tr "workspace.tokens.resolved-value" resolved))
+
         name-tooltip-content (cond
-                               not-active
-                               (tr "ds.inputs.token-field.no-active-token-option")
                                has-errors
-                               (tr "color-row.token-color-row.deleted-token")
+                               (tr "workspace.tokens.ref-not-valid" applied-token-name)
+
+                               not-active
+                               (tr "ds.inputs.token-field.no-active-token-option" applied-token-name)
+
+                               (not token-exists?)
+                               (tr "options.deleted-token-with-name" applied-token-name)
+
                                :else
                                #(mf/html
                                  [:div
                                   [:span (dm/str (tr "workspace.tokens.token-name") ": ")]
-                                  [:span {:class (stl/css :token-name-tooltip)} applied-token-name]]))]
+                                  [:span {:class (stl/css :token-name-tooltip)} applied-token-name]
+                                  [:div
+                                   [:span (tr "inspect.tabs.styles.token-resolved-value")]
+                                   [:span {:class (stl/css :resolved-value)} (dm/str " " resolved)]]]))]
+
 
     [:div {:class (stl/css :color-info)}
      [:div {:class (stl/css-case :token-color-wrapper true
-                                 :token-color-with-errors has-errors
-                                 :token-color-not-active not-active)}
+                                 :token-color-with-errors broken-state)}
       [:div {:class (stl/css :color-bullet-wrapper)}
-       (when (or has-errors not-active)
+       (when broken-state
          [:div {:class (stl/css :error-dot)}])
        [:> swatch* {:background color
                     :tooltip-content swatch-tooltip-content
                     :on-click on-swatch-click-token
-                    :has-errors (or has-errors not-active)
+                    :has-errors broken-state
                     :size "small"}]]
       [:> tooltip* {:content name-tooltip-content
                     :id id
@@ -138,7 +168,7 @@
       [:div {:class (stl/css :token-actions)}
        [:> icon-button*
         {:variant "action"
-         :aria-label (tr "ds.inputs.token-field.detach-token")
+         :aria-label (tr "token-actions.detach-token")
          :on-click on-detach-token
          :icon i/detach}]
        [:> icon-button*
@@ -177,12 +207,9 @@
 
         active-tokens*    (mf/use-ctx ctx/active-tokens-by-type)
 
-        tokens            (mf/with-memo [active-tokens* origin]
-                            (let [origin (if (= :color-selection origin) :fill origin)]
-                              (delay
-                                (-> (deref active-tokens*)
-                                    (select-keys (get tk/tokens-by-input origin))
-                                    (not-empty)))))
+        tokens (mf/with-memo [active-tokens* origin]
+                 (csu/filter-tokens-for-input active-tokens* origin))
+
         on-focus'
         (mf/use-fn
          (mf/deps on-focus)
@@ -244,7 +271,16 @@
 
         open-modal
         (mf/use-fn
-         (mf/deps disable-gradient disable-opacity disable-image disable-picker on-change on-close on-open tokens index applied-token)
+         (mf/deps disable-gradient
+                  disable-opacity
+                  disable-image
+                  disable-picker
+                  on-change
+                  on-close
+                  on-open
+                  tokens
+                  index
+                  applied-token)
          (fn [color pos tab]
            (let [color (cond
                          ^boolean has-multiple-colors
@@ -346,13 +382,13 @@
                       :dnd-over-top (= (:over dprops) :top)
                       :dnd-over-bot (= (:over dprops) :bot))]
 
-    (when (= applied-token :multiple)
-      ;; (js/console.trace "color-row*")
-      (prn "color-row*" index color applied-token))
-
     (mf/with-effect [color prev-color disable-picker]
       (when (and (not disable-picker) (not= prev-color color))
         (modal/update-props! :colorpicker {:data (parse-color color)})))
+
+    (mf/with-effect [applied-token disable-picker]
+      (when (not disable-picker)
+        (modal/update-props! :colorpicker {:applied-token applied-token})))
 
     [:div {:class [class row-class]}
      ;; Drag handler
@@ -445,4 +481,5 @@
        [:> icon-button* {:variant "ghost"
                          :aria-label (tr "settings.select-this-color")
                          :on-click handle-select
+                         :tooltip-placement "top-left"
                          :icon i/move}])]))

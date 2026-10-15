@@ -2,11 +2,12 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.worker.import
   (:refer-clojure :exclude [resolve])
   (:require
+   [app.common.exceptions :as ex]
    [app.common.json :as json]
    [app.common.logging :as log]
    [app.common.schema :as sm]
@@ -23,15 +24,36 @@
 
 (log/set-level! :warn)
 
+(defn- import-cause-message
+  "Prefer the server `:hint` (full text, e.g. SSE error payload), then `:explain`
+   when present; avoid the generic `stream exception` wrapper when a payload exists."
+  [cause default-msg]
+  (let [data    (ex-data cause)
+        hint    (some-> data :hint str/trim)
+        explain (some-> data :explain str/trim)]
+    (cond
+      (not (str/blank? hint)) hint
+      (not (str/blank? explain)) explain
+      :else
+      (let [msg (some-> (ex-message cause) str/trim)]
+        (if (or (str/blank? msg) (= msg "stream exception"))
+          default-msg
+          msg)))))
+
 ;; Upload changes batches size
 (def ^:const change-batch-size 100)
 
 (def conjv (fnil conj []))
 
-(defn- read-zip-manifest
+(defn read-zip-manifest
   [zip-reader]
   (->> (rx/from (uz/get-entry zip-reader "manifest.json"))
-       (rx/mapcat uz/read-as-text)
+       (rx/mapcat (fn [entry]
+                    (if (nil? entry)
+                      (rx/throw (ex/error :type :validation
+                                          :code :invalid-penpot-file
+                                          :hint "Not a valid Penpot file: manifest.json is missing"))
+                      (uz/read-as-text entry))))
        (rx/map json/decode)))
 
 (defn slurp-uri
@@ -82,7 +104,7 @@
                                      (if (= (:type manifest) "penpot/export-files")
                                        (let [manifest (decode-manifest manifest)]
                                          (assoc file :type :binfile-v3 :files (:files manifest)))
-                                       (assoc file :type :legacy-zip :body body))))
+                                       (assoc file :type :unknown))))
                                   (rx/finalize (partial uz/close zip-reader))))
 
                            (= "application/octet-stream" mtype)
@@ -122,7 +144,7 @@
                           :error (tr "dashboard.import.analyze-error")}))))
 
          (rx/catch (fn [cause]
-                     (let [error (or (ex-message cause) (tr "dashboard.import.analyze-error"))]
+                     (let [error (import-cause-message cause (tr "dashboard.import.analyze-error"))]
                        (rx/of (assoc file :error error :status :error))))))))
 
 (defmethod impl/handler :analyze-import
@@ -178,7 +200,7 @@
                                 :project-id project-id
                                 :cause cause)
                      (rx/of {:status :error
-                             :error (ex-message cause)
+                             :error (import-cause-message cause (tr "labels.error"))
                              :file-id (:file-id data)})))))))
 
      (->> (rx/from binfile-v3)
@@ -212,8 +234,9 @@
                                 :project-id project-id
                                 ::log/sync? true
                                 :cause cause)
-                     (->> (rx/from entries)
-                          (rx/map (fn [entry]
-                                    {:status :error
-                                     :error (ex-message cause)
-                                     :file-id (:file-id entry)}))))))))))))
+                     (let [err (import-cause-message cause (tr "labels.error"))]
+                       (->> (rx/from entries)
+                            (rx/map (fn [entry]
+                                      {:status :error
+                                       :error err
+                                       :file-id (:file-id entry)})))))))))))))

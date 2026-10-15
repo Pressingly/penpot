@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.ui.workspace.sidebar.options.menus.frame-grid
   (:require-macros [app.main.style :as stl])
@@ -13,7 +13,7 @@
    [app.main.refs :as refs]
    [app.main.store :as st]
    [app.main.ui.components.editable-select :refer [editable-select]]
-   [app.main.ui.components.numeric-input :refer [numeric-input*]]
+   [app.main.ui.components.numeric-input :as deprecated-input]
    [app.main.ui.components.select :refer [select]]
    [app.main.ui.components.title-bar :refer [title-bar*]]
    [app.main.ui.ds.buttons.icon-button :refer [icon-button*]]
@@ -33,7 +33,7 @@
    :separator
    18 12 10 8 6 4 3 2])
 
-(mf/defc grid-options
+(mf/defc grid-options*
   {::mf/wrap [mf/memo]}
   [{:keys [shape-id index grid frame-width frame-height default-grid-params]}]
   (let [on-change           (mf/use-fn (mf/deps shape-id index) #(st/emit! (dw/set-frame-grid shape-id index %)))
@@ -163,11 +163,11 @@
        (if (= type :square)
          [:div {:class (stl/css :grid-size)
                 :title (tr "workspace.options.size")}
-          [:> numeric-input* {:min 0.01
-                              :value (or (:size params) "")
-                              :no-validate true
-                              :className (stl/css :numeric-input)
-                              :on-change (handle-change :params :size)}]]
+          [:> deprecated-input/numeric-input* {:min 0.01
+                                               :value (or (:size params) "")
+                                               :no-validate true
+                                               :class (stl/css :numeric-input)
+                                               :on-change (handle-change :params :size)}]]
 
          [:div {:class (stl/css :editable-select-wrapper)}
           [:& editable-select {:value (:size params)
@@ -256,33 +256,33 @@
               (if (= :row type)
                 "H"
                 "W")]
-             [:> numeric-input* {:placeholder "Auto"
-                                 :on-change handle-change-item-length
-                                 :nillable true
-                                 :className (stl/css :numeric-input)
-                                 :value (or (:item-length params) "")}]]
+             [:> deprecated-input/numeric-input* {:placeholder "Auto"
+                                                  :on-change handle-change-item-length
+                                                  :is-nillable true
+                                                  :class (stl/css :numeric-input)
+                                                  :value (or (:item-length params) "")}]]
 
             [:div {:class (stl/css :gutter)
                    :title (tr "workspace.options.grid.params.gutter")}
              [:span {:class (stl/css-case :icon true
                                           :rotated (= type :row))}
               deprecated-icon/gap-horizontal]
-             [:> numeric-input* {:placeholder "0"
-                                 :on-change (handle-change :params :gutter)
-                                 :nillable true
-                                 :className (stl/css :numeric-input)
-                                 :value (or (:gutter params) 0)}]]
+             [:> deprecated-input/numeric-input* {:placeholder "0"
+                                                  :on-change (handle-change :params :gutter)
+                                                  :is-nillable true
+                                                  :class (stl/css :numeric-input)
+                                                  :value (or (:gutter params) 0)}]]
 
             [:div {:class (stl/css :margin)
                    :title (tr "workspace.options.grid.params.margin")}
              [:span {:class (stl/css-case :icon true
                                           :rotated (= type :column))}
               deprecated-icon/grid-margin]
-             [:> numeric-input* {:placeholder "0"
-                                 :on-change (handle-change :params :margin)
-                                 :nillable true
-                                 :className (stl/css :numeric-input)
-                                 :value (or (:margin params) 0)}]]
+             [:> deprecated-input/numeric-input* {:placeholder "0"
+                                                  :on-change (handle-change :params :margin)
+                                                  :is-nillable true
+                                                  :class (stl/css :numeric-input)
+                                                  :value (or (:margin params) 0)}]]
 
             [:button {:class (stl/css-case :show-more-options true
                                            :selected show-more-options?)
@@ -296,16 +296,26 @@
                [:button {:class (stl/css :option-btn)
                          :on-click handle-set-as-default} (tr "workspace.options.grid.params.set-default")]])]])])]))
 
-(mf/defc frame-grid
-  [{:keys [shape]}]
+(defn- check-frame-grid-props
+  [old-props new-props]
+  (and (identical? (unchecked-get old-props "grids")
+                   (unchecked-get new-props "grids"))
+       (identical? (unchecked-get old-props "id")
+                   (unchecked-get new-props "id"))
+       (identical? (unchecked-get old-props "frameWidth")
+                   (unchecked-get new-props "frameWidth"))
+       (identical? (unchecked-get old-props "frameHeight")
+                   (unchecked-get new-props "frameHeight"))))
+
+(mf/defc frame-grid*
+  {::mf/wrap [#(mf/memo' % check-frame-grid-props)]}
+  [{:keys [grids id frame-width frame-height]}]
   (let [state*              (mf/use-state true)
         open?               (deref state*)
-        frame-grids         (:grids shape)
-        has-frame-grids?    (or (= :multiple frame-grids) (some? (seq frame-grids)))
+        has-frame-grids?    (or (= :multiple grids) (some? (seq grids)))
 
         toggle-content      (mf/use-fn #(swap! state* not))
 
-        id                  (:id shape)
         default-grids       (mf/deref lens:default-grids)
         default-grid-params (mf/with-memo [default-grids]
                               (merge ctg/default-grid-params default-grids))
@@ -328,15 +338,15 @@
                          :on-click handle-create-grid
                          :icon i/add}]]]
 
-     (when (and open? (seq frame-grids))
+     (when (and open? (seq grids))
        [:div  {:class (stl/css :element-set-content)}
-        (for [[index grid] (map-indexed vector frame-grids)]
-          [:& grid-options {:key (str id "-" index)
-                            :shape-id id
-                            :grid grid
-                            :index index
-                            :frame-width (:width shape)
-                            :frame-height (:height shape)
-                            :default-grid-params default-grid-params}])])]))
+        (for [[index grid] (map-indexed vector grids)]
+          [:> grid-options* {:key (str id "-" index)
+                             :shape-id id
+                             :grid grid
+                             :index index
+                             :frame-width frame-width
+                             :frame-height frame-height
+                             :default-grid-params default-grid-params}])])]))
 
 

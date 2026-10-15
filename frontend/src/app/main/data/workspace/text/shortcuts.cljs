@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.data.workspace.text.shortcuts
   (:require
@@ -114,11 +114,22 @@
 
 (defn calculate-text-values
   [shape]
-  (let [state-map    (if (features/active-feature? @st/state "text-editor/v2")
+  (let [state-map    (cond
+                       (features/active-feature? @st/state "text-editor-wasm/v1")
+                       (deref refs/workspace-wasm-editor-styles)
+
+                       (features/active-feature? @st/state "text-editor/v2")
                        (deref refs/workspace-v2-editor-state)
+
+                       :else
                        (deref refs/workspace-editor-state))
+
+        editor-styles (when (features/active-feature? @st/state "text-editor-wasm/v1")
+                        (get state-map (:id shape)))
+
         editor-state  (when-not (features/active-feature? @st/state "text-editor/v2")
                         (get state-map (:id shape)))
+
         editor-instance (when (features/active-feature? @st/state "text-editor/v2")
                           (deref refs/workspace-editor))]
     (d/merge
@@ -126,12 +137,14 @@
       {:shape shape
        :attrs txt/root-attrs})
      (dwt/current-paragraph-values
-      {:editor-state editor-state
+      {:editor-styles editor-styles
+       :editor-state editor-state
        :editor-instance editor-instance
        :shape shape
        :attrs txt/paragraph-attrs})
      (dwt/current-text-values
-      {:editor-state editor-state
+      {:editor-styles editor-styles
+       :editor-state editor-state
        :editor-instance editor-instance
        :shape shape
        :attrs txt/text-node-attrs}))))
@@ -224,31 +237,37 @@
   {:underline     {:tooltip (ds/meta "U")
                    :command (ds/c-mod "u")
                    :subsections [:text-editor]
+                   :section [:workspace]
                    :fn #(update-attrs-when-no-readonly {:text-decoration "toggle-underline"})}
 
    :line-through  {:tooltip (ds/alt (ds/meta-shift "5"))
                    :command "alt+shift+5"
                    :subsections [:text-editor]
+                   :section [:workspace]
                    :fn #(update-attrs-when-no-readonly {:text-decoration "toggle-line-through"})}
 
    :font-size-inc {:tooltip (ds/meta-shift ">")
                    :command (ds/c-mod "shift+.")
                    :subsections [:text-editor]
+                   :section [:workspace]
                    :fn #(update-attrs-when-no-readonly {:font-size-inc true})}
 
    :font-size-dec {:tooltip (ds/meta-shift "<")
                    :command (ds/c-mod "shift+,")
                    :subsections [:text-editor]
+                   :section [:workspace]
                    :fn #(update-attrs-when-no-readonly {:font-size-dec true})}
 
    :bold     {:tooltip (ds/meta "b")
               :command (ds/c-mod "b")
               :subsections [:text-editor]
+              :section [:workspace]
               :fn #(update-attrs-when-no-readonly {:font-variant-id "toggle-bold"})}
 
    :italic     {:tooltip (ds/meta "i")
                 :command (ds/c-mod "i")
                 :subsections [:text-editor]
+                :section [:workspace]
                 :fn #(update-attrs-when-no-readonly {:font-variant-id "toggle-italic"})}})
 
 

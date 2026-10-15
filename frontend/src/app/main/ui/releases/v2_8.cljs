@@ -2,12 +2,13 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.ui.releases.v2-8
   (:require-macros [app.main.style :as stl])
   (:require
    [app.common.data.macros :as dm]
+   [app.main.ui.ds.buttons.button :refer [button*]]
    [app.main.ui.releases.common :as c]
    [rumext.v2 :as mf]))
 
@@ -46,8 +47,10 @@
            "Let’s dive in!"]]
 
          [:div {:class (stl/css :navigation)}
-          [:button {:class (stl/css :next-btn)
-                    :on-click next} "Continue"]]]]]]
+          [:> button* {:class (stl/css :next-btn)
+                       :on-click next
+                       :variant "primary"}
+           "Continue"]]]]]]
 
      0
      [:div {:class (stl/css-case :modal-overlay true)}
@@ -83,13 +86,15 @@
            "- And we’ve a new language! Hi Serbians!"]]
 
          [:div {:class (stl/css :navigation)}
-          [:& c/navigation-bullets
+          [:> c/navigation-bullets*
            {:slide slide
             :navigate navigate
             :total 4}]
 
-          [:button {:on-click next
-                    :class (stl/css :next-btn)} "Continue"]]]]]]
+          [:> button* {:class (stl/css :next-btn)
+                       :on-click next
+                       :variant "primary"}
+           "Continue"]]]]]]
 
      1
      [:div {:class (stl/css-case :modal-overlay true)}
@@ -116,13 +121,15 @@
            "This is just one more step in the evolution of Design Tokens in Penpot. And there's more to come: typography tokens are already in the works!"]]
 
          [:div {:class (stl/css :navigation)}
-          [:& c/navigation-bullets
+          [:> c/navigation-bullets*
            {:slide slide
             :navigate navigate
             :total 4}]
 
-          [:button {:on-click next
-                    :class (stl/css :next-btn)} "Continue"]]]]]]
+          [:> button* {:class (stl/css :next-btn)
+                       :on-click next
+                       :variant "primary"}
+           "Continue"]]]]]]
 
      2
      [:div {:class (stl/css-case :modal-overlay true)}
@@ -149,13 +156,15 @@
            "- We have integrated AI-powered help, which is trained on Penpot documentation, directly into the design workspace. Get assistance without switching context, so you can stay in the flow."]]
 
          [:div {:class (stl/css :navigation)}
-          [:& c/navigation-bullets
+          [:> c/navigation-bullets*
            {:slide slide
             :navigate navigate
             :total 4}]
 
-          [:button {:on-click next
-                    :class (stl/css :next-btn)} "Continue"]]]]]]
+          [:> button* {:class (stl/css :next-btn)
+                       :on-click next
+                       :variant "primary"}
+           "Continue"]]]]]]
 
      3
      [:div {:class (stl/css-case :modal-overlay true)}
@@ -186,11 +195,12 @@
 
          [:div {:class (stl/css :navigation)}
 
-          [:& c/navigation-bullets
+          [:> c/navigation-bullets*
            {:slide slide
             :navigate navigate
             :total 4}]
 
-          [:button {:on-click finish
-                    :class (stl/css :next-btn)} "Let's go"]]]]]])))
-
+          [:> button* {:class (stl/css :next-btn)
+                       :on-click finish
+                       :variant "primary"}
+           "Let's go"]]]]]])))

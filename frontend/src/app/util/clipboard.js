@@ -4,7 +4,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  *
- * Copyright (c) KALEIDOS INC
+ * Copyright (c) KALEIDOS INC Sucursal en España SL
  */
 const maxParseableSize = 16 * 1024 * 1024;
 
@@ -23,6 +23,13 @@ const exclusiveTypes = [
   "text/html",
   "text/plain"
 ];
+
+const svgTextPattern =
+  /^(\s*<\?xml[^?]*\?>\s*)?(\s*<!--[\s\S]*?-->\s*)*<svg[\s>]/i;
+
+function hasSvgItem(items) {
+  return items.some((item) => item?.type === "image/svg+xml");
+}
 
 /**
  * @typedef {Object} ClipboardSettings
@@ -59,7 +66,7 @@ function parseText(text, options) {
     }
   }
 
-  if (/^<svg[\s>]/i.test(text)) {
+  if (svgTextPattern.test(text)) {
     return new Blob([text], { type: "image/svg+xml" });
   } else {
     return new Blob([text], { type: "text/plain" });
@@ -138,13 +145,27 @@ function sortItems(a, b) {
 }
 
 /**
+ * Read the active system clipboard via the asynchronous Clipboard API.
+ *
+ * Throws a descriptive `Error` when `navigator.clipboard` is unavailable
+ * (e.g. on insecure origins per the W3C Secure Contexts spec, mirroring
+ * the failure mode that crashed the copy/write path in #4478 / #6514).
+ * Without this guard, `navigator.clipboard.read()` raises an opaque
+ * `TypeError: Cannot read properties of undefined (reading 'read')` and
+ * the workspace surfaces a generic "Something wrong has happened" toast.
  *
  * @param {ClipboardSettings} [options]
  * @returns {Promise<Array<Blob>>}
  */
 export async function fromNavigator(options) {
   options = options || {};
-  const items = await navigator.clipboard.read();
+  const clipboard = navigator.clipboard;
+  if (!clipboard || typeof clipboard.read !== "function") {
+    throw new Error(
+      "Clipboard API is unavailable. This usually happens when the page is served over plain HTTP; serve Penpot over HTTPS to enable paste-from-clipboard."
+    );
+  }
+  const items = await clipboard.read();
   const result = await Promise.all(
     Array.from(items).map(async (item) => {
       const itemAllowedTypes = Array.from(item.types)
@@ -207,11 +228,17 @@ export async function fromDataTransfer(dataTransfer, options) {
       }),
   );
   return items
-    .filter((item) => !!item)
-    .reduce((filtered, item) => {
+    .filter((item) => !!item && item.size > 0)
+    .reduce((filtered, item, _index, all) => {
       if (
         exclusiveTypes.includes(item.type) &&
         filtered.find((filteredItem) => exclusiveTypes.includes(filteredItem.type))
+      ) {
+        return filtered;
+      }
+      if (
+        item.type !== "image/svg+xml" && item.type.startsWith("image/") &&
+        hasSvgItem(all)
       ) {
         return filtered;
       }

@@ -3,7 +3,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  *
- * Copyright (c) KALEIDOS INC
+ * Copyright (c) KALEIDOS INC Sucursal en España SL
  */
 
 import { createLineBreak, isLineBreak } from "../content/dom/LineBreak.js";
@@ -46,6 +46,7 @@ import {
   getTextNodeLength,
   getClosestTextNode,
   isTextNode,
+  resolveTextNodePosition,
 } from "../content/dom/TextNode.js";
 import TextNodeIterator from "../content/dom/TextNodeIterator.js";
 import TextEditor from "../TextEditor.js";
@@ -278,19 +279,30 @@ export class SelectionController extends EventTarget {
       // FIXME: I don't like this approximation. Having to iterate nodes twice
       // is bad for performance. I think we need another way of "computing"
       // the cascade.
-      for (const textNode of this.#textNodeIterator.iterateFrom(
-        startNode,
-        endNode,
-      )) {
+      const textNodesInRange = [
+        ...this.#textNodeIterator.iterateFrom(startNode, endNode),
+      ];
+      for (const textNode of textNodesInRange) {
         const paragraph = textNode.parentElement.parentElement;
         this.#applyStylesFromElementToCurrentStyle(paragraph);
       }
-      for (const textNode of this.#textNodeIterator.iterateFrom(
-        startNode,
-        endNode,
-      )) {
-        const textSpan = textNode.parentElement;
-        this.#mergeStylesFromElementToCurrentStyle(textSpan);
+      // Empty trailing text runs (length 0) often carry paragraph fallback styles
+      // (e.g. font-size 0) and are not user-visible; merging them with real text
+      // yields false "mixed" in the sidebar. Skip empty nodes when the selection
+      // also includes non-empty text; if everything is empty, keep prior behavior.
+      const nonEmptyTextNodes = textNodesInRange.filter(
+        (textNode) => textNode.length > 0,
+      );
+      const spanMergeNodes =
+        nonEmptyTextNodes.length > 0 ? nonEmptyTextNodes : textNodesInRange;
+
+      if (spanMergeNodes.length > 0) {
+        const firstTextSpan = spanMergeNodes[0].parentElement;
+        this.#applyStylesFromElementToCurrentStyle(firstTextSpan);
+        for (let i = 1; i < spanMergeNodes.length; i++) {
+          const textSpan = spanMergeNodes[i].parentElement;
+          this.#mergeStylesFromElementToCurrentStyle(textSpan);
+        }
       }
     }
     return this;
@@ -403,7 +415,12 @@ export class SelectionController extends EventTarget {
       this.#updateCurrentStyle(textSpan);
     } else {
       // SELECTION.
-      this.#updateCurrentStyleFrom(this.#anchorNode, this.#focusNode);
+      // Use range boundaries normalized to text nodes, not anchor/focus.
+      // Firefox may set anchorNode on the paragraph element and focusNode on a
+      // text node for word selection; passing those to #updateCurrentStyleFrom
+      // breaks TextNodeIterator and yields wrong styles (e.g. default 14px).
+      const { startNode, endNode } = this.getRanges();
+      this.#updateCurrentStyleFrom(startNode, endNode);
     }
     this.dispatchEvent(
       new CustomEvent("stylechange", {
@@ -521,6 +538,14 @@ export class SelectionController extends EventTarget {
    */
   selectAll() {
     if (this.#textEditor.isEmpty) {
+      // There is nothing to select, but we still need a valid caret: leaving
+      // the selection untouched keeps `focusNode` null and makes any later
+      // insertion (typing, pasting) fail.
+      const lineBreak =
+        this.#textEditor.root?.firstElementChild?.firstElementChild?.firstChild;
+      if (lineBreak) {
+        this.collapse(lineBreak, 0);
+      }
       return this;
     }
 
@@ -642,13 +667,15 @@ export class SelectionController extends EventTarget {
     } else {
       this.#anchorNode = anchorNode;
       this.#anchorOffset = anchorOffset;
-      if (anchorNode === focusNode) {
-        this.#focusNode = this.#anchorNode;
-        this.#focusOffset = this.#anchorOffset;
+      this.#focusNode = focusNode;
+      this.#focusOffset = focusOffset;
+      // setPosition() collapses the selection to a single caret. We must only use it
+      // when anchorOffset === focusOffset. When both points are in the same node but
+      // offsets differ (e.g. selecting "hola" in "hola adios"), we need setBaseAndExtent()
+      // to preserve the range so we don't incorrectly collapse ranges and lose the selection.
+      if (anchorNode === focusNode && anchorOffset === focusOffset) {
         this.#selection.setPosition(anchorNode, anchorOffset);
       } else {
-        this.#focusNode = focusNode;
-        this.#focusOffset = focusOffset;
         this.#selection.setBaseAndExtent(
           anchorNode,
           anchorOffset,
@@ -954,7 +981,7 @@ export class SelectionController extends EventTarget {
    * @type {boolean}
    */
   get isTextFocus() {
-    return this.focusNode.nodeType === Node.TEXT_NODE;
+    return this.focusNode != null && this.focusNode.nodeType === Node.TEXT_NODE;
   }
 
   /**
@@ -963,7 +990,9 @@ export class SelectionController extends EventTarget {
    * @type {boolean}
    */
   get isTextAnchor() {
-    return this.anchorNode.nodeType === Node.TEXT_NODE;
+    return (
+      this.anchorNode != null && this.anchorNode.nodeType === Node.TEXT_NODE
+    );
   }
 
   /**
@@ -1112,6 +1141,10 @@ export class SelectionController extends EventTarget {
    * @param {DocumentFragment} fragment
    */
   insertPaste(fragment) {
+    if (this.isCollapsed && !this.#normalizeFocus()) {
+      return;
+    }
+
     const hasOnlyOneParagraph = fragment.children.length === 1;
     const forceTextSpan =
       fragment.firstElementChild?.dataset?.textSpan === "force";
@@ -1218,7 +1251,11 @@ export class SelectionController extends EventTarget {
       textSpan.childNodes.length === 0
     ) {
       textSpan.remove();
-      return this.collapse(nextTextNode, 0);
+      // nextTextNode can be null when deleting the last text node in the last
+      // span of the paragraph; fall back to the last text node of the
+      // preceding sibling span so the cursor stays within the paragraph.
+      const forwardTarget = nextTextNode ?? paragraph.lastChild?.lastChild;
+      return this.collapse(forwardTarget, 0);
     }
     return this.collapse(this.focusNode, this.focusOffset);
   }
@@ -1264,9 +1301,14 @@ export class SelectionController extends EventTarget {
       textSpan.childNodes.length === 0
     ) {
       textSpan.remove();
+      // previousTextNode can be null when deleting the first text node in
+      // the paragraph (no preceding sibling text node exists).  Fall back
+      // to the first text node of the now-first remaining span so the
+      // cursor stays within the paragraph.
+      const backwardTarget = previousTextNode ?? paragraph.firstChild?.firstChild;
       return this.collapse(
-        previousTextNode,
-        getTextNodeLength(previousTextNode),
+        backwardTarget,
+        getTextNodeLength(backwardTarget),
       );
     }
 
@@ -1338,9 +1380,13 @@ export class SelectionController extends EventTarget {
         textSpan.childNodes.length === 0
       ) {
         textSpan.remove();
+        // previousTextNode can be null when the deleted node was the first
+        // in the paragraph.  Fall back to the first text node of the
+        // now-first remaining span.
+        const backwardTarget = previousTextNode ?? paragraph.firstChild?.firstChild;
         return this.collapse(
-          previousTextNode,
-          getTextNodeLength(previousTextNode),
+          backwardTarget,
+          getTextNodeLength(backwardTarget),
         );
       }
     }
@@ -1363,12 +1409,43 @@ export class SelectionController extends EventTarget {
   }
 
   /**
+   * Moves the caret to an equivalent position on a text node or a line break.
+   *
+   * The browser can report the caret on a container element (with the offset
+   * being a child index) or, when the editor was focused without any content,
+   * on nothing at all. Both states break every insertion path, which expects
+   * the focus node to be a text node or a <br>.
+   *
+   * @returns {boolean} true when the focus is usable.
+   */
+  #normalizeFocus() {
+    if (this.isTextFocus || this.isLineBreakFocus) {
+      return true;
+    }
+
+    const position =
+      resolveTextNodePosition(this.focusNode, this.focusOffset) ??
+      resolveTextNodePosition(this.#textEditor.root, 0);
+
+    if (!position?.node?.isConnected) {
+      return false;
+    }
+
+    this.collapse(position.node, position.offset);
+    return true;
+  }
+
+  /**
    * Replaces the currently focus element
    * with some text.
    *
    * @param {string} newText
    */
   insertIntoFocus(newText) {
+    if (!this.#normalizeFocus()) {
+      return;
+    }
+
     if (this.isTextFocus) {
       this.focusNode.nodeValue = insertInto(
         this.focusNode.nodeValue,
@@ -1956,6 +2033,8 @@ export class SelectionController extends EventTarget {
         this.startOffset === this.endOffset &&
         this.endOffset === endNode.nodeValue?.length
       ) {
+        const paragraph = this.startParagraph;
+        setParagraphStyles(paragraph, newStyles);
         const newTextSpan = createVoidTextSpan(newStyles);
         this.endTextSpan.after(newTextSpan);
         this.setSelection(newTextSpan.firstChild, 0, newTextSpan.firstChild, 0);
@@ -2026,6 +2105,18 @@ export class SelectionController extends EventTarget {
 
         this.#textNodeIterator.nextNode();
       } while (this.#textNodeIterator.currentNode);
+    } else {
+      // Empty paragraph uses a text span with <br> only (no text node). The
+      // selection is then on the line-break element, not a TEXT_NODE, so none
+      // of the branches above run — only setRootStyles applied. Paragraph
+      // styles (e.g. text-align) must still be applied before the user types.
+      const paragraph = this.startParagraph;
+      if (paragraph) {
+        setParagraphStyles(paragraph, newStyles);
+        for (const textSpan of paragraph.children) {
+          setTextSpanStyles(textSpan, newStyles);
+        }
+      }
     }
     return this.#notifyStyleChange();
   }

@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.render-wasm.api.shapes
   "Batched shape property serialization for improved WASM performance.
@@ -94,7 +94,7 @@
 
    Returns nil."
   [shape]
-  (when wasm/context-initialized?
+  (when (wasm/live?)
     (let [id           (dm/get-prop shape :id)
           parent-id    (get shape :parent-id)
           shape-type   (dm/get-prop shape :type)

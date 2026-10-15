@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.ui.workspace.viewport.grid-layout-editor
   (:require-macros [app.main.style :as stl])
@@ -28,6 +28,7 @@
    [app.main.refs :as refs]
    [app.main.store :as st]
    [app.main.ui.css-cursors :as cur]
+   [app.main.ui.ds.buttons.button :refer [button*]]
    [app.main.ui.formats :as fmt]
    [app.main.ui.icons :as deprecated-icon]
    [app.main.ui.workspace.viewport.viewport-ref :as uwvv]
@@ -52,18 +53,17 @@
     :flex (dm/str (fmt/format-number value) "FR")
     :auto "AUTO"))
 
-(mf/defc grid-edition-actions
-  {::mf/wrap-props false}
+(mf/defc grid-edition-actions*
   [{:keys [shape]}]
   [:div {:class (stl/css :grid-actions)}
    [:div {:class (stl/css :grid-actions-container)}
     [:div {:class (stl/css :grid-actions-title)}
      (tr "workspace.layout-grid.editor.title")  " " [:span {:stl/css :board-name} (:name shape)]]
-    [:button {:class (stl/css :locate-btn)
-              :on-click #(st/emit! (dwge/locate-board (:id shape)))}
+    [:> button* {:variant "secondary"
+                 :on-click #(st/emit! (dwge/locate-board (:id shape)))}
      (tr "workspace.layout-grid.editor.top-bar.locate")]
-    [:button {:class (stl/css :done-btn)
-              :on-click #(st/emit! (dw/clear-edition-mode))}
+    [:> button* {:variant "primary"
+                 :on-click #(st/emit! (dw/clear-edition-mode))}
      (tr "workspace.layout-grid.editor.top-bar.done")]]])
 
 (mf/defc grid-editor-frame
@@ -162,7 +162,7 @@
            (let [raw-pt (mf/ref-val current-pos-ref)
                  position (uwvv/point->viewport raw-pt)
                  start (mf/ref-val start-pos-ref)
-                 delta (gpt/to-vec start (dom/get-client-position event))]
+                 delta (gpt/to-vec start raw-pt)]
              (dom/release-pointer event)
              (mf/set-ref-val! dragging-ref false)
              (mf/set-ref-val! start-pos-ref nil)
@@ -903,6 +903,7 @@
       (when (not small?)
         [:foreignObject {:x text-x :y text-y :width text-width :height text-height}
          [:div {:class (stl/css :grid-editor-wrapper)
+                :data-testid "grid-track-editor-wrapper"
                 :on-context-menu handle-show-track-menu
                 :on-pointer-down handle-pointer-down
                 :on-lost-pointer-capture handle-lost-pointer-capture
@@ -916,8 +917,9 @@
             :data-default-value (format-size track-data)
             :on-key-down handle-keydown-track-input
             :on-blur handle-blur-track-input}]
-          (when (and hovering? (not medium?) (not small?))
+          (when (and (not medium?) (not small?))
             [:button {:class (stl/css :grid-editor-button)
+                      :data-testid "grid-track-options-btn"
                       :on-click handle-show-track-menu} deprecated-icon/menu])]])]
 
      [:g {:transform (when (= type :row) (dm/fmt "rotate(-90 % %)" (:x marker-p) (:y marker-p)))}
