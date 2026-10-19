@@ -7,15 +7,23 @@ import { annotationsFor, isClassified } from "./ToolAnnotations";
 
 const toolsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "tools");
 
-function declaredToolNames(): string[] {
+const TOOL_NAME_PATTERN = /getToolName\(\)\s*:\s*string\s*\{\s*return\s*["'`]([^"'`]+)["'`]/;
+
+const CONCRETE_TOOL_PATTERN = /^export class \w+ extends Tool</m;
+
+function readToolSource(file: string): string {
+    return fs.readFileSync(path.join(toolsDir, file), "utf-8");
+}
+
+function toolSourceFiles(): string[] {
     return fs
         .readdirSync(toolsDir)
-        .filter((file) => file.endsWith(".ts"))
-        .flatMap((file) => {
-            const source = fs.readFileSync(path.join(toolsDir, file), "utf-8");
-            const match = source.match(/getToolName\(\): string \{\s*return "([^"]+)"/);
-            return match ? [match[1]] : [];
-        });
+        .filter((file) => file.endsWith(".ts") && !file.endsWith(".test.ts"))
+        .filter((file) => CONCRETE_TOOL_PATTERN.test(readToolSource(file)));
+}
+
+function extractToolName(file: string): string | undefined {
+    return readToolSource(file).match(TOOL_NAME_PATTERN)?.[1];
 }
 
 test("read-only tools are published as non-destructive reads", () => {
@@ -60,10 +68,25 @@ test("returned annotations cannot mutate the table", () => {
     assert.equal(annotationsFor("execute_code", false).readOnlyHint, false);
 });
 
+test("names that only exist on Object.prototype fall back to a destructive write", () => {
+    for (const name of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
+        assert.equal(isClassified(name), false, name);
+        assert.deepEqual(annotationsFor(name, false), { readOnlyHint: false, destructiveHint: true }, name);
+        assert.deepEqual(annotationsFor(name, true), { readOnlyHint: false, destructiveHint: true }, name);
+    }
+});
+
 test("every tool class under tools/ is classified explicitly", () => {
-    const names = declaredToolNames();
-    assert.ok(names.length >= 10, `expected to discover all tools, found ${names.length}`);
-    for (const name of names) {
-        assert.ok(isClassified(name), `${name} is missing from the annotation table`);
+    const files = toolSourceFiles();
+    const unreadable = files.filter((file) => extractToolName(file) === undefined);
+    assert.deepEqual(unreadable, [], `could not extract getToolName() from: ${unreadable.join(", ")}`);
+    assert.equal(
+        files.length,
+        fs.readdirSync(toolsDir).filter((f) => f.endsWith(".ts")).length,
+        "a non-tool file lives in tools/"
+    );
+    for (const file of files) {
+        const name = extractToolName(file) as string;
+        assert.ok(isClassified(name), `${name} (${file}) is missing from the annotation table`);
     }
 });

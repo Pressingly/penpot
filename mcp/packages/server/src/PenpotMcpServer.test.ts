@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { PenpotMcpServer, shouldRegisterDeveloperTools, shouldStartReplServer } from "./PenpotMcpServer";
 
 test("registers developer tools in local devenv mode", () => {
@@ -256,3 +259,43 @@ function restoreOrDelete(key: string, value: string | undefined) {
         delete process.env[key];
     }
 }
+
+// ── Published tool annotations ─────────────────────────────────
+
+async function publishedAnnotations(remoteMode: boolean): Promise<Record<string, ToolAnnotations | undefined>> {
+    const prevRemote = process.env.PENPOT_MCP_REMOTE_MODE;
+    const prevDevEnv = process.env.PENPOT_MCP_DEVENV;
+    const prevPorts = setUniqueEnv();
+    delete process.env.PENPOT_MCP_DEVENV;
+    restoreOrDelete("PENPOT_MCP_REMOTE_MODE", remoteMode ? "true" : undefined);
+    let server: PenpotMcpServer | undefined;
+    let client: Client | undefined;
+    try {
+        server = new PenpotMcpServer(false);
+        const mcpServer = (
+            server as unknown as { createMcpServer(): { connect(t: unknown): Promise<void> } }
+        ).createMcpServer();
+        const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+        client = new Client({ name: "annotations-test", version: "1.0.0" });
+        await Promise.all([mcpServer.connect(serverTransport), client.connect(clientTransport)]);
+        const { tools } = await client.listTools();
+        return Object.fromEntries(tools.map((tool) => [tool.name, tool.annotations]));
+    } finally {
+        await client?.close();
+        await server?.stop();
+        restoreOrDelete("PENPOT_MCP_REMOTE_MODE", prevRemote);
+        restoreEnv(prevDevEnv, prevPorts);
+    }
+}
+
+test("local mode publishes export_shape as a destructive write", async () => {
+    const annotations = await publishedAnnotations(false);
+    assert.deepEqual(annotations.export_shape, { readOnlyHint: false, destructiveHint: true });
+    assert.deepEqual(annotations.execute_code, { readOnlyHint: false, destructiveHint: true });
+});
+
+test("remote mode publishes export_shape as read-only", async () => {
+    const annotations = await publishedAnnotations(true);
+    assert.deepEqual(annotations.export_shape, { readOnlyHint: true, destructiveHint: false });
+    assert.deepEqual(annotations.execute_code, { readOnlyHint: false, destructiveHint: true });
+});

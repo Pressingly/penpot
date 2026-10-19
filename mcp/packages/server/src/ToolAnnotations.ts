@@ -16,15 +16,19 @@ const ANNOTATIONS_BY_TOOL_NAME: Readonly<Record<string, ToolAnnotations>> = {
     cljs_repl: DESTRUCTIVE_WRITE,
 };
 
+function isTabulated(toolName: string): boolean {
+    return Object.hasOwn(ANNOTATIONS_BY_TOOL_NAME, toolName);
+}
+
 function resolveAnnotations(toolName: string, fileSystemAccess: boolean): ToolAnnotations | undefined {
     if (toolName === "export_shape") {
         return fileSystemAccess ? DESTRUCTIVE_WRITE : READ_ONLY;
     }
-    return ANNOTATIONS_BY_TOOL_NAME[toolName];
+    return isTabulated(toolName) ? ANNOTATIONS_BY_TOOL_NAME[toolName] : undefined;
 }
 
 export function isClassified(toolName: string): boolean {
-    return toolName === "export_shape" || toolName in ANNOTATIONS_BY_TOOL_NAME;
+    return toolName === "export_shape" || isTabulated(toolName);
 }
 
 /**
