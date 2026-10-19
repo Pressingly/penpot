@@ -1,44 +1,54 @@
-name: _STAGING
-
-run-name: >-
-  _STAGING (staging)
-
-on:
-  workflow_dispatch:
-    inputs:
-      force:
-        description: 'Rebuild and overwrite even if already built/promoted'
-        type: boolean
-        required: false
-        default: false
-  schedule:
-    - cron: '36 5-20 * * 1-5'
-
-concurrency:
-  group: ${{ github.workflow }}
-  cancel-in-progress: true
-
+# Disabled in the Pressingly fork: upstream workflow, images are built by Cloud Build on release tags.
+# Kept as a manual-only no-op so GitHub does not raise a failed run per push; the original follows, commented out.
+name: "_STAGING"
+on: workflow_dispatch
 jobs:
-  build-bundle:
-    uses: ./.github/workflows/build-bundle.yml
-    secrets: inherit
-    with:
-      gh_ref: "staging"
-      force: ${{ inputs.force || false }}
-
-  build-docker:
-    needs: build-bundle
-    uses: ./.github/workflows/build-docker.yml
-    secrets: inherit
-    with:
-      gh_ref: "staging"
-      # Pin build-docker to the commit build-bundle actually bundled.
-      sha: ${{ needs.build-bundle.outputs.sha }}
-      force: ${{ inputs.force || false }}
-
-  build-docker-admin-console:
-    uses: ./.github/workflows/build-docker-admin-console.yml
-    secrets: inherit
-    with:
-      gh_ref: "staging"
-      force: ${{ inputs.force || false }}
+  disabled:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: "true"
+# name: _STAGING
+#
+# run-name: >-
+#   _STAGING (staging)
+#
+# on:
+#   workflow_dispatch:
+#     inputs:
+#       force:
+#         description: 'Rebuild and overwrite even if already built/promoted'
+#         type: boolean
+#         required: false
+#         default: false
+#   schedule:
+#     - cron: '36 5-20 * * 1-5'
+#
+# concurrency:
+#   group: ${{ github.workflow }}
+#   cancel-in-progress: true
+#
+# jobs:
+#   build-bundle:
+#     uses: ./.github/workflows/build-bundle.yml
+#     secrets: inherit
+#     with:
+#       gh_ref: "staging"
+#       force: ${{ inputs.force || false }}
+#
+#   build-docker:
+#     needs: build-bundle
+#     uses: ./.github/workflows/build-docker.yml
+#     secrets: inherit
+#     with:
+#       gh_ref: "staging"
+#       # Pin build-docker to the commit build-bundle actually bundled.
+#       sha: ${{ needs.build-bundle.outputs.sha }}
+#       force: ${{ inputs.force || false }}
+#
+#   build-docker-admin-console:
+#     uses: ./.github/workflows/build-docker-admin-console.yml
+#     secrets: inherit
+#     with:
+#       gh_ref: "staging"
+#       force: ${{ inputs.force || false }}
