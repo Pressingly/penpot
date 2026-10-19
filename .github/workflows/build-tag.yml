@@ -1,4 +1,13 @@
 # Disabled in the Pressingly fork: upstream workflow, images are built by Cloud Build on release tags.
+# Kept as a manual-only no-op so GitHub does not raise a failed run per push; the original follows, commented out.
+name: "_TAG"
+on: workflow_dispatch
+jobs:
+  disabled:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: "true"
 # name: _TAG
 #
 # run-name: >-
