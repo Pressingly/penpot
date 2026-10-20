@@ -1,4 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { AsyncLocalStorage } from "async_hooks";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -20,6 +21,7 @@ import { ReadTaigaIssueTool } from "./tools/ReadTaigaIssueTool";
 import { NreplClient } from "./NreplClient";
 import { ReplServer } from "./ReplServer";
 import { ApiDocs } from "./ApiDocs";
+import { annotationsFor } from "./ToolAnnotations";
 import { installMonetaAuth, monetaAuthEnabled } from "./moneta";
 
 /**
@@ -47,7 +49,7 @@ class ToolInfo {
     constructor(
         public readonly instance: Tool<any>,
         public readonly name: string,
-        public readonly config: { description: string; inputSchema: any }
+        public readonly config: { description: string; inputSchema: any; annotations: ToolAnnotations }
     ) {}
 }
 
@@ -294,6 +296,7 @@ export class PenpotMcpServer {
             return new ToolInfo(instance, instance.getToolName(), {
                 description: instance.getToolDescription(),
                 inputSchema: instance.getInputSchema(),
+                annotations: annotationsFor(instance.getToolName(), this.isFileSystemAccessEnabled()),
             });
         });
     }

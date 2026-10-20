@@ -124,6 +124,25 @@ export class ExportShapeTool extends Tool<ExportShapeArgs> {
     }
 
     /**
+     * Builds the plugin code that exports the shape. The shapeId is client-controlled and the code runs
+     * with the writable Penpot API, so it is embedded as a JSON string literal rather than spliced in raw.
+     *
+     * @param args - the validated tool arguments
+     */
+    static buildExportCode(args: Pick<ExportShapeArgs, "shapeId" | "format" | "mode">): string {
+        let shapeCode: string;
+        if (args.shapeId === "selection") {
+            shapeCode = `penpot.selection[0]`;
+        } else if (args.shapeId === "page") {
+            shapeCode = `penpot.root`;
+        } else {
+            shapeCode = `penpotUtils.findShapeById(${JSON.stringify(args.shapeId)})`;
+        }
+        const asSvg = args.format === "svg";
+        return `return penpotUtils.exportImage(${shapeCode}, ${JSON.stringify(args.mode)}, ${asSvg});`;
+    }
+
+    /**
      * Performs the actual image export: requests the image via the plugin and either
      * returns it as a tool response or saves it to the requested file path. The bulk
      * of the memory pressure (parsed plugin response, decoded image buffer, optional
@@ -137,17 +156,7 @@ export class ExportShapeTool extends Tool<ExportShapeArgs> {
             FileUtils.checkPathIsAbsolute(args.filePath);
         }
 
-        // create code for exporting the shape
-        let shapeCode: string;
-        if (args.shapeId === "selection") {
-            shapeCode = `penpot.selection[0]`;
-        } else if (args.shapeId === "page") {
-            shapeCode = `penpot.root`;
-        } else {
-            shapeCode = `penpotUtils.findShapeById("${args.shapeId}")`;
-        }
-        const asSvg = args.format === "svg";
-        const code = `return penpotUtils.exportImage(${shapeCode}, "${args.mode}", ${asSvg});`;
+        const code = ExportShapeTool.buildExportCode(args);
 
         // execute the code and obtain the image data
         const task = new ExecuteCodePluginTask({ code: code });
