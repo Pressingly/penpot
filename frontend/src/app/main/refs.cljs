@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.refs
   "A collection of derived refs."
@@ -17,6 +17,9 @@
    [app.main.data.helpers :as dsh]
    [app.main.data.workspace.tokens.selected-set :as dwts]
    [app.main.store :as st]
+   [app.main.streams :as ms]
+   [beicon.v2.core :as rx]
+   [clojure.string :as str]
    [okulary.core :as l]))
 
 ;; ---- Global refs
@@ -30,15 +33,14 @@
 (def profile
   (l/derived (l/key :profile) st/state))
 
+(def custom-shortcuts
+  (l/derived (fn [state] (get-in state [:profile :props :custom-shortcuts])) st/state))
+
 (def current-page-id
   (l/derived (l/key :current-page-id) st/state))
 
 (def team
-  (l/derived (fn [state]
-               (let [team-id (:current-team-id state)
-                     teams   (:teams state)]
-                 (get teams team-id)))
-             st/state))
+  (l/derived dsh/lookup-team st/state))
 
 (def project
   (l/derived (fn [state]
@@ -108,7 +110,7 @@
 ;; DEPRECATED and all new code should not use it and old code should
 ;; be gradually migrated to more efficient approach
 (def libraries
-  "A derived state that contanins the currently loaded shared
+  "A derived state that contains the currently loaded shared
   libraries with all its content; including the current file"
   (l/derived (fn [state]
                (let [files   (get state :files)
@@ -161,7 +163,9 @@
   (l/derived :workspace-tokens st/state))
 
 (def workspace-selrect
-  (l/derived :workspace-selrect st/state))
+  (let [a (atom nil)]
+    (rx/sub! ms/workspace-selrect #(reset! a %))
+    a))
 
 ;; WARNING: Don't use directly from components, this is a proxy to
 ;; improve performance of selected-shapes and
@@ -185,9 +189,6 @@
 (defn make-selected-ref
   [id]
   (l/derived #(contains? % id) selected-shapes))
-
-(def highlighted-shapes
-  (l/derived :highlighted workspace-local))
 
 (def export-in-progress?
   (l/derived :export-in-progress? export))
@@ -256,6 +257,10 @@
 (def editing-page-item
   (l/derived :page-item workspace-local))
 
+;; set of pages selected in the sitemap (multi-selection)
+(def selected-pages
+  (l/derived :selected-pages workspace-local))
+
 (def current-hover-ids
   (l/derived :hover-ids context-menu))
 
@@ -305,6 +310,9 @@
 
 (def workspace-page-flows
   (l/derived #(-> % :flows not-empty) workspace-page))
+
+(def workspace-page-guides
+  (l/derived :guides workspace-page))
 
 (defn workspace-page-object-by-id
   [page-id shape-id]
@@ -381,8 +389,13 @@
 (def workspace-modifiers
   (l/derived :workspace-modifiers st/state))
 
+(def workspace-wasm-editor-styles
+  (l/derived :workspace-wasm-editor-styles st/state))
+
 (def workspace-wasm-modifiers
-  (l/derived :workspace-wasm-modifiers st/state))
+  (let [a (atom nil)]
+    (rx/sub! ms/wasm-modifiers #(reset! a %))
+    a))
 
 (def ^:private workspace-modifiers-with-objects
   (l/derived
@@ -571,12 +584,22 @@
                (dm/get-in state [:viewer-local :zoom-type]))
              st/state))
 
+(defn- resolved-uri?
+  "Returns true if the uri is already a fully resolved URI (blob or data)."
+  [uri]
+  (and (string? uri)
+       (or (str/starts-with? uri "blob:")
+           (str/starts-with? uri "data:"))))
+
 (defn workspace-thumbnail-by-id
   [object-id]
   (l/derived
    (fn [state]
-     (some-> (dm/get-in state [:thumbnails object-id])
-             (cf/resolve-media)))
+     (when-let [entry (dm/get-in state [:thumbnails object-id])]
+       (cond-> entry
+         (and (:uri entry)
+              (not (resolved-uri? (:uri entry))))
+         (update :uri cf/resolve-media))))
    st/state))
 
 (def workspace-text-modifier
@@ -642,9 +665,6 @@
 
 (def updating-library
   (l/derived :updating-library st/state))
-
-(def persistence-state
-  (l/derived (comp :status :persistence) st/state))
 
 (def progress
   (l/derived :progress st/state))

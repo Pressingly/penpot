@@ -2,14 +2,13 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.plugins.comments
   (:require
    [app.common.geom.point :as gpt]
    [app.common.schema :as sm]
    [app.main.data.comments :as dc]
-   [app.main.data.helpers :as dsh]
    [app.main.data.workspace.comments :as dwc]
    [app.main.repo :as rp]
    [app.main.store :as st]
@@ -41,12 +40,14 @@
 
       ;; FIXME: inconsistent with comment-thread: owner
       :user
-      {:get #(->> (dc/get-owner data)
-                  (user/user-proxy plugin-id))}
+      {:get #(when (r/check-permission plugin-id "user:read")
+               (->> (dc/get-owner data)
+                    (user/user-proxy plugin-id)))}
 
       :owner
-      {:get #(->> (dc/get-owner data)
-                  (user/user-proxy plugin-id))}
+      {:get #(when (r/check-permission plugin-id "user:read")
+               (->> (dc/get-owner data)
+                    (user/user-proxy plugin-id)))}
 
       :date
       {:get
@@ -117,8 +118,9 @@
       :board {:get #(shape/shape-proxy plugin-id file-id page-id (:frame-id data))}
 
       :owner
-      {:get #(->> (dc/get-owner data)
-                  (user/user-proxy plugin-id))}
+      {:get #(when (r/check-permission plugin-id "user:read")
+               (->> (dc/get-owner data)
+                    (user/user-proxy plugin-id)))}
 
       :position
       {:get
@@ -135,6 +137,9 @@
 
              (not (r/check-permission plugin-id "comment:write"))
              (u/not-valid plugin-id :position "Plugin doesn't have 'comment:write' permission")
+
+             (not (u/page-active? page-id))
+             (u/not-valid plugin-id :position "Cannot modify a page that is not currently active")
 
              :else
              (do (st/emit! (dwc/update-comment-thread-position @data* [(:x position) (:y position)]))
@@ -200,13 +205,12 @@
 
       :remove
       (fn []
-        (let [profile (:profile @st/state)
-              owner   (dsh/lookup-profile @st/state (:owner-id data))]
+        (let [profile (:profile @st/state)]
           (cond
             (not (r/check-permission plugin-id "comment:write"))
             (u/not-valid plugin-id :remove "Plugin doesn't have 'comment:write' permission")
 
-            (not= (:id profile) owner)
+            (not= (:id profile) (:owner-id data))
             (u/not-valid plugin-id :remove "Cannot change content from another user's comments")
 
             :else

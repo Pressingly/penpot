@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.email
   "Main api for send emails."
@@ -419,10 +419,19 @@
    :id ::change-email
    :schema schema:change-email))
 
+(def ^:private schema:organization-data
+  [:map
+   [:name ::sm/text]
+   [:initials {:optional true} [:maybe :string]]
+   [:logo {:optional true} [:maybe ::sm/uri]]
+   [:avatar-bg-url {:optional true} [:maybe ::sm/uri]]
+   [:sso-active {:optional true} [:maybe ::sm/boolean]]])
+
 (def ^:private schema:invite-to-team
   [:map
    [:invited-by ::sm/text]
    [:team ::sm/text]
+   [:organization {:optional true} [:maybe schema:organization-data]]
    [:token ::sm/text]])
 
 (def invite-to-team
@@ -430,6 +439,42 @@
   (template-factory
    :id ::invite-to-team
    :schema schema:invite-to-team))
+
+(def ^:private schema:invite-to-organization
+  [:map
+   [:invited-by ::sm/text]
+   [:user-name [:maybe ::sm/text]]
+   [:token ::sm/text]
+   [:organization schema:organization-data]])
+
+(def invite-to-organization
+  "Organization member invitation email."
+  (template-factory
+   :id ::invite-to-organization
+   :schema schema:invite-to-organization))
+
+(def ^:private schema:organization-setup-sso
+  [:map
+   [:organization-name ::sm/text]])
+
+(def organization-setup-sso
+  "Email when an organization set up SSO"
+  (template-factory
+   :id ::organization-setup-sso
+   :schema schema:organization-setup-sso))
+
+(def ^:private schema:renewal-notice
+  [:map
+   [:user-name [:maybe ::sm/text]]
+   [:renewal-date ::sm/text]
+   [:estimated-amount ::sm/text]
+   [:organizations [:vector schema:organization-data]]])
+
+(def renewal-notice
+  "Enterprise subscription renewal notice email."
+  (template-factory
+   :id ::renewal-notice
+   :schema schema:renewal-notice))
 
 (def ^:private schema:join-team
   [:map
@@ -460,13 +505,13 @@
    :schema schema:request-file-access))
 
 (def request-file-access-yourpenpot
-  "File access on Your Penpot request email."
+  "File access on Personal Projects request email."
   (template-factory
    :id ::request-file-access-yourpenpot
    :schema schema:request-file-access))
 
 (def request-file-access-yourpenpot-view
-  "File access on Your Penpot view mode request email."
+  "File access on Personal Projects view mode request email."
   (template-factory
    :id ::request-file-access-yourpenpot-view
    :schema schema:request-file-access))

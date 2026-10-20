@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.binfile.v1
   "A custom, perfromance and efficiency focused binfile format impl"
@@ -174,6 +174,10 @@
     (assert-mark m :obj)
     (let [size (read-long! input)]
       (assert (pos? size) "incorrect header size found on reading header")
+      (when (> size bfc/max-object-size)
+        (ex/raise :type :validation
+                  :code :max-file-size-reached
+                  :hint (dm/str "unable to import object with size " size " bytes")))
       (let [buff (byte-array size)]
         (read-bytes! input buff)
         (fres/decode buff)))))
@@ -301,8 +305,9 @@
 (defn write-export!
   [{:keys [::bfc/include-libraries ::bfc/embed-assets] :as cfg}]
   (when (and include-libraries embed-assets)
-    (throw (IllegalArgumentException.
-            "the `include-libraries` and `embed-assets` are mutally excluding options")))
+    (ex/raise :type :validation
+              :code :incompatible-options
+              :hint "the `include-libraries` and `embed-assets` are mutually exclusive options"))
 
   (write-export cfg))
 
@@ -573,7 +578,6 @@
     ;; Insert all file relations
     (doseq [{:keys [library-file-id] :as rel} rels]
       (let [rel (-> rel
-                    (assoc :synced-at timestamp)
                     (update :file-id bfc/lookup-index)
                     (update :library-file-id bfc/lookup-index))]
 
@@ -583,7 +587,12 @@
                    :file-id (:file-id rel)
                    :lib-id (:library-file-id rel)
                    ::l/sync? true)
-            (db/insert! conn :file-library-rel rel))
+            (let [rel-params (dissoc rel :synced-at)]
+              (db/insert! conn :file-library-rel rel-params)
+              (bfc/upsert-file-library-sync! conn {:file-id (:file-id rel-params)
+                                                   :library-file-id (:library-file-id rel-params)
+                                                   :synced-at (or (:synced-at rel)
+                                                                  timestamp)})))
 
           (l/warn :hint "ignoring file library link"
                   :file-id (:file-id rel)
@@ -598,16 +607,26 @@
 
     (doseq [expected-storage-id ids]
       (let [id    (read-uuid! input)
-            mdata (read-obj! input)]
+            mdata (d/update-when (read-obj! input) :content-type bfc/normalize-content-type)]
 
         (when (not= id expected-storage-id)
           (ex/raise :type :validation
                     :code :inconsistent-penpot-file
                     :hint "the penpot file seems corrupt, found unexpected uuid (storage-object-id)"))
 
+        (bfc/check-storage-content-type mdata)
+
         (l/dbg :hint "readed storage object" :id (str id) ::l/sync? true)
 
         (let [[size resource] (read-stream! input)
+              [resource size] (if (bfc/svg-object? mdata)
+                                (let [raw (if (bytes? resource)
+                                            resource
+                                            (with-open [istream (jio/input-stream resource)]
+                                              (io/read istream)))
+                                      {:keys [bytes size]} (bfc/sanitize-imported-svg mdata raw)]
+                                  [bytes size])
+                                [resource size])
               hash            (sto/calculate-hash resource)
               content         (-> (sto/content resource size)
                                   (sto/wrap-with-hash hash))

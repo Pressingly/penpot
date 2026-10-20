@@ -2,11 +2,12 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.rpc.commands.profile
   (:require
    [app.auth :as auth]
+   [app.auth.passwords :as passwords]
    [app.common.data :as d]
    [app.common.exceptions :as ex]
    [app.common.schema :as sm]
@@ -21,6 +22,7 @@
    [app.loggers.audit :as audit]
    [app.main :as-alias main]
    [app.media :as media]
+   [app.media.validation :as media.v]
    [app.nitrate :as nitrate]
    [app.rpc :as-alias rpc]
    [app.rpc.climit :as climit]
@@ -45,26 +47,43 @@
    [:email-comments [::sm/one-of #{:all :partial :none}]]
    [:email-invites [::sm/one-of #{:all :none}]]])
 
+(def schema:nudge
+  [:map {:title "Nudge"}
+   [:big {:optional true} ::sm/number]
+   [:small {:optional true} ::sm/number]])
+
+(def system-managed-props
+  "Props keys managed by the system (not user-writable via RPC)."
+  #{:subscription})
+
 (def schema:props
-  [:map {:title "ProfileProps"}
+  [:map {:title "ProfileProps" :closed true}
    [:plugins {:optional true} schema:plugin-registry]
+   [:renderer {:optional true} [::sm/one-of #{:svg :wasm}]]
    [:mcp-enabled {:optional true} ::sm/boolean]
    [:newsletter-updates {:optional true} ::sm/boolean]
    [:newsletter-news {:optional true} ::sm/boolean]
    [:onboarding-team-id {:optional true} ::sm/uuid]
    [:onboarding-viewed {:optional true} ::sm/boolean]
+   [:onboarding-questions {:optional true} [:map-of :keyword :string]]
+   [:onboarding-questions-answered {:optional true} ::sm/boolean]
+   [:nitrate-onboarding-viewed {:optional true} ::sm/boolean]
    [:v2-info-shown {:optional true} ::sm/boolean]
-   [:welcome-file-id {:optional true} [:maybe ::sm/boolean]]
    [:release-notes-viewed {:optional true}
     [::sm/text {:max 100}]]
    [:notifications {:optional true} schema:props-notifications]
-   [:workspace-visited {:optional true} ::sm/boolean]])
+   [:workspace-visited {:optional true} ::sm/boolean]
+   [:custom-shortcuts {:optional true}
+    [:map-of {:gen/max 10} :keyword [:map-of :keyword :string]]]
+   [:nudge {:optional true} schema:nudge]])
 
 (def schema:profile
   [:map {:title "Profile"}
    [:id ::sm/uuid]
    [:fullname [::sm/word-string {:max 250}]]
    [:email ::sm/email]
+   [:theme {:optional true} :string]
+   [:is-admin {:optional true} ::sm/boolean]
    [:is-active {:optional true} ::sm/boolean]
    [:is-blocked {:optional true} ::sm/boolean]
    [:is-demo {:optional true} ::sm/boolean]
@@ -88,6 +107,12 @@
                 email)]
     email))
 
+(defn- with-nitrate-licence
+  [profile cfg]
+  (if (contains? cf/flags :admin-console)
+    (nitrate/add-nitrate-licence-to-profile cfg profile)
+    profile))
+
 ;; --- QUERY: Get profile (own)
 
 
@@ -105,19 +130,17 @@
     (let [profile (-> (get-profile pool profile-id)
                       (strip-private-attrs)
                       (update :props filter-props))]
-      (if (contains? cf/flags :nitrate)
-        (nitrate/add-nitrate-licence-to-profile cfg profile)
-        profile))
+      (with-nitrate-licence profile cfg))
 
-    (catch Throwable _
-      {:id uuid/zero :fullname "Anonymous User"})))
+    (catch Throwable cause
+      (if (= :not-found (-> cause ex-data :type))
+        (with-nitrate-licence {:id uuid/zero :fullname "Anonymous User"} cfg)
+        (throw cause)))))
 
 (defn get-profile
   "Get profile by id. Throws not-found exception if no profile found."
   [conn id & {:as opts}]
-  ;; NOTE: We need to set ::db/remove-deleted to false because demo profiles
-  ;; are created with a set deleted-at value
-  (-> (db/get-by-id conn :profile id (assoc opts ::db/remove-deleted false))
+  (-> (db/get-by-id conn :profile id opts)
       (decode-row)))
 
 ;; --- MUTATION: Update Profile (own)
@@ -134,11 +157,18 @@
    ::sm/params schema:update-profile
    ::sm/result schema:profile
    ::db/transaction true}
-  [{:keys [::db/conn]} {:keys [::rpc/profile-id fullname lang theme] :as params}]
+  [{:keys [::db/conn] :as cfg} {:keys [::rpc/profile-id fullname lang theme] :as params}]
   ;; NOTE: we need to retrieve the profile independently if we use
   ;; it or not for explicit locking and avoid concurrent updates of
   ;; the same row/object.
   (let [profile (get-profile conn profile-id ::db/for-update true)
+        fullname (d/normalize-string fullname)
+        lang     (if (contains? params :lang)
+                   (d/normalize-string lang)
+                   (:lang profile))
+        theme    (if (contains? params :theme)
+                   (d/normalize-string theme)
+                   (:theme profile))
         ;; Update the profile map with direct params
         profile (-> profile
                     (assoc :fullname fullname)
@@ -155,6 +185,7 @@
     (-> profile
         (strip-private-attrs)
         (d/without-nils)
+        (with-nitrate-licence cfg)
         (rph/with-meta {::audit/props (audit/profile->props profile)}))))
 
 
@@ -182,6 +213,9 @@
       (ex/raise :type :validation
                 :code :email-as-password
                 :hint "you can't use your email as password"))
+
+    ;; Validate password strength against common password dictionary
+    (passwords/validate-password (:password params))
 
     (update-profile-password! cfg (assoc profile :password password))
 
@@ -255,7 +289,7 @@
 (def ^:private
   schema:update-profile-photo
   [:map {:title "update-profile-photo"}
-   [:file media/schema:upload]])
+   [:file media.v/schema:upload]])
 
 (sv/defmethod ::update-profile-photo
   {:doc/added "1.1"
@@ -263,8 +297,8 @@
    ::sm/result :nil}
   [cfg {:keys [::rpc/profile-id file] :as params}]
   ;; Validate incoming mime type
-  (media/validate-media-type! file #{"image/jpeg" "image/png" "image/webp"})
-  (media/validate-media-size! file)
+  (media.v/validate-media-type! file #{"image/jpeg" "image/png" "image/webp"})
+  (media.v/validate-media-size! file)
   (update-profile-photo cfg (assoc params :profile-id profile-id)))
 
 (defn update-profile-photo
@@ -290,14 +324,14 @@
                          :file-mtype (:mtype file)}}))))
 
 (defn- generate-thumbnail
-  [_ input]
-  (let [input   (media/run {:cmd :info :input input})
-        thumb   (media/run {:cmd :profile-thumbnail
-                            :format :jpeg
-                            :quality 85
-                            :width 256
-                            :height 256
-                            :input input})
+  [cfg input]
+  (let [input   (media/run cfg {:cmd :info :input input})
+        thumb   (media/run cfg {:cmd :profile-thumbnail
+                                :format :jpeg
+                                :quality 85
+                                :width 256
+                                :height 256
+                                :input input})
         hash    (sto/calculate-hash (:data thumb))
         content (-> (sto/content (:data thumb) (:size thumb))
                     (sto/wrap-with-hash hash))]
@@ -314,6 +348,25 @@
                    (assoc ::climit/label "upload-photo")
                    (climit/invoke! generate-thumbnail file))]
     (sto/put-object! storage params)))
+
+;; --- MUTATION: Delete Photo
+
+(sv/defmethod ::delete-profile-photo
+  {::doc/added "2.17"
+   ::sm/params [:map]
+   ::sm/result :nil
+   ::db/transaction true}
+  [{:keys [::db/conn ::sto/storage]} {:keys [::rpc/profile-id]}]
+  (let [profile (get-profile conn profile-id ::db/for-update true)]
+    (when-let [id (:photo-id profile)]
+      (sto/touch-object! storage id))
+
+    (db/update! conn :profile
+                {:photo-id nil}
+                {:id profile-id}
+                {::db/return-keys false})
+
+    nil))
 
 ;; --- MUTATION: Request Email Change
 ;;
@@ -358,7 +411,7 @@
                                  (assoc props k v))
                                props))
                            (:props profile)
-                           props)]
+                           (apply dissoc props system-managed-props))]
 
     (db/update! conn :profile
                 {:props (db/tjson props)}
@@ -399,6 +452,18 @@
                 {:deleted-at deleted-at}
                 {:id profile-id})
 
+    ;; Delete owned organizations on the fly (no grace period).
+    ;; Nitrate iterates the user's owned organizations and, per organization, calls
+    ;; Penpot back through two paths: ::notify-user-organizations-deletion
+    ;; (during delete-owned-organizations) and ::notify-organization-deletion.
+    ;; Both preserve organization teams unchanged and only prefix or delete
+    ;; imported "Personal Projects" teams according to whether they still have files.
+    ;; Let Nitrate clean up the data associated with the deleted Penpot user:
+    ;; owned organizations, remaining memberships, and subscription cancellation.
+    (when (contains? cf/flags :admin-console)
+      (nitrate/call cfg :cleanup-deleted-penpot-user
+                    {:profile-id profile-id}))
+
     ;; Schedule cascade deletion to a worker
     (wrk/submit! {::db/conn conn
                   ::wrk/task :delete-object
@@ -406,6 +471,9 @@
                                 :deleted-at deleted-at
                                 :id profile-id}})
 
+    ;; Invalidate all sessions for this profile to ensure immediate
+    ;; access revocation across all devices
+    (session/invalidate-all cfg profile-id)
 
     (-> (rph/wrap nil)
         (rph/with-transform (session/delete-fn cfg)))))
@@ -432,6 +500,32 @@
   [cfg {:keys [::rpc/profile-id]}]
   (let [editors (db/exec! cfg [sql:get-subscription-editors profile-id])]
     {:editors editors}))
+
+;; --- QUERY: Owned Organizations Summary (for delete-account modal)
+
+(def ^:private schema:owned-organization-summary
+  [:map
+   [:id ::sm/uuid]
+   [:name ::sm/text]
+   [:slug ::sm/text]
+   [:team-count ::sm/int]
+   [:member-count ::sm/int]
+   [:avatar-bg-url {:optional true} [:maybe ::sm/uri]]
+   [:logo-id {:optional true} [:maybe ::sm/uuid]]
+   [:custom-photo {:optional true} [:maybe ::sm/text]]])
+
+(def ^:private schema:get-owned-organizations-summary-result
+  [:vector schema:owned-organization-summary])
+
+(sv/defmethod ::get-owned-organizations-summary
+  "List organizations owned by the current profile with team and member counts.
+   Used by the delete-account modal to warn the user about cascading deletion."
+  {::doc/added "2.18"
+   ::sm/result schema:get-owned-organizations-summary-result}
+  [cfg {:keys [::rpc/profile-id]}]
+  (if (contains? cf/flags :admin-console)
+    (or (nitrate/call cfg :get-owned-organizations-summary {:profile-id profile-id}) [])
+    []))
 
 ;; --- HELPERS
 

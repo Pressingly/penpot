@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 (ns app.render-wasm.deserializers
   (:require
    [app.common.data :as d]
@@ -44,6 +44,10 @@
      :height height
      :center (gpt/point cx cy)
      :transform (gmt/matrix a b c d e f)}))
+
+(defn read-image-bytes
+  [heap offset length]
+  (.slice ^js heap offset (+ offset length)))
 
 (defn read-position-data-entry
   [heapu32 heapf32 offset]

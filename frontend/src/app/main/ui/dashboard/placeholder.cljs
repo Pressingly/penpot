@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.ui.dashboard.placeholder
   (:require-macros [app.main.style :as stl])
@@ -59,9 +59,9 @@
       [:div {:class (stl/css :empty-project-card-subtitle)}
        (tr "dashboard.empty-project.explore")]]
 
-     [:& udi/import-form {:ref file-input
-                          :project-id project-id
-                          :on-finish-import on-finish-import}]]))
+     [:> udi/import-form* {:ref file-input
+                           :project-id project-id
+                           :on-finish-import on-finish-import}]]))
 
 (defn- make-has-other-files-or-projects-ref
   "Return a ref that resolves to true or false if there are at least some
@@ -103,7 +103,7 @@
       [:ul
        {:class (stl/css :grid-row :no-wrap)
         :style {:grid-template-columns (str "repeat(" limit ", 1fr)")}}
-       [:li {:class (stl/css :grid-item :grid-empty-placeholder :dragged)}]]
+       [:li {:class (stl/css :grid-item :grid-empty-placeholder :is-dragged)}]]
 
       (= :libraries origin)
       [:> empty-placeholder*

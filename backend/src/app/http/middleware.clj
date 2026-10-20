@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.http.middleware
   (:require
@@ -24,7 +24,8 @@
   (:import
    io.undertow.server.RequestTooBigException
    java.io.InputStream
-   java.io.OutputStream))
+   java.io.OutputStream
+   java.security.MessageDigest))
 
 (set! *warn-on-reflection* true)
 
@@ -65,23 +66,41 @@
                 :else
                 request)))
 
+          ;; The specific-exception branches below (IAE,
+          ;; RequestTooBigException, EOFException) raise with
+          ;; `ex/raise` rather than calling `errors/handle` directly.
+          ;; This is intentional: the throw is caught by the
+          ;; top-level error handler in `app.http/router-handler`
+          ;; (`backend/src/app/http.clj`), which routes every
+          ;; uncaught exception through `errors/handle`. The
+          ;; per-route `wrap-errors` middleware in the route list
+          ;; is a defensive layer; correctness does not depend on
+          ;; it. Raising here keeps the cond uniform with the
+          ;; existing RequestTooBigException / EOFException
+          ;; branches.
           (handle-error [cause request]
             (cond
-              (instance? RuntimeException cause)
-              (if-let [cause (ex-cause cause)]
-                (handle-error cause request)
-                (errors/handle cause request))
+              (instance? IllegalArgumentException cause)
+              (ex/raise :type :validation
+                        :code :malformed-json
+                        :hint "invalid JSON in request body"
+                        :cause cause)
 
               (instance? RequestTooBigException cause)
               (ex/raise :type :validation
                         :code :request-body-too-large
-                        :hint (ex-message cause))
+                        :hint "request body exceeds size limit")
 
               (instance? java.io.EOFException cause)
               (ex/raise :type :validation
                         :code :malformed-json
-                        :hint (ex-message cause)
+                        :hint "unexpected end of request body"
                         :cause cause)
+
+              (instance? RuntimeException cause)
+              (if-let [cause (ex-cause cause)]
+                (handle-error cause request)
+                (errors/handle cause request))
 
               :else
               (errors/handle cause request)))]
@@ -208,28 +227,40 @@
    :compile (constantly wrap-errors)})
 
 (defn- with-cors-headers
-  [headers origin]
-  (-> headers
-      (assoc "access-control-allow-origin" origin)
-      (assoc "access-control-allow-methods" "GET,POST,DELETE,OPTIONS,PUT,HEAD,PATCH")
-      (assoc "access-control-allow-credentials" "true")
-      (assoc "access-control-expose-headers" "content-type, set-cookie")
-      (assoc "access-control-allow-headers" "x-frontend-version, x-client, x-requested-width, content-type, accept, cookie")))
+  "Build CORS response headers. Only emits permissive headers when the
+  request `origin` is present on the configured `allowed` allowlist;
+  otherwise returns the headers unchanged except for `Vary: Origin` so
+  shared caches don't leak per-origin responses."
+  [headers origin allowed]
+  (cond-> (assoc headers "vary" "Origin")
+    (and (some? origin) (contains? allowed origin))
+    (-> (assoc "access-control-allow-origin" origin)
+        (assoc "access-control-allow-credentials" "true")
+        (assoc "access-control-allow-methods" "GET,POST,DELETE,OPTIONS,PUT,HEAD,PATCH")
+        (assoc "access-control-expose-headers" "content-type")
+        (assoc "access-control-allow-headers" "x-frontend-version, x-client, content-type, accept"))))
 
 (defn wrap-cors
-  [handler]
+  [handler allowed]
   (fn [request]
     (let [response (if (= (yreq/method request) :options)
                      {::yres/status 204}
                      (handler request))
           origin   (yreq/get-header request "origin")]
-      (update response ::yres/headers with-cors-headers origin))))
+      (update response ::yres/headers with-cors-headers origin allowed))))
 
 (def cors
   {:name ::cors
    :compile (fn [& _]
               (when (contains? cf/flags :cors)
-                wrap-cors))})
+                (let [allowed (not-empty (cf/get :allowed-origins))]
+                  (if allowed
+                    (fn [handler] (wrap-cors handler allowed))
+                    (do
+                      (l/wrn :hint (str "cors flag is enabled but :allowed-origins is empty; "
+                                        "CORS middleware disabled (fail-closed). "
+                                        "Configure PENPOT_ALLOWED_ORIGINS with a comma-separated list of trusted origins."))
+                      nil)))))})
 
 (def restrict-methods
   {:name ::restrict-methods
@@ -299,6 +330,11 @@
   {:name ::auth
    :compile (constantly wrap-auth)})
 
+(defn constant-time-eq?
+  "Compare strings in constant time to prevent timing attacks."
+  [^String a ^String b]
+  (MessageDigest/isEqual (.getBytes a "UTF-8") (.getBytes b "UTF-8")))
+
 (defn- wrap-shared-key-auth
   [handler keys]
   (if (seq keys)
@@ -308,13 +344,13 @@
         (let [key-id (-> key-id str/lower keyword)]
           (if (and (string? key)
                    (contains? keys key-id)
-                   (= key (get keys key-id)))
+                   (constant-time-eq? key (get keys key-id)))
             (-> request
                 (assoc ::http/auth-key-id key-id)
                 (handler))
             {::yres/status 403}))
         {::yres/status 403}))
-    (fn [_ _]
+    (fn [_]
       {::yres/status 403})))
 
 (def shared-key-auth

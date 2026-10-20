@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.ui.workspace.palette
   (:require-macros [app.main.style :as stl])
@@ -23,8 +23,8 @@
    [app.main.ui.icons :as deprecated-icon]
    [app.main.ui.workspace.color-palette :refer [color-palette*]]
    [app.main.ui.workspace.color-palette-ctx-menu :refer [color-palette-ctx-menu*]]
-   [app.main.ui.workspace.text-palette :refer [text-palette]]
-   [app.main.ui.workspace.text-palette-ctx-menu :refer [text-palette-ctx-menu]]
+   [app.main.ui.workspace.text-palette :refer [text-palette*]]
+   [app.main.ui.workspace.text-palette-ctx-menu :refer [text-palette-ctx-menu*]]
    [app.util.dom :as dom]
    [app.util.i18n :refer [tr]]
    [app.util.object :as obj]
@@ -51,9 +51,12 @@
 
 (mf/defc palette*
   [{:keys [layout on-change-size]}]
-  (let [color-palette? (:colorpalette layout)
-        text-palette?  (:textpalette layout)
-        hide-palettes? (:hide-palettes layout)
+  (let [color-palette?   (:colorpalette layout)
+        text-palette?    (:textpalette layout)
+        hide-palettes?   (:hide-palettes layout)
+
+        custom-shortcuts (mf/deref refs/custom-shortcuts)
+        get-tt           #(sc/get-effective-tooltip % custom-shortcuts)
 
         read-only?     (mf/use-ctx ctx/workspace-read-only?)
         container      (mf/use-ref nil)
@@ -160,10 +163,11 @@
             width (obj/get dom "clientWidth")]
         (swap! state* assoc :width width)))
 
-    [:div {:class (stl/css :palette-wrapper)
-           :id "palette-wrapper"
-           :style  (calculate-palette-style rulers?)
-           :data-testid "palette"}
+    [:section {:class (stl/css :palette-wrapper)
+               :id "palette-wrapper"
+               :style  (calculate-palette-style rulers?)
+               :aria-label (tr "workspace.toolbar.palette-bar")
+               :data-testid "palette"}
      (when-not ^boolean read-only?
        [:div {:ref parent-ref
               :class (dm/str size-classname " " (stl/css-case :palettes true
@@ -178,16 +182,16 @@
         [:ul {:class (dm/str size-classname " " (stl/css-case :palette-btn-list true
                                                               :hidden-bts hide-palettes?))}
          [:li {:class (stl/css :palette-item)}
-          [:button {:title (tr "workspace.toolbar.color-palette" (sc/get-tooltip :toggle-colorpalette))
-                    :aria-label (tr "workspace.toolbar.color-palette" (sc/get-tooltip :toggle-colorpalette))
+          [:button {:title (tr "workspace.toolbar.color-palette" (get-tt :toggle-colorpalette))
+                    :aria-label (tr "workspace.toolbar.color-palette" (get-tt :toggle-colorpalette))
                     :class (stl/css-case :palette-btn true
                                          :selected color-palette?)
                     :on-click on-select-color-palette}
            deprecated-icon/drop-icon]]
 
          [:li {:class (stl/css :palette-item)}
-          [:button {:title (tr "workspace.toolbar.text-palette" (sc/get-tooltip :toggle-textpalette))
-                    :aria-label (tr "workspace.toolbar.text-palette" (sc/get-tooltip :toggle-textpalette))
+          [:button {:title (tr "workspace.toolbar.text-palette" (get-tt :toggle-textpalette))
+                    :aria-label (tr "workspace.toolbar.text-palette" (get-tt :toggle-textpalette))
                     :class (stl/css-case :palette-btn true
                                          :selected text-palette?)
                     :on-click on-select-text-palette}
@@ -203,13 +207,13 @@
                   :ref container}
             (when text-palette?
               [:*
-               [:& text-palette-ctx-menu {:show-menu?  show-menu?
-                                          :close-menu on-close-menu
-                                          :on-select-palette on-select-text-palette-menu
-                                          :selected selected-text}]
-               [:& text-palette {:size size
-                                 :selected selected-text
-                                 :width vport-width}]])
+               [:> text-palette-ctx-menu* {:show-menu  show-menu?
+                                           :close-menu on-close-menu
+                                           :on-select-palette on-select-text-palette-menu
+                                           :selected selected-text}]
+               [:> text-palette* {:size size
+                                  :selected selected-text
+                                  :width vport-width}]])
             (when color-palette?
               [:*
                [:> color-palette-ctx-menu* {:show show-menu?

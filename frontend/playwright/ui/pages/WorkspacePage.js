@@ -35,45 +35,9 @@ export class WorkspacePage extends BaseWebSocketPage {
     }
 
     async waitForEditor() {
-      return this.page.waitForSelector('[data-itype="editor"]');
-    }
-
-    async waitForRoot() {
-      return this.page.waitForSelector('[data-itype="root"]');
-    }
-
-    async waitForParagraph(nth) {
-      if (!nth) {
-        return this.page.waitForSelector('[data-itype="paragraph"]');
-      }
-      return this.page.waitForSelector(
-        `[data-itype="paragraph"]:nth-child(${nth})`,
-      );
-    }
-
-    async waitForParagraphStyle(nth, styleName) {
-      const paragraph = await this.waitForParagraph(nth);
-      return this.waitForStyle(paragraph, styleName);
-    }
-
-    async waitForTextSpan(nth = 0) {
-      if (!nth) {
-        return this.page.waitForSelector('[data-itype="span"]');
-      }
-      return this.page.waitForSelector(
-        `[data-itype="span"]:nth-child(${nth})`,
-      );
-    }
-
-    async waitForTextSpanContent(nth = 0) {
-      const textSpan = await this.waitForTextSpan(nth);
-      const textContent = await textSpan.textContent();
-      return textContent;
-    }
-
-    async waitForTextSpanStyle(nth, styleName) {
-      const textSpan = await this.waitForTextSpan(nth);
-      return this.waitForStyle(textSpan, styleName);
+      const typographyInput =
+        this.workspacePage.rightSidebar.getByLabel("Font Size");
+      await expect(typographyInput).toBeVisible();
     }
 
     async startEditing() {
@@ -81,24 +45,26 @@ export class WorkspacePage extends BaseWebSocketPage {
       return this.waitForEditor();
     }
 
-    stopEditing() {
-      return this.page.keyboard.press("Escape");
+    async stopEditing() {
+      await this.page.keyboard.press("Escape");
     }
 
     async moveToLeft(amount = 0) {
       for (let i = 0; i < amount; i++) {
         await this.page.keyboard.press("ArrowLeft");
       }
+      await this.waitForIdle({ timeout: 100 });
     }
 
     async moveToRight(amount = 0) {
       for (let i = 0; i < amount; i++) {
         await this.page.keyboard.press("ArrowRight");
       }
+      await this.waitForIdle({ timeout: 100 });
     }
 
     async moveFromStart(offset = 0) {
-      await this.page.keyboard.press("ArrowLeft");
+      await this.page.keyboard.press("Home");
       await this.moveToRight(offset);
     }
 
@@ -125,7 +91,7 @@ export class WorkspacePage extends BaseWebSocketPage {
       await expect(locator).toBeVisible();
       await locator.focus();
       await locator.fill(`${newValue}`);
-      await locator.blur();
+      await this.page.keyboard.press("Enter");
     }
 
     changeFontSize(newValue) {
@@ -139,6 +105,12 @@ export class WorkspacePage extends BaseWebSocketPage {
     changeLetterSpacing(newValue) {
       return this.changeNumericInput(this.letterSpacing, newValue);
     }
+
+    async waitForIdle(options) {
+      await this.page.evaluate(
+        (options) => new Promise(
+          (resolve) => globalThis.requestIdleCallback(resolve, options)), options);
+    }
   };
 
   /**
@@ -148,9 +120,9 @@ export class WorkspacePage extends BaseWebSocketPage {
    * @returns
    */
   static async init(page) {
-    await BaseWebSocketPage.initWebSockets(page);
+    await super.init(page);
 
-    await BaseWebSocketPage.mockRPCs(page, {
+    await super.mockRPCs(page, {
       "get-profile": "logged-in-user/get-profile-logged-in.json",
       "get-team-users?file-id=*":
         "logged-in-user/get-team-users-single-user.json",
@@ -200,8 +172,10 @@ export class WorkspacePage extends BaseWebSocketPage {
     this.toolbarOptions = page.getByTestId("toolbar-options");
     this.rectShapeButton = page.getByRole("button", { name: "Rectangle (R)" });
     this.ellipseShapeButton = page.getByRole("button", { name: "Ellipse (E)" });
+    this.textShapeButton = page.getByRole("button", { name: "Text (T)" });
     this.moveButton = page.getByRole("button", { name: "Move (V)" });
     this.boardButton = page.getByRole("button", { name: "Board (B)" });
+    this.pathButton = page.getByRole("button", { name: "Path (P)" });
     this.toggleToolbarButton = page.getByRole("button", {
       name: "Toggle toolbar",
     });
@@ -219,6 +193,7 @@ export class WorkspacePage extends BaseWebSocketPage {
     this.tokensUpdateCreateModal = page.getByTestId(
       "token-update-create-modal",
     );
+    this.tokenRenameNodeModal = page.getByTestId("token-rename-node-modal");
     this.tokenThemeUpdateCreateModal = page.getByTestId(
       "token-theme-update-create-modal",
     );
@@ -241,6 +216,7 @@ export class WorkspacePage extends BaseWebSocketPage {
   async goToWorkspace({
     fileId = this.fileId ?? WorkspacePage.anyFileId,
     pageId = this.pageId ?? WorkspacePage.anyPageId,
+    pageName = "Page 1",
   } = {}) {
     await this.page.goto(
       `/#/workspace?team-id=${WorkspacePage.anyTeamId}&file-id=${fileId}&page-id=${pageId}`,
@@ -248,12 +224,12 @@ export class WorkspacePage extends BaseWebSocketPage {
 
     this.#ws = await this.waitForNotificationsWebSocket();
     await this.#ws.mockOpen();
-    await this.#waitForWebSocketReadiness();
+    await this.#waitForWebSocketReadiness(pageName);
   }
 
-  async #waitForWebSocketReadiness() {
+  async #waitForWebSocketReadiness(pageName) {
     // TODO: find a better event to settle whether the app is ready to receive notifications via ws
-    await expect(this.pageName).toHaveText("Page 1", { timeout: 30000 })
+    await expect(this.pageName).toHaveText(pageName, { timeout: 30000 })
   }
 
   async sendPresenceMessage(fixture) {
@@ -317,7 +293,6 @@ export class WorkspacePage extends BaseWebSocketPage {
         body,
       }),
     );
-    // await this.mockRPC(/get\-file\?/, jsonFile);
   }
 
   async mockGetAsset(regex, asset) {
@@ -339,7 +314,7 @@ export class WorkspacePage extends BaseWebSocketPage {
   async clickWithDragViewportAt(x, y, width, height) {
     await this.page.waitForTimeout(100);
     const box = await this.viewport.boundingBox();
-    if (!box) throw new Error('Viewport not visible');
+    if (!box) throw new Error("Viewport not visible");
 
     const startX = box.x + x;
     const startY = box.y + y;
@@ -391,10 +366,37 @@ export class WorkspacePage extends BaseWebSocketPage {
     const timeToWait = options?.timeToWait ?? 100;
     await this.page.keyboard.press("T");
     await this.page.waitForTimeout(timeToWait);
+
+    const layersCountBefore = await this.layers
+      .getByTestId("layer-row")
+      .count();
     await this.clickAndMove(x1, y1, x2, y2);
-    await expect(this.page.getByTestId("text-editor")).toBeVisible();
 
     if (initialText) {
+      await this.waitForSelectedShapeName("Text");
+      await this.page.keyboard.type(initialText);
+    }
+  }
+
+  /**
+   * Creates a new auto-width Text Shape by single-clicking at the given
+   * coordinates (as opposed to dragging a fixed-size box) and, optionally,
+   * types an initial text.
+   *
+   * @param {number} x
+   * @param {number} y
+   * @param {string} [initialText]
+   * @param {*} [options]
+   */
+  async createAutoWidthTextShape(x, y, initialText, options) {
+    const timeToWait = options?.timeToWait ?? 100;
+    await this.page.keyboard.press("T");
+    await this.page.waitForTimeout(timeToWait);
+
+    await this.clickAt(x, y);
+
+    if (initialText) {
+      await this.waitForSelectedShapeName("Text");
       await this.page.keyboard.type(initialText);
     }
   }
@@ -413,10 +415,13 @@ export class WorkspacePage extends BaseWebSocketPage {
       await this.page.keyboard.press("ControlOrMeta+C");
     }
     // wait for the clipboard to be updated
-    await this.page.waitForFunction(async () => {
-      const content = await navigator.clipboard.readText()
-      return content !== "";
-    }, { timeout: 1000 });
+    await this.page.waitForFunction(
+      async () => {
+        const content = await navigator.clipboard.readText();
+        return content !== "";
+      },
+      { timeout: 1000 },
+    );
   }
 
   async cut(kind = "keyboard", locator = undefined) {
@@ -427,11 +432,15 @@ export class WorkspacePage extends BaseWebSocketPage {
       await this.page.keyboard.press("ControlOrMeta+X");
     }
     // wait for the clipboard to be updated
-    await this.page.waitForFunction(async () => {
-      const content = await navigator.clipboard.readText()
-      return content !== "";
-    }, { timeout: 1000 });
+    await this.page.waitForFunction(
+      async () => {
+        const content = await navigator.clipboard.readText();
+        return content !== "";
+      },
+      { timeout: 1000 },
+    );
 
+    await this.page.waitForTimeout(3000);
   }
 
   /**
@@ -445,7 +454,8 @@ export class WorkspacePage extends BaseWebSocketPage {
       await this.viewport.click({ button: "right" });
       return this.page.getByText("Paste", { exact: true }).click();
     }
-    return this.page.keyboard.press("ControlOrMeta+V");
+    await this.page.keyboard.press("ControlOrMeta+V");
+    await this.page.waitForTimeout(3000);
   }
 
   async panOnViewportAt(x, y, width, height) {
@@ -459,6 +469,33 @@ export class WorkspacePage extends BaseWebSocketPage {
   async togglePages() {
     const pagesToggle = this.page.getByText("Pages");
     await pagesToggle.click();
+  }
+
+  async selectToolbarTool(workspacePage, toolName) {
+    await workspacePage.page
+      .getByRole("button", { name: toolName })
+      .first()
+      .click();
+  }
+
+  async selectToolFromFlyout(
+    workspacePage,
+    { triggerToolName, targetToolName },
+  ) {
+    const trigger = workspacePage.page
+      .getByRole("button", { name: triggerToolName })
+      .first();
+
+    const option = workspacePage.page
+      .getByRole("menuitemradio", { name: targetToolName })
+      .first();
+
+    await trigger.hover();
+    // Flyout opening is delayed by 350ms in the toolbar component.
+    await workspacePage.page.waitForTimeout(450);
+    await expect(trigger).toHaveAttribute("aria-expanded", "true");
+    await option.waitFor({ state: "visible" });
+    await option.click();
   }
 
   async moveSelectionToShape(name) {
@@ -494,10 +531,23 @@ export class WorkspacePage extends BaseWebSocketPage {
 
   async expectSelectedLayer(name) {
     await expect(
-      this.layers
-        .getByTestId("layer-row")
-        .filter({ has: this.page.getByText(name) }),
-    ).toHaveClass(/selected/);
+      this.layers.getByRole("checkbox", { name, checked: true }),
+    ).toBeVisible();
+  }
+
+  async getSelectedShapeName() {
+    const selectedLayer = this.layers
+      .getByRole("checkbox", { checked: true })
+      .first();
+    await selectedLayer.waitFor({ state: "visible" });
+    return (await selectedLayer.innerText()).trim();
+  }
+
+  async waitForSelectedShapeName(expectedName) {
+    const selectedLayer = this.layers
+      .getByRole("checkbox", { checked: true })
+      .first();
+    await expect(selectedLayer).toHaveText(expectedName);
   }
 
   async expectHiddenToolbarOptions() {
@@ -549,6 +599,12 @@ export class WorkspacePage extends BaseWebSocketPage {
     await this.page
       .getByRole("button", { name: "Comments (C)" })
       .click(clickOptions);
+  }
+
+  async toggleCommentsVisibilityFromMenu(clickOptions = {}) {
+    await this.page.getByRole("button", { name: "Main menu" }).click();
+    await this.page.getByText("view").last().click();
+    await this.page.locator("#file-menu-comments").click(clickOptions);
   }
 }
 

@@ -1,28 +1,14 @@
 import { test, expect } from "@playwright/test";
 import { BaseWebSocketPage } from "../../pages/BaseWebSocketPage";
-import { WorkspacePage } from "../../pages/WorkspacePage";
-import { setupEmptyTokensFile, setupTokensFile } from "./helpers";
+import { WasmWorkspacePage } from "../../pages/WasmWorkspacePage";
+import { setupEmptyTokensFileRender, setupTokensFileRender, createSet, changeSetInput } from "./helpers";
 
 test.beforeEach(async ({ page }) => {
-  await WorkspacePage.init(page);
+  await WasmWorkspacePage.init(page);  
   await BaseWebSocketPage.mockRPC(page, "get-teams", "get-teams-tokens.json");
 });
 
 test.describe("Tokens: Sets Tab", () => {
-  const changeSetInput = async (sidebar, setName, finalKey = "Enter") => {
-    const setInput = sidebar.locator("input:focus");
-    await expect(setInput).toBeVisible();
-    await setInput.fill(setName);
-    await setInput.press(finalKey);
-  };
-
-  const createSet = async (sidebar, setName, finalKey = "Enter") => {
-    const tokensTabButton = sidebar
-      .getByRole("button", { name: "Add set" })
-      .click();
-
-    await changeSetInput(sidebar, setName, (finalKey = "Enter"));
-  };
 
   const assertEmptySetsList = async (el) => {
     const buttons = await el.getByRole("button").allTextContents();
@@ -42,7 +28,7 @@ test.describe("Tokens: Sets Tab", () => {
     page,
   }) => {
     const { tokenThemesSetsSidebar, tokenContextMenuForSet } =
-      await setupEmptyTokensFile(page);
+      await setupEmptyTokensFileRender(page);
 
     const tokensTabButton = tokenThemesSetsSidebar
       .getByRole("button", { name: "Add set" })
@@ -139,7 +125,7 @@ test.describe("Tokens: Sets Tab", () => {
     page,
   }) => {
     const { tokenThemesSetsSidebar, tokenContextMenuForSet } =
-      await setupEmptyTokensFile(page);
+      await setupEmptyTokensFileRender(page);
 
     const tokensTabButton = tokenThemesSetsSidebar
       .getByRole("button", { name: "Add set" })
@@ -176,7 +162,7 @@ test.describe("Tokens: Sets Tab", () => {
 
   test("Fold/Unfold set", async ({ page }) => {
     const { tokenThemesSetsSidebar, tokenSetGroupItems } =
-      await setupTokensFile(page);
+      await setupTokensFileRender(page);
 
     await expect(tokenThemesSetsSidebar).toBeVisible();
 
@@ -202,7 +188,7 @@ test.describe("Tokens: Sets Tab", () => {
 
   test("Change current theme", async ({ page }) => {
     const { tokenThemesSetsSidebar, tokenSetItems } =
-      await setupTokensFile(page);
+      await setupTokensFileRender(page);
 
     await expect(tokenSetItems.nth(1)).toHaveAttribute("aria-checked", "true");
     await expect(tokenSetItems.nth(2)).toHaveAttribute("aria-checked", "false");
@@ -219,7 +205,7 @@ test.describe("Tokens: Sets Tab", () => {
 
   test("Display active set and verify if is enabled", async ({ page }) => {
     const { tokenThemesSetsSidebar, tokensSidebar, tokenSetItems } =
-      await setupTokensFile(page);
+      await setupTokensFileRender(page);
 
     // Create set
     await tokenThemesSetsSidebar

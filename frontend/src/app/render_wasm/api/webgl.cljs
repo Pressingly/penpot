@@ -2,19 +2,19 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.render-wasm.api.webgl
   "WebGL utilities for pixel capture and rendering"
   (:require
    [app.common.logging :as log]
    [app.render-wasm.wasm :as wasm]
-   [app.util.dom :as dom]))
+   [promesa.core :as p]))
 
 (defn get-webgl-context
   "Gets the WebGL context from the WASM module"
   []
-  (when wasm/context-initialized?
+  (when (wasm/live?)
     (let [gl-obj (unchecked-get wasm/internal-module "GL")]
       (when gl-obj
         ;; Get the current WebGL context from Emscripten
@@ -134,35 +134,47 @@ void main() {
       (.bindTexture ^js gl (.-TEXTURE_2D ^js gl) nil)
       (.deleteTexture ^js gl texture))))
 
-(defn restore-previous-canvas-pixels
-  "Restores previous canvas pixels into the new canvas"
-  []
-  (when-let [previous-canvas-pixels wasm/canvas-pixels]
-    (when-let [gl wasm/gl-context]
-      (draw-imagedata-to-webgl gl previous-canvas-pixels)
-      (set! wasm/canvas-pixels nil))))
+(defn capture-canvas-snapshot
+  "Captures the current viewport canvas as an `ImageBitmap` and stores it in
+  `wasm/canvas-snapshot`. Unlike `canvas.toBlob` (which does a synchronous GPU
+  readback plus PNG encoding on the main thread), `createImageBitmap` resolves
+  asynchronously and stays on the GPU in accelerated browsers.
 
-(defn clear-canvas-pixels
+  Returns a promise resolving to the ImageBitmap (or nil)."
   []
-  (when wasm/canvas
-    (let [context wasm/gl-context]
-      (.clearColor ^js context 0 0 0 0.0)
-      (.clear ^js context (.-COLOR_BUFFER_BIT ^js context))
-      (.clear ^js context (.-DEPTH_BUFFER_BIT ^js context))
-      (.clear ^js context (.-STENCIL_BUFFER_BIT ^js context)))
-    (dom/set-style! wasm/canvas "filter" "none")
-    (let [controls-to-unblur (dom/query-all (dom/get-element "viewport-controls") ".blurrable")]
-      (run! #(dom/set-style! % "filter" "none") controls-to-unblur))
-    (set! wasm/canvas-pixels nil)))
+  (if-let [^js canvas wasm/canvas]
+    (-> (js/createImageBitmap canvas)
+        (p/then (fn [^js bitmap]
+                  (set! wasm/canvas-snapshot bitmap)
+                  bitmap))
+        (p/catch (fn [_] nil)))
+    (p/resolved nil)))
 
-(defn capture-canvas-pixels
-  "Captures the pixels of the viewport canvas"
-  []
-  (when wasm/canvas
-    (let [context wasm/gl-context
-          width (.-width wasm/canvas)
-          height (.-height wasm/canvas)
-          buffer (js/Uint8ClampedArray. (* width height  4))
-          _ (.readPixels ^js context 0 0 width height (.-RGBA ^js context) (.-UNSIGNED_BYTE ^js context) buffer)
-          image-data (js/ImageData. buffer width height)]
-      (set! wasm/canvas-pixels image-data))))
+(defn draw-thumbnail-to-canvas
+  "Loads an image from `uri` and draws it stretched to fill the WebGL canvas.
+   Returns a promise that resolves to true if drawn, false otherwise."
+  [uri]
+  (if (and uri wasm/canvas wasm/gl-context)
+    (p/create
+     (fn [resolve _reject]
+       (let [img (js/Image.)]
+         (set! (.-crossOrigin img) "anonymous")
+         (set! (.-onload img)
+               (fn []
+                 (if wasm/gl-context
+                   (let [gl     wasm/gl-context
+                         width  (.-width wasm/canvas)
+                         height (.-height wasm/canvas)
+                         ;; Draw image to an offscreen 2D canvas, scaled to fill
+                         canvas2d (js/OffscreenCanvas. width height)
+                         ctx2d   (.getContext canvas2d "2d")]
+                     (.drawImage ctx2d img 0 0 width height)
+                     (let [image-data (.getImageData ctx2d 0 0 width height)]
+                       (draw-imagedata-to-webgl gl image-data))
+                     (resolve true))
+                   (resolve false))))
+         (set! (.-onerror img)
+               (fn [_]
+                 (resolve false)))
+         (set! (.-src img) uri))))
+    (p/resolved false)))

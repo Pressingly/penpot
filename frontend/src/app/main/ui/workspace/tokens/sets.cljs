@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.ui.workspace.tokens.sets
   (:require
@@ -16,8 +16,8 @@
    [rumext.v2 :as mf]))
 
 (defn- on-select-token-set-click [id]
-  (st/emit! (dwtl/clear-tokens-paths))
-  (st/emit! (dwtl/set-selected-token-set-id id)))
+  (st/emit! (dwtl/clear-tokens-paths)
+            (dwtl/set-selected-token-set-id id)))
 
 (defn- on-toggle-token-set-click [name]
   (st/emit! (dwtl/toggle-token-set name)))

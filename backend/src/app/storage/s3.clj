@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.storage.s3
   "S3 Storage backend implementation."
@@ -316,7 +316,7 @@
     ;; to the filesystem and then read with buffered inputstream; if
     ;; not, read the contento into memory using bytearrays.
     (if (> ^long size (* 1024 1024 2))
-      (let [path (tmp/tempfile :prefix "penpot.storage.s3." :min-age "6h")
+      (let [path (tmp/temp-path :prefix "penpot.storage.s3." :min-age "6h")
             rxf  (AsyncResponseTransformer/toFile ^Path path)]
         (->> (.getObject ^S3AsyncClient client
                          ^GetObjectRequest gor

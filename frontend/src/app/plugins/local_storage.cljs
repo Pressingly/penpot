@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.plugins.local-storage
   (:require
@@ -60,7 +60,7 @@
         (u/not-valid plugin-id :removeItem "The key must be a string")
 
         :else
-        (.getItem ^js local-storage (prefix-key plugin-id key))))
+        (.removeItem ^js local-storage (prefix-key plugin-id key))))
 
     :getKeys
     (fn []

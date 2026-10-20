@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 //
-// Copyright (c) KALEIDOS INC
+// Copyright (c) KALEIDOS INC Sucursal en España SL
 
 @use "ds/typography.scss" as t;
 @use "ds/z-index.scss" as *;
@@ -25,14 +25,13 @@
 
 .menu {
   top: $sz-48;
-  left: calc(var(--right-sidebar-width) - $sz-40);
+  left: calc(var(--left-sidebar-width) - px2rem(44));
   inline-size: $sz-192;
 }
 
 .sub-menu {
-  left: calc(var(--right-sidebar-width) + $sz-154);
-  min-width: $sz-284;
-  width: 115%;
+  left: calc(var(--left-sidebar-width) + px2rem(150));
+  min-width: $sz-364;
 
   &.pos-1 {
     top: calc($sz-16 + $sz-32);
@@ -72,13 +71,13 @@
 
   &.plugins {
     max-height: calc(100vh - $sz-200);
-    overflow-x: hidden;
-    overflow-y: auto;
+    overflow: hidden auto;
   }
 }
 
 .base-menu-item {
   @include t.use-typography("body-small");
+
   display: grid;
   align-items: center;
   grid-template-columns: auto $sz-16 $sz-16;
@@ -99,6 +98,7 @@
 
   &.disabled {
     --menu-foreground-color: var(--color-foreground-secondary);
+
     pointer-events: none;
   }
 }
@@ -122,6 +122,7 @@
 
 .item-indicator {
   --menu-indicator-color: var(--color-foreground-secondary);
+
   grid-area: indicator;
   display: flex;
   align-items: center;
@@ -171,6 +172,7 @@
 
 .shortcut-key {
   @include t.use-typography("body-small");
+
   display: flex;
   align-items: center;
   justify-content: center;
@@ -178,4 +180,9 @@
   padding: var(--sp-xxs) px2rem(6);
   border-radius: $br-6;
   background-color: var(--menu-shortcut-background-color);
+}
+
+.customized-key {
+  background-color: var(--color-background-info);
+  color: var(--color-foreground-primary);
 }

@@ -6,6 +6,7 @@ pub type Rect = skia::Rect;
 pub type Matrix = skia::Matrix;
 pub type Vector = skia::Vector;
 pub type Point = skia::Point;
+pub type Size = skia::Size;
 
 const THRESHOLD: f32 = 0.001;
 
@@ -356,7 +357,7 @@ impl Bounds {
     }
 
     pub fn from_rect(r: &Rect) -> Self {
-        let [nw, ne, se, sw] = r.to_quad();
+        let [nw, ne, se, sw] = r.to_quad(None);
         Self::new(nw, ne, se, sw)
     }
 

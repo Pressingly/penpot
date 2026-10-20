@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns backend-tests.util-ssrf-test
   (:require
@@ -13,11 +13,25 @@
    [clojure.test :as t]))
 
 (t/deftest validate-url-allows-public-https
-  (t/is (true? (ssrf/safe-url? "https://example.com/foo")))
-  (t/is (true? (ssrf/safe-url? "https://example.com:8080/path?q=1"))))
+  (let [original ssrf/resolve-host]
+    (with-redefs [ssrf/resolve-host
+                  (fn [hostname]
+                    (if (= hostname "example.com")
+                      (into-array java.net.InetAddress
+                                  [(java.net.InetAddress/getByName "93.184.216.34")])
+                      (original hostname)))]
+      (t/is (true? (ssrf/safe-url? "https://example.com/foo")))
+      (t/is (true? (ssrf/safe-url? "https://example.com:8080/path?q=1"))))))
 
 (t/deftest validate-url-allows-public-http
-  (t/is (true? (ssrf/safe-url? "http://example.com/foo"))))
+  (let [original ssrf/resolve-host]
+    (with-redefs [ssrf/resolve-host
+                  (fn [hostname]
+                    (if (= hostname "example.com")
+                      (into-array java.net.InetAddress
+                                  [(java.net.InetAddress/getByName "93.184.216.34")])
+                      (original hostname)))]
+      (t/is (true? (ssrf/safe-url? "http://example.com/foo"))))))
 
 (t/deftest validate-url-blocks-disallowed-schemes
   (t/is (false? (ssrf/safe-url? "file:///etc/passwd")))
@@ -65,6 +79,24 @@
 (t/deftest validate-url-blocks-ipv6-ula
   (t/is (false? (ssrf/safe-url? "http://[fd00::1]/foo")))
   (t/is (false? (ssrf/safe-url? "http://[fc00::1]/foo"))))
+
+(t/deftest validate-url-blocks-nat64-encoded-metadata
+  ;; 64:ff9b::a9fe:a9fe embeds 169.254.169.254 (cloud metadata)
+  (t/is (false? (ssrf/safe-url? "http://[64:ff9b::a9fe:a9fe]/latest/meta-data/"))))
+
+(t/deftest validate-url-blocks-nat64-encoded-loopback
+  ;; 64:ff9b::7f00:0001 embeds 127.0.0.1
+  (t/is (false? (ssrf/safe-url? "http://[64:ff9b::7f00:1]/foo"))))
+
+(t/deftest validate-url-blocks-6to4-encoded-private
+  ;; 2002:a00:1:: embeds 10.0.0.1; 2002:c0a8:101:: embeds 192.168.1.1
+  (t/is (false? (ssrf/safe-url? "http://[2002:a00:1::1]/foo")))
+  (t/is (false? (ssrf/safe-url? "http://[2002:c0a8:101::1]/foo"))))
+
+(t/deftest validate-url-blocks-teredo-encoded-addresses
+  ;; Teredo server prefix 2001:0000::/32
+  (t/is (false? (ssrf/safe-url?
+                 "http://[2001:0000:4136:e378:8000:63bf:3fff:fdd2]/foo"))))
 
 (t/deftest validate-url-blocks-encoded-loopback
   ;; Decimal encoding of 127.0.0.1 = 2130706433
@@ -130,8 +162,42 @@
     (ssrf/validate-uri "http://127.0.0.1/foo")
     (t/is false "should have thrown")
     (catch Exception e
-      (t/is (= :validation (:type (ex-data e))))
-      (t/is (= :ssrf-blocked-target (:code (ex-data e)))))))
+      (let [data (ex-data e)]
+        (t/is (= :validation (:type data)))
+        (t/is (= :ssrf-blocked-target (:code data)))
+        (t/is (= "http://127.0.0.1/foo" (:uri data)))))))
+
+(t/deftest validate-url-throw-on-scheme
+  (try
+    (ssrf/validate-uri "file:///etc/passwd")
+    (t/is false "should have thrown")
+    (catch Exception e
+      (let [data (ex-data e)]
+        (t/is (= :validation (:type data)))
+        (t/is (= :ssrf-blocked-target (:code data)))
+        (t/is (= "file:///etc/passwd" (:uri data)))
+        (t/is (= "file" (:scheme data)))))))
+
+(t/deftest validate-url-throw-on-missing-host
+  (try
+    (ssrf/validate-uri "http:///path")
+    (t/is false "should have thrown")
+    (catch Exception e
+      (let [data (ex-data e)]
+        (t/is (= :validation (:type data)))
+        (t/is (= :ssrf-blocked-target (:code data)))
+        (t/is (= "http:///path" (:uri data)))
+        (t/is (nil? (:host data)))))))
+
+(t/deftest validate-url-throw-on-dns-failure
+  (try
+    (ssrf/validate-uri "http://nonexistent.invalid/foo")
+    (t/is false "should have thrown")
+    (catch Exception e
+      (let [data (ex-data e)]
+        (t/is (= :validation (:type data)))
+        (t/is (= :ssrf-blocked-target (:code data)))
+        (t/is (= "http://nonexistent.invalid/foo" (:uri data)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; http/req automatic SSRF validation

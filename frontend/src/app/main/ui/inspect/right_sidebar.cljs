@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.ui.inspect.right-sidebar
   (:require-macros [app.main.style :as stl])
@@ -187,7 +187,9 @@
                                :shapes shapes
                                :from from
                                :libraries libraries
-                               :file-id file-id}]
+                               :page-id page-id
+                               :file-id file-id
+                               :share-id share-id}]
               :computed
               [:> attributes* {:color-space color-space
                                :page-id page-id

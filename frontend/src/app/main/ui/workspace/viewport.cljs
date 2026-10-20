@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.ui.workspace.viewport
   (:require-macros [app.main.style :as stl])
@@ -30,7 +30,7 @@
    [app.main.ui.workspace.shapes :as shapes]
    [app.main.ui.workspace.shapes.path.editor :refer [path-editor*]]
    [app.main.ui.workspace.shapes.text.editor :as editor-v1]
-   [app.main.ui.workspace.shapes.text.text-edition-outline :refer [text-edition-outline]]
+   [app.main.ui.workspace.shapes.text.text-edition-outline :refer [text-edition-outline*]]
    [app.main.ui.workspace.shapes.text.v2-editor :as editor-v2]
    [app.main.ui.workspace.shapes.text.viewport-texts-html :as stvh]
    [app.main.ui.workspace.top-toolbar :refer [top-toolbar*]]
@@ -53,7 +53,9 @@
    [app.main.ui.workspace.viewport.selection :as selection]
    [app.main.ui.workspace.viewport.snap-distances :as snap-distances]
    [app.main.ui.workspace.viewport.snap-points :as snap-points]
-   [app.main.ui.workspace.viewport.top-bar :refer [grid-edition-bar* path-edition-bar* view-only-bar*]]
+   [app.main.ui.workspace.viewport.top-bar :refer [grid-edition-bar*
+                                                   path-edition-bar*
+                                                   view-only-bar*]]
    [app.main.ui.workspace.viewport.utils :as utils]
    [app.main.ui.workspace.viewport.viewport-ref :refer [create-viewport-ref]]
    [app.main.ui.workspace.viewport.widgets :as widgets]
@@ -97,6 +99,7 @@
 
         {:keys [options-mode
                 tooltip
+                preview-id
                 show-distances?
                 picking-color?]}
         wglobal
@@ -199,7 +202,7 @@
 
         on-click          (actions/on-click hover selected edition path-drawing? drawing-tool space? selrect z?)
         on-context-menu   (actions/on-context-menu hover hover-ids read-only?)
-        on-double-click   (actions/on-double-click hover hover-ids hover-top-frame-id path-drawing? base-objects edition drawing-tool z? read-only?)
+        on-double-click   (actions/on-double-click hover hover-ids selected hover-top-frame-id path-drawing? base-objects edition drawing-tool z? read-only?)
 
         comp-inst-ref     (mf/use-ref false)
         on-drag-enter     (actions/on-drag-enter comp-inst-ref)
@@ -222,7 +225,9 @@
         on-frame-select   (actions/on-frame-select selected read-only?)
 
         disable-events?          (contains? layout :comments)
-        show-comments?           (= drawing-tool :comments)
+        comments-mode?           (= drawing-tool :comments)
+        show-comments?           (or comments-mode?
+                                     (contains? layout :display-comments))
         show-cursor-tooltip?     tooltip
         show-draw-area?          drawing-obj
         show-gradient-handlers?  (= (count selected) 1)
@@ -260,7 +265,8 @@
         show-rulers?             (and (contains? layout :rulers) (not hide-ui?))
 
 
-        disabled-guides?         (or drawing-tool transform path-drawing? path-editing? @space? @mod?)
+        disabled-guides?         (or drawing-tool transform path-drawing? path-editing? @space? @mod?
+                                     (contains? layout :lock-guides))
 
         single-select?           (= (count selected-shapes) 1)
 
@@ -307,29 +313,34 @@
     (hooks/setup-viewport-size vport viewport-ref)
     (hooks/setup-cursor cursor alt? mod? space? panning drawing-tool path-drawing? path-editing? z? read-only?)
     (hooks/setup-keyboard alt? mod? space? z? shift?)
-    (hooks/setup-hover-shapes page-id move-stream base-objects transform selected mod? hover measure-hover
-                              hover-ids hover-top-frame-id @hover-disabled? focus zoom show-measures?)
+    (hooks/setup-hover-shapes page-id move-stream base-objects selected mod? hover measure-hover
+                              hover-ids hover-top-frame-id @hover-disabled? focus zoom show-measures? read-only? transform)
     (hooks/setup-viewport-modifiers modifiers base-objects)
     (hooks/setup-shortcuts path-editing? path-drawing? text-editing? grid-editing?)
     (hooks/setup-active-frames base-objects hover-ids selected active-frames zoom transform vbox)
 
-    [:div {:class (stl/css :viewport) :style #js {"--zoom" zoom} :data-testid "viewport"}
-     (when (:can-edit permissions)
-       (if read-only?
-         [:> view-only-bar* {}]
-         [:*
-          (when-not hide-ui?
-            [:> top-toolbar* {:layout layout}])
+    [:div {:class (stl/css :viewport) :style {"--zoom" zoom} :data-testid "viewport"}
+     (cond
+       (some? preview-id)
+       nil
 
-          (when (and ^boolean path-editing?
-                     ^boolean single-select?)
-            [:> path-edition-bar* {:shape editing-shape
-                                   :edit-path-state edit-path-state
-                                   :layout layout}])
+       (and read-only? (:can-edit permissions))
+       [:> view-only-bar* {}]
 
-          (when (and ^boolean grid-editing?
-                     ^boolean single-select?)
-            [:> grid-edition-bar* {:shape editing-shape}])]))
+       :else
+       [:*
+        (when-not hide-ui?
+          [:> top-toolbar* {:layout layout}])
+
+        (when (and ^boolean path-editing?
+                   ^boolean single-select?)
+          [:> path-edition-bar* {:shape editing-shape
+                                 :edit-path-state edit-path-state
+                                 :layout layout}])
+
+        (when (and ^boolean grid-editing?
+                   ^boolean single-select?)
+          [:> grid-edition-bar* {:shape editing-shape}])])
 
      [:div {:class (stl/css :viewport-overlays)}
       ;; The behaviour inside a foreign object is a bit different that in plain HTML so we wrap
@@ -352,13 +363,12 @@
                                       :page-id page-id
                                       :file-id file-id
                                       :vport vport
-                                      :zoom zoom}])
+                                      :zoom zoom
+                                      :show-rulers show-rulers?}])
 
       (when picking-color?
-        [:& pixel-overlay/pixel-overlay {:vport vport
-                                         :vbox vbox
-                                         :layout layout
-                                         :viewport-ref viewport-ref}])]
+        [:> pixel-overlay/pixel-overlay* {:vport vport
+                                          :viewport-ref viewport-ref}])]
 
      [:svg
       {:id "render"
@@ -389,7 +399,7 @@
         [:stop {:offset "100%" :stop-color (str "color-mix(in srgb-linear, " background " 90%, #777)") :stop-opacity 1}]]]
 
       (when (dbg/enabled? :show-export-metadata)
-        [:& use/export-page {:page page}])
+        [:> use/export-page* {:page page}])
 
       ;; We need a "real" background shape so layer transforms work properly in firefox
       [:rect {:width (:width vbox 0)
@@ -403,7 +413,9 @@
         ;; Render root shape
         [:& shapes/root-shape {:key (str page-id)
                                :objects base-objects
-                               :active-frames @active-frames}]]]]
+                               :active-frames @active-frames
+                               ;; disable thumbnails when previewing a version
+                               :disable-thumbnails (some? preview-id)}]]]]
 
      [:svg.viewport-controls
       {:xmlns "http://www.w3.org/2000/svg"
@@ -454,7 +466,7 @@
                     (last))
                outlined-frame (get objects outlined-frame-id)]
            [:*
-            [:& outline/shape-outlines
+            [:> outline/shape-outlines*
              {:objects base-objects
               :hover #{outlined-frame-id}
               :zoom zoom
@@ -462,13 +474,13 @@
 
             (when (ctl/any-layout? outlined-frame)
               [:g.ghost-outline
-               [:& outline/shape-outlines
+               [:> outline/shape-outlines*
                 {:objects base-objects
                  :selected selected
                  :zoom zoom}]])]))
 
        (when show-outlines?
-         [:& outline/shape-outlines
+         [:> outline/shape-outlines*
           {:objects base-objects
            :selected selected
            :hover #{(:id @hover) @frame-hover}
@@ -488,13 +500,23 @@
            :on-context-menu on-menu-selected}])
 
        (when show-text-editor?
-         [:& text-edition-outline
+         [:> text-edition-outline*
           {:shape (get base-objects edition)
            :zoom zoom
            :modifiers modifiers}])
 
+       (when (and (seq selected-shapes)
+                  (not transform)
+                  (not text-editing?)
+                  (not edition)
+                  (not read-only?)
+                  (not mode-inspect?))
+         [:> msr/selection-size-badge*
+          {:shapes selected-shapes
+           :zoom zoom}])
+
        (when show-measures?
-         [:& msr/measurement
+         [:> msr/measurement*
           {:bounds vbox
            :selected-shapes selected-shapes
            :frame selected-frame
@@ -503,7 +525,7 @@
 
        ;; Show distances during movement with ALT
        (when (and (= transform :move) @alt? (seq selected-shapes))
-         [:& msr/measurement
+         [:> msr/measurement*
           {:bounds vbox
            :selected-shapes selected-shapes
            :frame selected-frame
@@ -515,40 +537,40 @@
              duplicated-info (get-in @(deref state-var) [:workspace-local :duplicated])]
          (when (and (= transform :move) @alt? duplicated-info)
            [:g.duplicated-distance
-            [:& msr/distance-display
+            [:> msr/distance-display*
              {:from (get duplicated-info :selrect-original)
               :to (get duplicated-info :selrect-duplicated)
               :zoom zoom
               :bounds vbox}]]))
 
        (when show-padding?
-         [:& mfc/padding-control
+         [:> mfc/padding-control*
           {:frame first-shape
            :hover @frame-hover
            :zoom zoom
-           :alt? @alt?
-           :shift? @shift?
+           :is-alt @alt?
+           :is-shift @shift?
            :on-move-selected on-move-selected
            :on-context-menu on-menu-selected}])
 
        (when show-padding?
-         [:& mfc/gap-control
+         [:> mfc/gap-control*
           {:frame first-shape
            :hover @frame-hover
            :zoom zoom
-           :alt? @alt?
-           :shift? @shift?
+           :is-alt @alt?
+           :is-shift @shift?
            :on-move-selected on-move-selected
            :on-context-menu on-menu-selected}])
 
        (when show-margin?
-         [:& mfc/margin-control
+         [:> mfc/margin-control*
           {:shape first-shape
            :parent selected-frame
            :hover @frame-hover
            :zoom zoom
-           :alt? @alt?
-           :shift? @shift?}])
+           :is-alt @alt?
+           :is-shift @shift?}])
 
        [:> widgets/frame-titles*
         {:objects base-objects
@@ -578,7 +600,7 @@
            :tool drawing-tool}])
 
        (when show-grids?
-         [:& frame-grid/frame-grid
+         [:> frame-grid/frame-grid*
           {:zoom zoom
            :selected selected
            :transform transform
@@ -589,7 +611,7 @@
                                   :zoom zoom}])
 
        (when show-snap-points?
-         [:& snap-points/snap-points
+         [:> snap-points/snap-points*
           {:layout layout
            :transform transform
            :drawing drawing-obj
@@ -600,7 +622,7 @@
            :focus focus}])
 
        (when show-snap-distance?
-         [:& snap-distances/snap-distances
+         [:> snap-distances/snap-distances*
           {:layout layout
            :zoom zoom
            :transform transform
@@ -626,14 +648,14 @@
           {:page-id page-id}])
 
        (when-not hide-ui?
-         [:& rulers/rulers
+         [:> rulers/rulers*
           {:zoom zoom
            :zoom-inverse zoom-inverse
            :vbox vbox
            :selected-shapes selected-shapes
            :offset-x offset-x
            :offset-y offset-y
-           :show-rulers? show-rulers?}])
+           :show-rulers show-rulers?}])
 
        (when (and show-rulers? show-grids?)
          [:> guides/viewport-guides*
@@ -646,34 +668,34 @@
 
        ;; DEBUG LAYOUT DROP-ZONES
        (when (dbg/enabled? :layout-drop-zones)
-         [:& wvd/debug-drop-zones {:selected-shapes selected-shapes
-                                   :objects base-objects
-                                   :hover-top-frame-id @hover-top-frame-id
-                                   :zoom zoom}])
+         [:> wvd/debug-drop-zones* {:selected-shapes selected-shapes
+                                    :objects base-objects
+                                    :hover-top-frame-id @hover-top-frame-id
+                                    :zoom zoom}])
 
        (when (dbg/enabled? :layout-content-bounds)
-         [:& wvd/debug-content-bounds {:selected-shapes selected-shapes
-                                       :objects base-objects
-                                       :hover-top-frame-id @hover-top-frame-id
-                                       :zoom zoom}])
+         [:> wvd/debug-content-bounds* {:selected-shapes selected-shapes
+                                        :objects base-objects
+                                        :hover-top-frame-id @hover-top-frame-id
+                                        :zoom zoom}])
 
        (when (dbg/enabled? :layout-lines)
-         [:& wvd/debug-layout-lines {:selected-shapes selected-shapes
-                                     :objects base-objects
-                                     :hover-top-frame-id @hover-top-frame-id
-                                     :zoom zoom}])
-
-       (when (dbg/enabled? :parent-bounds)
-         [:& wvd/debug-parent-bounds {:selected-shapes selected-shapes
+         [:> wvd/debug-layout-lines* {:selected-shapes selected-shapes
                                       :objects base-objects
                                       :hover-top-frame-id @hover-top-frame-id
                                       :zoom zoom}])
 
+       (when (dbg/enabled? :parent-bounds)
+         [:> wvd/debug-parent-bounds* {:selected-shapes selected-shapes
+                                       :objects base-objects
+                                       :hover-top-frame-id @hover-top-frame-id
+                                       :zoom zoom}])
+
        (when (dbg/enabled? :grid-layout)
-         [:& wvd/debug-grid-layout {:selected-shapes selected-shapes
-                                    :objects base-objects
-                                    :hover-top-frame-id @hover-top-frame-id
-                                    :zoom zoom}])
+         [:> wvd/debug-grid-layout* {:selected-shapes selected-shapes
+                                     :objects base-objects
+                                     :hover-top-frame-id @hover-top-frame-id
+                                     :zoom zoom}])
 
        (when show-selection-handlers?
          [:g.selection-handlers {:clipPath "url(#clip-handlers)"}
@@ -690,13 +712,13 @@
                   :disabled (or drawing-tool @space?)}])))
 
           (when show-prototypes?
-            [:& interactions/interactions
+            [:> interactions/interactions*
              {:selected selected
               :page-id page-id
               :zoom zoom
               :objects objects-modified
               :current-transform transform
-              :hover-disabled? hover-disabled?}])])
+              :is-hover-disabled hover-disabled?}])])
 
        (when show-gradient-handlers?
          [:> gradients/gradient-handlers*
@@ -727,7 +749,7 @@
               :view-only true}]))]
 
        [:g.scrollbar-wrapper {:clipPath "url(#clip-handlers)"}
-        [:& scroll-bars/viewport-scrollbars
+        [:> scroll-bars/viewport-scrollbars*
          {:objects base-objects
           :zoom zoom
           :vbox vbox

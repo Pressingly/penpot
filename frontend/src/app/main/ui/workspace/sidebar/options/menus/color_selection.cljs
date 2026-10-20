@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.ui.workspace.sidebar.options.menus.color-selection
   (:require-macros [app.main.style :as stl])
@@ -69,7 +69,8 @@
         ;; Unique color attribute maps
         all-colors (distinct (mapv :attrs data))
 
-        ;; ;; Split into: library colors, token colors, and plain colors
+        ;; Split into mutually exclusive groups:
+        ;; token-colors take priority; library-colors and plain colors exclude tokens
         token-colors   (filterv :token-name all-colors)
         library-colors (filterv (fn [c] (and (some? (:ref-id c)) (nil? (:token-name c)))) all-colors)
         colors         (filterv (fn [c] (and (nil? (:ref-id c)) (nil? (:token-name c)))) all-colors)]
@@ -89,7 +90,7 @@
                                     (d/without-nils))
         prev-color              (d/seek (partial get groups) prev-colors)
         color-operations-old    (get groups old-color)
-        color-operations-prev   (get groups prev-colors)
+        color-operations-prev   (get groups prev-color)
         color-operations        (or color-operations-prev color-operations-old)
         old-color               (or prev-color old-color)]
     [color-operations old-color]))
@@ -114,11 +115,17 @@
         ;;  TODO: Review if this is still necessary.
         prev-colors-ref  (mf/use-ref nil)
 
+        ;; Always keep this ref pointing to the latest groups so that on-change
+        ;; (which may be captured stale by the colorpicker's rx subscription) can
+        ;; still read the current groups and find the correct color operations.
+        groups-ref       (mf/use-ref nil)
+        _                (mf/set-ref-val! groups-ref groups)
+
         on-change
         (mf/use-fn
-         (mf/deps groups)
          (fn [old-color new-color from-picker?]
-           (let [prev-colors (mf/ref-val prev-colors-ref)
+           (let [groups (mf/ref-val groups-ref)
+                 prev-colors (mf/ref-val prev-colors-ref)
                  [color-operations old-color] (retrieve-color-operations groups old-color prev-colors)]
 
              ;;  TODO: Review if this is still necessary.
@@ -187,9 +194,10 @@
                  [color-operations _] (retrieve-color-operations groups old-color prev-colors)]
              (mf/set-ref-val! prev-colors-ref
                               (conj prev-colors color))
-             (st/emit! (dwta/apply-token-on-selected color-operations token)))))]
+             (st/emit! (dwta/apply-token-on-color-selected color-operations token)))))]
 
-    [:div {:class (stl/css :element-set)}
+    [:section {:class (stl/css :element-set)
+               :aria-label (tr "workspace.options.selection-color.section")}
      [:div {:class (stl/css :element-title)}
       [:> title-bar* {:collapsable  has-colors?
                       :collapsed    (not open?)
@@ -239,8 +247,7 @@
         [:div {:class (stl/css :selected-color-group)}
          (let [token-color-extract (cond->> token-colors (not @expand-token-color) (take 3))]
            (for [[index token-color] (d/enumerate token-color-extract)]
-             (let [color {:color (:color token-color)
-                          :opacity (:opacity token-color)}]
+             (let [color (dissoc token-color :token-name :has-token-applied)]
                [:> color-row*
                 {:key index
                  :color color

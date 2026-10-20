@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.util.text-editor
   "Draft related abstraction functions."
@@ -60,12 +60,14 @@
 
 (defn get-editor-block-data
   [block]
-  (-> (.getData ^js block)
-      (immutable-map->map)))
+  (when (some? block)
+    (-> (.getData ^js block)
+        (immutable-map->map))))
 
 (defn get-editor-block-type
   [block]
-  (.getType ^js block))
+  (when (some? block)
+    (.getType ^js block)))
 
 (defn get-editor-current-block-data
   [state]

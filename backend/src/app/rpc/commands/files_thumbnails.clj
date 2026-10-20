@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.rpc.commands.files-thumbnails
   (:require
@@ -21,7 +21,7 @@
    [app.db.sql :as-alias sql]
    [app.loggers.audit :as-alias audit]
    [app.loggers.webhooks :as-alias webhooks]
-   [app.media :as media]
+   [app.media.validation :as media.v]
    [app.rpc :as-alias rpc]
    [app.rpc.climit :as-alias climit]
    [app.rpc.commands.files :as files]
@@ -85,7 +85,7 @@
    ::sm/result [:map-of [:string {:max 250}] [:string {:max 250}]]}
   [{:keys [::db/pool] :as cfg} {:keys [::rpc/profile-id file-id tag] :as params}]
   (dm/with-open [conn (db/open pool)]
-    (files/check-read-permissions! conn profile-id file-id)
+    (files/check-read-permissions! cfg profile-id file-id)
     (if tag
       (get-object-thumbnails-by-tag conn file-id tag)
       (get-object-thumbnails conn file-id))))
@@ -197,9 +197,9 @@
    ::sm/params schema:get-file-data-for-thumbnail
    ::sm/result schema:partial-file}
   [cfg {:keys [::rpc/profile-id file-id strip-frames-with-thumbnails] :as params}]
-  (db/run! cfg (fn [{:keys [::db/conn] :as cfg}]
-                 (files/check-read-permissions! conn profile-id file-id)
-                 (let [team (teams/get-team conn
+  (db/run! cfg (fn [cfg]
+                 (files/check-read-permissions! cfg profile-id file-id)
+                 (let [team (teams/get-team cfg
                                             :profile-id profile-id
                                             :file-id file-id)
                        file (bfc/get-file cfg file-id
@@ -275,7 +275,7 @@
   [:map {:title "create-file-object-thumbnail"}
    [:file-id ::sm/uuid]
    [:object-id [:string {:max 250}]]
-   [:media media/schema:upload]
+   [:media media.v/schema:upload]
    [:tag {:optional true} [:string {:max 50}]]])
 
 (sv/defmethod ::create-file-object-thumbnail
@@ -289,8 +289,8 @@
    ::sm/params schema:create-file-object-thumbnail}
 
   [cfg {:keys [::rpc/profile-id file-id object-id media tag]}]
-  (media/validate-media-type! media)
-  (media/validate-media-size! media)
+  (media.v/validate-media-type! media)
+  (media.v/validate-media-size! media)
 
   (db/run! cfg files/check-edition-permissions! profile-id file-id)
   (when-let [file (files/get-minimal-file cfg file-id {::db/check-deleted false})]
@@ -311,10 +311,29 @@
                  :object-id object-id
                  :tag tag})))
 
+(defn- delete-file-object-thumbnails!
+  "Soft-deletes multiple object thumbnails in a single UPDATE statement
+   with RETURNING, then touches all returned media objects."
+  [{:keys [::db/conn ::sto/storage]} object-ids]
+  (let [ids  (db/create-array conn "text" (seq object-ids))
+        sql  (str/concat
+              "UPDATE file_tagged_object_thumbnail"
+              " SET deleted_at = now()"
+              " WHERE object_id = ANY(?)"
+              "   AND deleted_at IS NULL"
+              " RETURNING media_id")
+        rows (db/exec! conn [sql ids])]
+    (doseq [{:keys [media-id]} rows]
+      (sto/touch-object! storage media-id))))
+
 (def ^:private schema:delete-file-object-thumbnail
   [:map {:title "delete-file-object-thumbnail"}
    [:file-id ::sm/uuid]
    [:object-id [:string {:max 250}]]])
+
+(def ^:private schema:delete-file-object-thumbnails
+  [:map {:title "delete-file-object-thumbnails"}
+   [:object-ids [:vector {:max 200} [:string {:max 250}]]]])
 
 (sv/defmethod ::delete-file-object-thumbnail
   {::doc/added "1.19"
@@ -329,69 +348,38 @@
                         (delete-file-object-thumbnail! file-id object-id))
                     nil)))
 
+(sv/defmethod ::delete-file-object-thumbnails
+  {::doc/added "1.19"
+   ::doc/module :files
+   ::climit/id [[:file-thumbnail-ops/by-profile ::rpc/profile-id]
+                [:file-thumbnail-ops/global]]
+   ::sm/params schema:delete-file-object-thumbnails
+   ::audit/skip true}
+  [cfg {:keys [::rpc/profile-id object-ids]}]
+  (when (seq object-ids)
+    ;; Extract unique file-ids from object-ids for permission checks
+    (let [file-ids (->> object-ids
+                        (map thc/get-file-id)
+                        (into #{}))]
+      ;; Check permissions for each unique file using a single connection
+      (db/run! cfg (fn [{:keys [::db/conn]}]
+                     (doseq [file-id file-ids]
+                       (files/check-edition-permissions! conn profile-id file-id))))
+      ;; Delete all matching thumbnails in one transaction
+      (db/tx-run! cfg (fn [{:keys [::db/conn] :as cfg}]
+                        (-> cfg
+                            (update ::sto/storage sto/configure conn)
+                            (delete-file-object-thumbnails! object-ids))
+                        nil)))))
+
 ;; --- MUTATION COMMAND: create-file-thumbnail
-
-(defn- create-file-thumbnail
-  [{:keys [::db/conn ::sto/storage] :as cfg} {:keys [file-id revn props media] :as params}]
-  (media/validate-media-type! media)
-  (media/validate-media-size! media)
-
-  (let [file  (bfc/get-file cfg file-id
-                            :include-deleted? true
-                            :load-data? false)
-
-        props (db/tjson (or props {}))
-        path  (:path media)
-        mtype (:mtype media)
-        hash  (sto/calculate-hash path)
-        data  (-> (sto/content path)
-                  (sto/wrap-with-hash hash))
-        tnow  (ct/now)
-
-        media (sto/put-object! storage
-                               {::sto/content data
-                                ::sto/deduplicate? true
-                                ::sto/touched-at tnow
-                                :content-type mtype
-                                :bucket "file-thumbnail"})
-
-        thumb (db/get* conn :file-thumbnail
-                       {:file-id file-id
-                        :revn revn}
-                       {::db/remove-deleted false
-                        ::sql/for-update true})]
-
-    (if (some? thumb)
-      (do
-        ;; We mark the old media id as touched if it does not match
-        (when (not= (:id media) (:media-id thumb))
-          (sto/touch-object! storage (:media-id thumb)))
-
-        (db/update! conn :file-thumbnail
-                    {:media-id (:id media)
-                     :deleted-at (:deleted-at file)
-                     :updated-at tnow
-                     :props props}
-                    {:file-id file-id
-                     :revn revn}))
-
-      (db/insert! conn :file-thumbnail
-                  {:file-id file-id
-                   :revn revn
-                   :created-at tnow
-                   :updated-at tnow
-                   :deleted-at (:deleted-at file)
-                   :props props
-                   :media-id (:id media)}))
-
-    media))
 
 (def ^:private
   schema:create-file-thumbnail
   [:map {:title "create-file-thumbnail"}
    [:file-id ::sm/uuid]
    [:revn ::sm/int]
-   [:media media/schema:upload]])
+   [:media media.v/schema:upload]])
 
 (sv/defmethod ::create-file-thumbnail
   "Creates or updates the file thumbnail. Mainly used for paint the
@@ -405,15 +393,57 @@
    ::rtry/when rtry/conflict-exception?
    ::sm/params schema:create-file-thumbnail}
 
-  ;; FIXME: do not run the thumbnail upload inside a transaction
-
   [cfg {:keys [::rpc/profile-id file-id] :as params}]
-  (db/tx-run! cfg (fn [{:keys [::db/conn] :as cfg}]
-                    ;; TODO For now we check read permissions instead of write,
-                    ;; to allow viewer users to update thumbnails. We might
-                    ;; review this approach on the future.
-                    (files/check-read-permissions! conn profile-id file-id)
-                    (when-not (db/read-only? conn)
-                      (let [media (create-file-thumbnail cfg params)]
-                        {:uri (files/resolve-public-uri (:id media))
-                         :id (:id media)})))))
+  (media.v/validate-media-type! (:media params))
+  (media.v/validate-media-size! (:media params))
+
+  (db/run! cfg files/check-edition-permissions! profile-id file-id)
+
+  (when-not (db/read-only? (::db/pool cfg))
+    (let [storage (::sto/storage cfg)
+          file    (bfc/get-file cfg file-id :include-deleted? true :load-data? false)
+          props   (db/tjson (or (:props params) {}))
+          {:keys [path mtype]} (:media params)
+          hash    (sto/calculate-hash path)
+          data    (-> (sto/content path)
+                      (sto/wrap-with-hash hash))
+          tnow    (ct/now)
+
+          media   (sto/put-object! storage
+                                   {::sto/content data
+                                    ::sto/deduplicate? true
+                                    ::sto/touched-at tnow
+                                    :content-type mtype
+                                    :bucket "file-thumbnail"})
+
+          revn    (:revn params)
+
+          result  (db/tx-run! cfg
+                              (fn [{:keys [::db/conn]}]
+                                (let [thumb (db/get* conn :file-thumbnail
+                                                     {:file-id file-id :revn revn}
+                                                     {::db/remove-deleted false
+                                                      ::sql/for-update true})]
+                                  (if (some? thumb)
+                                    (do
+                                      (when (not= (:id media) (:media-id thumb))
+                                        (sto/touch-object! storage (:media-id thumb)))
+                                      (db/update! conn :file-thumbnail
+                                                  {:media-id (:id media)
+                                                   :deleted-at (:deleted-at file)
+                                                   :updated-at tnow
+                                                   :props props}
+                                                  {:file-id file-id :revn revn}))
+                                    (db/insert! conn :file-thumbnail
+                                                {:file-id file-id
+                                                 :revn revn
+                                                 :created-at tnow
+                                                 :updated-at tnow
+                                                 :deleted-at (:deleted-at file)
+                                                 :props props
+                                                 :media-id (:id media)}))
+                                  media)))]
+
+      (when result
+        {:uri (files/resolve-public-uri (:id result))
+         :id (:id result)}))))

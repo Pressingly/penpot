@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.data.style-dictionary
   (:require
@@ -108,7 +108,7 @@
       {:errors [(wte/error-with-value :error.style-dictionary/invalid-token-value value)]})))
 
 (defn- parse-sd-token-general-value
-  "Parses `value` of a number `sd-token` into a map like `{:value 1 :unit \"px\"}`.
+  "Parses `value` of a `sd-token` into a map like `{:value 1 :unit \"px\"}`.
   If the `value` is not parseable and/or has missing references returns a map with `:errors`."
   [value]
   (let [parsed-value  (cfo/parse-token-value value)
@@ -302,36 +302,38 @@
       {:errors [(wte/error-with-value :error.style-dictionary/invalid-token-value-typography value)]}
 
       :else
-      (let [converted (js->clj value :keywordize-keys true)
-            add-keyed-errors (fn [typography-map k errors]
-                               (update typography-map :errors concat (map #(assoc % :typography-key k) errors)))
-            ;; Separate line-height to process in an extra step
-            without-line-height (dissoc converted :line-height)
-            valid-typography (reduce
-                              (fn [acc [k v]]
-                                (let [{:keys [errors value]} (parse-atomic-typography-value k v)]
-                                  (if (seq errors)
-                                    (add-keyed-errors acc k errors)
-                                    (assoc-in acc [:value k] (or value v)))))
-                              {:value {}}
-                              without-line-height)
+      (let [converted (js->clj value :keywordize-keys true)]
+        (if-not (map? converted)
+          {:errors [(wte/error-with-value :error.style-dictionary/invalid-token-value-typography value)]}
+          (let [add-keyed-errors (fn [typography-map k errors]
+                                   (update typography-map :errors concat (map #(assoc % :typography-key k) errors)))
+                ;; Separate line-height to process in an extra step
+                without-line-height (dissoc converted :line-height)
+                valid-typography (reduce
+                                  (fn [acc [k v]]
+                                    (let [{:keys [errors value]} (parse-atomic-typography-value k v)]
+                                      (if (seq errors)
+                                        (add-keyed-errors acc k errors)
+                                        (assoc-in acc [:value k] (or value v)))))
+                                  {:value {}}
+                                  without-line-height)
 
-            ;; Calculate line-height based on the resolved font-size and add it back to the map
-            line-height (when-let [line-height (:line-height converted)]
-                          (-> (parse-sd-token-typography-line-height
-                               line-height
-                               (get-in valid-typography [:value :font-size])
-                               (get-in valid-typography [:errors :font-size]))))
-            valid-typography (cond
-                               (:errors line-height)
-                               (add-keyed-errors valid-typography :line-height (:errors line-height))
+                ;; Calculate line-height based on the resolved font-size and add it back to the map
+                line-height (when-let [line-height (:line-height converted)]
+                              (-> (parse-sd-token-typography-line-height
+                                   line-height
+                                   (get-in valid-typography [:value :font-size])
+                                   (get-in valid-typography [:errors :font-size]))))
+                valid-typography (cond
+                                   (:errors line-height)
+                                   (add-keyed-errors valid-typography :line-height (:errors line-height))
 
-                               line-height
-                               (assoc-in valid-typography [:value :line-height] line-height)
+                                   line-height
+                                   (assoc-in valid-typography [:value :line-height] line-height)
 
-                               :else
-                               valid-typography)]
-        valid-typography))))
+                                   :else
+                                   valid-typography)]
+            valid-typography))))))
 
 (defn collect-typography-errors [token]
   (group-by :typography-key (:errors token)))
@@ -485,32 +487,36 @@
   [sd-tokens get-origin-token]
   (reduce
    (fn [acc ^js sd-token]
-     (let [origin-token (get-origin-token sd-token)
-           value (.-value sd-token)
-           parsed-token-value (or
-                               (parse-atomic-typography-value (:type origin-token) value)
-                               (case (:type origin-token)
-                                 :typography (parse-composite-typography-value value)
-                                 :shadow (parse-sd-token-shadow-value value)
-                                 :color (parse-sd-token-color-value value)
-                                 :opacity (parse-sd-token-opacity-value value)
-                                 :stroke-width (parse-sd-token-stroke-width-value value)
-                                 :number (parse-sd-token-number-value value)
-                                 (parse-sd-token-general-value value)))
-           output-token (cond (:errors parsed-token-value)
-                              (merge origin-token parsed-token-value)
+     (let [origin-token (get-origin-token sd-token)]
+       (if (nil? origin-token)
+         ;; Skip group nodes that StyleDictionary returns alongside
+         ;; actual tokens — they have no matching origin token.
+         acc
+         (let [value (.-value sd-token)
+               parsed-token-value (or
+                                   (parse-atomic-typography-value (:type origin-token) value)
+                                   (case (:type origin-token)
+                                     :typography (parse-composite-typography-value value)
+                                     :shadow (parse-sd-token-shadow-value value)
+                                     :color (parse-sd-token-color-value value)
+                                     :opacity (parse-sd-token-opacity-value value)
+                                     :stroke-width (parse-sd-token-stroke-width-value value)
+                                     :number (parse-sd-token-number-value value)
+                                     (parse-sd-token-general-value value)))
+               output-token (cond (:errors parsed-token-value)
+                                  (merge origin-token parsed-token-value)
 
-                              (:warnings parsed-token-value)
-                              (assoc origin-token
-                                     :resolved-value (:value parsed-token-value)
-                                     :warnings (:warnings parsed-token-value)
-                                     :unit (:unit parsed-token-value))
+                                  (:warnings parsed-token-value)
+                                  (assoc origin-token
+                                         :resolved-value (:value parsed-token-value)
+                                         :warnings (:warnings parsed-token-value)
+                                         :unit (:unit parsed-token-value))
 
-                              :else
-                              (assoc origin-token
-                                     :resolved-value (:value parsed-token-value)
-                                     :unit (:unit parsed-token-value)))]
-       (assoc acc (:name output-token) output-token)))
+                                  :else
+                                  (assoc origin-token
+                                         :resolved-value (:value parsed-token-value)
+                                         :unit (:unit parsed-token-value)))]
+           (assoc acc (:name output-token) output-token)))))
    {} sd-tokens))
 
 (defprotocol IStyleDictionary
@@ -551,12 +557,65 @@
   (.. sd-token -original -name))
 
 (defn sd-token-uuid [^js sd-token]
-  (uuid (.-uuid (.. sd-token -original -id))))
+  (when-let [id (.. sd-token -original -id)]
+    (uuid (.-uuid id))))
+
+(defn- merge-name-collisions
+  "Re-attach tokens that `ctob/tokens-tree` / `backtrace-tokens-tree`
+  dropped because one token's name is a strict prefix of another's
+  (e.g. `a` vs `a.b` coming from two active sets). `assoc-in` in the
+  tree builder collapses such pairs, so StyleDictionary only sees one
+  of them and the other vanishes from the resolved map — and from the
+  sidebar, even though it still lives in the library (#9584).
+
+  We tag each dropped token with `:error.token/name-collision` so the
+  existing token-pill error rendering picks them up as broken pills,
+  matching the expected behaviour in the issue. Resolved tokens are
+  left untouched."
+  [tokens resolved]
+  (let [dropped (->> tokens
+                     (remove (fn [[k _]] (contains? resolved k)))
+                     (map (fn [[k token]]
+                            [k (assoc token
+                                      :errors
+                                      [(wte/error-with-value
+                                        :error.token/name-collision
+                                        (:name token))])]))
+                     (into {}))]
+    (merge resolved dropped)))
+
+(defn- valid-token-value?
+  [[_ token]]
+  (some? (:value token)))
+
+(def ^:private xform-invalid-value-tokens
+  (comp
+   (remove valid-token-value?)
+   (map (fn [[k token]]
+          [k (assoc token :errors [(wte/get-error-code :error.token/empty-input)])]))))
+
+(defn- merge-invalid-value-tokens
+  "Tokens with a `nil` value (e.g. a composite typography token saved with
+  no fields filled in) must never reach StyleDictionary: some of its
+  preprocessors (`@tokens-studio/sd-transforms`'s font-styles preprocessor,
+  in particular) assume a typography token's value is never null and throw
+  an uncaught exception when it is, taking down token resolution for the
+  whole file.
+
+  `tokens` is the full, unfiltered token map; `resolved` only contains the
+  valid subset that was actually sent to StyleDictionary. Tag the invalid
+  ones with the same \"empty value\" error the token forms already use
+  instead of ever letting them reach the resolver."
+  [tokens resolved]
+  (into resolved xform-invalid-value-tokens tokens))
 
 (defn resolve-tokens
   [tokens]
-  (let [tokens-tree (ctob/tokens-tree tokens)]
-    (resolve-tokens-tree tokens-tree #(get tokens (sd-token-name %)))))
+  (let [valid-tokens (into {} (filter valid-token-value?) tokens)
+        tokens-tree  (ctob/tokens-tree valid-tokens)]
+    (->> (resolve-tokens-tree tokens-tree #(get valid-tokens (sd-token-name %)))
+         (rx/map #(merge-name-collisions valid-tokens %))
+         (rx/map #(merge-invalid-value-tokens tokens %)))))
 
 (defn resolve-tokens-interactive
   "Interactive check of resolving tokens.
@@ -578,14 +637,18 @@
   computation we can restore any token, even clashing ones with the
   same :name path by just looking up that :id in the ids map."
   [tokens]
-  (let [{:keys [tokens-tree ids]} (ctob/backtrace-tokens-tree tokens)]
-    (resolve-tokens-tree tokens-tree  #(get ids (sd-token-uuid %)))))
+  (let [valid-tokens (into {} (filter valid-token-value?) tokens)
+        {:keys [tokens-tree ids]} (ctob/backtrace-tokens-tree valid-tokens)]
+    (->> (resolve-tokens-tree tokens-tree #(get ids (sd-token-uuid %)))
+         (rx/map #(merge-name-collisions valid-tokens %))
+         (rx/map #(merge-invalid-value-tokens tokens %)))))
 
 (defn resolve-tokens-with-verbose-errors [tokens]
-  (resolve-tokens-tree
-   (ctob/tokens-tree tokens)
-   #(get tokens (sd-token-name %))
-   (StyleDictionary. (assoc default-config :log {:verbosity "verbose"}))))
+  (let [valid-tokens (into {} (filter valid-token-value?) tokens)]
+    (resolve-tokens-tree
+     (ctob/tokens-tree valid-tokens)
+     #(get valid-tokens (sd-token-name %))
+     (StyleDictionary. (assoc default-config :log {:verbosity "verbose"})))))
 
 ;; === Hooks
 

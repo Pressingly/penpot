@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.common.flags
   "Flags parsing algorithm."
@@ -72,7 +72,11 @@
     :backend-worker
     ;; Only for development
     :component-thumbnails
-    ;; enables the default cors configuration that allows all domains (currently this configuration is only used for development).
+    ;; Enables CORS support for the RPC API. Requires an explicit
+    ;; allowlist of origins via PENPOT_ALLOWED_ORIGINS; if no allowlist
+    ;; is configured the middleware fails closed (a warning is logged
+    ;; and CORS headers are not emitted) to avoid CSRF / data
+    ;; exfiltration via origin reflection.
     :cors
     ;; Enables the templates dialog on Penpot dashboard.
     :dashboard-templates-section
@@ -119,12 +123,18 @@
     :strict-session-cookies
     :telemetry
     :terms-and-privacy-checkbox
-    ;; Only for developtment.
     :tiered-file-data-storage
+
+    ;; Tokens
     :token-base-font-size
+    :token-combobox
     :token-color
     :token-shadow
     :token-tokenscript
+    :token-import-from-library
+    :token-typography-row
+
+    ;; Only for developtment.
     :transit-readable-response
     :user-feedback
     ;; TODO: remove this flag.
@@ -132,9 +142,11 @@
     :webhooks
     ;; TODO: deprecate this flag and consolidate the code
     :render-wasm-dpr
+    ;; Show WASM renderer info label (hidden by default).
+    :render-wasm-info
+    :render-switch
     :hide-release-modal
     :subscriptions
-    :subscriptions-old
     :inspect-styles
     ;; Enable performance logs in devconsole (disabled by default)
     :perf-logs
@@ -151,10 +163,22 @@
     ;; redis for caching data
     :redis-cache
 
-    ;; Activates the nitrate module
-    :nitrate
+    ;; Activates the admin-console module
+    :admin-console
 
-    :mcp})
+    ;; disabled by default. When enabled, allows the admin-console
+    ;; `bulk-create-profiles` method to create batches of already
+    ;; active profiles. Only intended for test environments.
+    :admin-console-bulk-create-profiles
+
+    :mcp
+    :background-blur
+    :available-viewer-wasm
+    :stroke-path
+    :stroke-per-side
+
+    :custom-shortcuts
+    :remote-media-processing})
 
 (def all-flags
   (set/union email login varia))
@@ -179,8 +203,17 @@
    :enable-render-wasm-dpr
    :enable-token-color
    :enable-token-shadow
+   :enable-token-typography-row
    :enable-inspect-styles
-   :enable-feature-fdata-objects-map])
+   :enable-feature-fdata-objects-map
+   :enable-feature-render-wasm
+   :enable-token-import-from-library
+   :enable-render-switch
+   :enable-render-wasm-info
+   :enable-available-viewer-wasm
+   :enable-background-blur
+   :enable-stroke-path
+   :enable-token-combobox])
 
 (defn parse
   [& flags]

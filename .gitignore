@@ -9,12 +9,22 @@
 .clj-kondo
 .cpcache
 .lsp
+.env
 .nrepl-port
 .nyc_output
 .rebel_readline_history
 .repl
+opencode.json
+.opencode/package-lock.json
 /*.jpg
 /*.md
+!CHANGES.md
+!CONTRIBUTING.md
+!README.md
+!AGENTS.md
+!CODE_OF_CONDUCT.md
+!SECURITY.md
+!HIGHLIGHTS.md
 /*.png
 /*.svg
 /*.sql
@@ -24,7 +34,6 @@
 /.clj-kondo/.cache
 /_dump
 /notes
-/.opencode/package-lock.json
 /plans
 /prompts
 /playground/
@@ -53,6 +62,7 @@
 /frontend/.storybook/preview-body.html
 /frontend/.storybook/preview-head.html
 /frontend/playwright-report/
+/frontend/playwright/ui/visual-specs/
 /frontend/text-editor/src/wasm/
 /frontend/dist/
 /frontend/npm-debug.log
@@ -65,8 +75,6 @@
 /frontend/target/
 /frontend/test-results/
 /frontend/.shadow-cljs
-/other/
-/scripts/
 /nexus/
 /tmp/
 /vendor/**/target
@@ -81,9 +89,27 @@
 /blob-report/
 /playwright/.cache/
 /render-wasm/target/
+/media-processor/dist/
 /**/node_modules
 /**/.yarn/*
 /.pnpm-store
+/.vscode
+/.idea
+*.iml
+/.claude
+/CLAUDE.md
+/CLAUDE.local.md
+/.playwright-mcp
+/.devenv/mcp/
+/opencode.json
+/.agents/plans
+/.agents/local/
+/AGENTS.local.md
+/.opencode/reports
+/.opencode/prompts
+/.ci-logs
+/.codex/
+/tools/__pycache__
 
 # graphify knowledge graph (generated locally; rebuilt on commit via post-commit hook)
 graphify-out/

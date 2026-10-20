@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.data.workspace.notifications
   (:require
@@ -125,18 +125,20 @@
 (defn- process-message
   [{:keys [type] :as msg}]
   (case type
-    :join-file              (handle-presence msg)
-    :leave-file             (handle-presence msg)
-    :presence               (handle-presence msg)
-    :disconnect             (handle-presence msg)
-    :pointer-update         (handle-pointer-update msg)
-    :file-change            (handle-file-change msg)
-    :file-deleted           (handle-file-deleted msg)
-    :file-restored          (handle-file-restored msg)
-    :library-change         (handle-library-change msg)
-    :notification           (dc/handle-notification msg)
-    :team-role-change       (handle-change-team-role msg)
-    :team-membership-change (dc/team-membership-change msg)
+    :join-file               (handle-presence msg)
+    :leave-file              (handle-presence msg)
+    :presence                (handle-presence msg)
+    :disconnect              (handle-presence msg)
+    :pointer-update          (handle-pointer-update msg)
+    :file-change             (handle-file-change msg)
+    :file-deleted            (handle-file-deleted msg)
+    :file-restored           (handle-file-restored msg)
+    :library-change          (handle-library-change msg)
+    :notification            (dc/handle-notification msg)
+    :team-role-change        (handle-change-team-role msg)
+    :team-membership-change  (dc/team-membership-change msg)
+    :team-organization-change         (dc/handle-change-team-organization msg)
+    :organization-change-sso (dc/handle-organization-change-sso msg)
     nil))
 
 (defn- handle-pointer-send

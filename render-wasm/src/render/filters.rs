@@ -1,6 +1,8 @@
 use skia_safe::{self as skia, ImageFilter, Rect};
 
 use super::{RenderState, SurfaceId};
+use crate::error::Result;
+use crate::get_resources;
 
 /// Composes two image filters, returning a combined filter if both are present,
 /// or the individual filter if only one is present, or None if neither is present.
@@ -36,11 +38,13 @@ pub fn render_with_filter_surface<F>(
     bounds: Rect,
     target_surface: SurfaceId,
     draw_fn: F,
-) -> bool
+) -> Result<bool>
 where
-    F: FnOnce(&mut RenderState, SurfaceId),
+    F: FnOnce(&mut RenderState, SurfaceId) -> Result<()>,
 {
-    if let Some((mut surface, scale)) = render_into_filter_surface(render_state, bounds, draw_fn) {
+    if let Some((mut surface, scale)) =
+        render_into_filter_surface(render_state, bounds, 1.0, draw_fn)?
+    {
         let canvas = render_state.surfaces.canvas_and_mark_dirty(target_surface);
 
         // If we scaled down, we need to scale the source rect and adjust the destination
@@ -48,17 +52,17 @@ where
             canvas.save();
             canvas.scale((1.0 / scale, 1.0 / scale));
             canvas.translate((bounds.left * scale, bounds.top * scale));
-            surface.draw(canvas, (0.0, 0.0), render_state.sampling_options, None);
+            surface.draw(canvas, (0.0, 0.0), get_resources().sampling_options, None);
             canvas.restore();
         } else {
             canvas.save();
             canvas.translate((bounds.left, bounds.top));
-            surface.draw(canvas, (0.0, 0.0), render_state.sampling_options, None);
+            surface.draw(canvas, (0.0, 0.0), get_resources().sampling_options, None);
             canvas.restore();
         }
-        true
+        Ok(true)
     } else {
-        false
+        Ok(false)
     }
 }
 
@@ -69,16 +73,22 @@ where
 /// down so that everything fits; the returned `scale` tells the caller how much the
 /// content was reduced so it can be re-scaled on compositing. The `draw_fn` should
 /// render the untransformed shape (i.e. in document coordinates) onto `SurfaceId::Filter`.
+///
+/// `extra_downscale` is an additional scale factor applied on top of the overflow-fit scale.
+/// Use values < 1.0 to pre-downscale before applying Gaussian blur filters, which dramatically
+/// reduces GPU kernel work for large blur sigmas (Gaussian blur is scale-equivariant, so the
+/// caller must also reduce the sigma proportionally). Pass 1.0 for no extra downscale.
 pub fn render_into_filter_surface<F>(
     render_state: &mut RenderState,
     bounds: Rect,
+    extra_downscale: f32,
     draw_fn: F,
-) -> Option<(skia::Surface, f32)>
+) -> Result<Option<(skia::Surface, f32)>>
 where
-    F: FnOnce(&mut RenderState, SurfaceId),
+    F: FnOnce(&mut RenderState, SurfaceId) -> Result<()>,
 {
     if !bounds.is_finite() || bounds.width() <= 0.0 || bounds.height() <= 0.0 {
-        return None;
+        return Ok(None);
     }
 
     let filter_id = SurfaceId::Filter;
@@ -86,15 +96,27 @@ where
     let bounds_width = bounds.width().ceil().max(1.0) as i32;
     let bounds_height = bounds.height().ceil().max(1.0) as i32;
 
+    // Minimum scale floor for fit_scale alone; prevents extreme downscaling when
+    // the shape is much larger than the filter surface.
+    const MIN_FIT_SCALE: f32 = 0.1;
+    // Absolute minimum for the combined scale (fit × extra_downscale). Below this
+    // the offscreen surface would have sub-pixel dimensions and produce artifacts or
+    // crashes.  At 0.03 a shape must be at least ~34 px wide to render as a single
+    // pixel, which is a safe lower bound in practice.
+    const MIN_COMBINED_SCALE: f32 = 0.03;
+
     // Calculate scale factor if bounds exceed filter surface size
-    let scale = if bounds_width > filter_width || bounds_height > filter_height {
+    let fit_scale = if bounds_width > filter_width || bounds_height > filter_height {
         let scale_x = filter_width as f32 / bounds_width as f32;
         let scale_y = filter_height as f32 / bounds_height as f32;
         // Use the smaller scale to ensure everything fits
-        scale_x.min(scale_y).max(0.1) // Clamp to minimum 0.1 to avoid extreme scaling
+        scale_x.min(scale_y).max(MIN_FIT_SCALE)
     } else {
         1.0
     };
+
+    // Combine overflow-fit scale with caller-requested extra downscale
+    let scale = (fit_scale * extra_downscale).max(MIN_COMBINED_SCALE);
 
     {
         let canvas = render_state.surfaces.canvas(filter_id);
@@ -105,10 +127,10 @@ where
         canvas.translate((-bounds.left, -bounds.top));
     }
 
-    draw_fn(render_state, filter_id);
+    draw_fn(render_state, filter_id)?;
 
     render_state.surfaces.canvas(filter_id).restore();
 
     let filter_surface = render_state.surfaces.surface_clone(filter_id);
-    Some((filter_surface, scale))
+    Ok(Some((filter_surface, scale)))
 }

@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.binfile.v2
   "A sqlite3 based binary file exportation with support for exportation
@@ -197,9 +197,17 @@
 
 (defn- read-storage-object!
   [{:keys [::sto/storage ::bfc/timestamp] :as cfg} id]
-  (let [mdata   (read-obj cfg :storage-object id)
+  (let [mdata   (d/update-when (read-obj cfg :storage-object id)
+                               :content-type bfc/normalize-content-type)
         data    (read-blob cfg :storage-object id)
-        hash    (sto/calculate-hash data)
+        ;; NOTE: v2 bundles are legacy and no longer produced; the
+        ;; sanitizer call stays as defense in depth and is covered by
+        ;; the shared helper unit tests, with no dedicated v2
+        ;; import test.
+        clean   (when (bfc/svg-object? mdata)
+                  (bfc/sanitize-imported-svg mdata data))
+        data    (or (:bytes clean) data)
+        hash    (or (:hash clean) (sto/calculate-hash data))
 
         content (-> (sto/content data)
                     (sto/wrap-with-hash hash))
@@ -314,10 +322,10 @@
   (doseq [rel (read-obj cfg :file-rels file-id)]
     (let [rel (-> rel
                   (update :file-id bfc/lookup-index)
-                  (update :library-file-id bfc/lookup-index)
-                  (assoc :synced-at timestamp))]
+                  (update :library-file-id bfc/lookup-index))]
       (db/insert! conn :file-library-rel rel
-                  ::db/return-keys false)))
+                  ::db/return-keys false)
+      (bfc/upsert-file-library-sync! conn (assoc rel :synced-at timestamp))))
 
   (doseq [media (read-seq cfg :file-media-object file-id)]
     (let [media (-> media

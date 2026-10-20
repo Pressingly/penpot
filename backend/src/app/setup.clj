@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.setup
   "Initial data setup of instance."
@@ -115,8 +115,9 @@
                     (assoc keys id key)))))
             {}
             [:exporter
-             :nitrate
-             :nexus])))
+             :admin-console
+             :nexus
+             :media-processor])))
 
 (sm/register! ::props [:map-of :keyword ::sm/any])
 (sm/register! ::shared-keys [:map-of :keyword ::sm/text])

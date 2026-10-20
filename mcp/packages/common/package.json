@@ -4,7 +4,7 @@
   "description": "Shared type definitions and interfaces for Penpot MCP",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "packageManager": "pnpm@10.31.0+sha512.e3927388bfaa8078ceb79b748ffc1e8274e84d75163e67bc22e06c0d3aed43dd153151cbf11d7f8301ff4acb98c68bdc5cadf6989532801ffafe3b3e4a63c268",
+  "packageManager": "pnpm@12.5.1+sha512.e3f305bc784a2bc89f5ad3b6138889470fae8d2af5f36b61216ec91c2c3d64089775f9de38aac331044ea40f245cb0d5666392dfdf65824e1907ef6a2c62de5f",
   "scripts": {
     "build": "tsc --build --clean && tsc --build",
     "watch": "tsc --watch",
@@ -12,7 +12,7 @@
     "clean": "rm -rf dist/"
   },
   "devDependencies": {
-    "typescript": "^5.0.0"
+    "typescript": "^6.0.3"
   },
   "files": [
     "dist/**/*"

@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.http.debug
   (:refer-clojure :exclude [error-handler])
@@ -13,6 +13,9 @@
    [app.common.data :as d]
    [app.common.exceptions :as ex]
    [app.common.features :as cfeat]
+   [app.common.files.changes :as cfc]
+   [app.common.files.repair :as cfr]
+   [app.common.files.validate :as cfv]
    [app.common.logging :as l]
    [app.common.pprint :as pp]
    [app.common.time :as ct]
@@ -28,10 +31,10 @@
    [app.rpc.commands.teams :as teams]
    [app.setup :as-alias setup]
    [app.setup.clock :as clock]
+   [app.srepl.helpers :as h]
    [app.srepl.main :as srepl]
    [app.storage :as-alias sto]
    [app.storage.tmp :as tmp]
-   [app.util.blob :as blob]
    [app.util.template :as tmpl]
    [cuerdas.core :as str]
    [datoteka.io :as io]
@@ -71,8 +74,7 @@
 
 (defn- get-resolved-file
   [cfg file-id]
-  (some-> (bfc/get-file cfg file-id :migrate? false)
-          (update :data blob/encode)))
+  (bfc/get-file cfg file-id :migrate? false :decode? false))
 
 (defn prepare-download
   [file filename]
@@ -132,7 +134,7 @@
                   :hint "invalid button"))
 
       (ex/raise :type :not-found
-                :code :enpty-data
+                :code :empty-data
                 :hint "empty response"))))
 
 (defn- is-file-exists?
@@ -232,25 +234,28 @@
             (-> (io/resource "app/templates/error-report.v3.tmpl")
                 (tmpl/render (-> content
                                  (assoc :id id)
-                                 (assoc :version 3)
+                                 (assoc :source 3)
                                  (assoc :created-at (ct/format-inst created-at :rfc1123))))))
 
           (render-template-v4 [{:keys [content id created-at]}]
             (-> (io/resource "app/templates/error-report.v4.tmpl")
                 (tmpl/render (-> content
                                  (assoc :id id)
-                                 (assoc :version 4)
+                                 (assoc :source 4)
+                                 (assoc :kind (or (:kind content) (:origin content)))
+                                 (assoc :trace (or (:trace content) (:report content)))
                                  (assoc :created-at (ct/format-inst created-at :rfc1123))))))
 
           (render-template-v5 [{:keys [content id created-at]}]
             (-> (io/resource "app/templates/error-report.v5.tmpl")
                 (tmpl/render (-> content
                                  (assoc :id id)
-                                 (assoc :version 5)
+                                 (assoc :source 5)
+                                 (assoc :value (or (:value content) (:result content)))
                                  (assoc :created-at (ct/format-inst created-at :rfc1123))))))]
 
     (if-let [report (get-report request)]
-      (let [result (case (:version report)
+      (let [result (case (:source report)
                      1 (render-template-v1 report)
                      2 (render-template-v2 report)
                      3 (render-template-v3 report)
@@ -267,18 +272,19 @@
   "SELECT id, created_at,
           content->>'~:hint' AS hint
      FROM server_error_report
-    WHERE version = ?
-    ORDER BY created_at DESC
-    LIMIT 300")
+     WHERE (version = ? OR source = ? OR ? = 0)
+     ORDER BY created_at DESC
+     LIMIT 300")
 
 (defn- error-list-handler
   [{:keys [::db/pool]} {:keys [params]}]
-  (let [version (or (some-> (get params :version) parse-long) 3)
-        items   (->> (db/exec! pool [sql:error-reports version])
-                     (map #(update % :created-at ct/format-inst :rfc1123)))]
+  (let [source (or (some-> (get params :source) parse-long) 3)
+        items  (->> (db/exec! pool [sql:error-reports source source source])
+                    (map #(update % :created-at ct/format-inst :rfc1123)))]
+
     {::yres/status 200
      ::yres/body (-> (io/resource "app/templates/error-list.tmpl")
-                     (tmpl/render {:items items :version version}))
+                     (tmpl/render {:items items :source source}))
      ::yres/headers {"content-type" "text/html; charset=utf-8"
                      "x-robots-tag" "noindex"}}))
 
@@ -316,7 +322,9 @@
                                 ::bfc/overwrite false
                                 ::bfc/profile-id profile-id
                                 ::bfc/project-id project-id
-                                ::bfc/input path)]
+                                ::bfc/input path
+                                ::bfc/import-max-object-size (cf/get :binfile-import-max-object-size)
+                                ::bfc/import-max-zip-entries (cf/get :binfile-import-max-zip-entries))]
           (bf.v3/import-files! cfg)
           {::yres/status  200
            ::yres/headers {"content-type" "text/plain"}
@@ -352,7 +360,9 @@
                         ::bfc/profile-id profile-id
                         ::bfc/project-id project-id
                         ::bfc/input path
-                        ::bfc/features (cfeat/get-team-enabled-features cf/flags team))]
+                        ::bfc/features (cfeat/get-team-enabled-features cf/flags team)
+                        ::bfc/import-max-object-size (cf/get :binfile-import-max-object-size)
+                        ::bfc/import-max-zip-entries (cf/get :binfile-import-max-zip-entries))]
 
       (if (= format :binfile-v3)
         (bf.v3/import-files! cfg)
@@ -483,6 +493,89 @@
          ::yres/headers {"location" "/dbg"}}))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; VALIDATE / REPAIR
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- validate-file
+  [cfg {:keys [params] :as request}]
+  (let [file-id  (some-> params :file-id parse-uuid)]
+
+    (when-not file-id
+      (ex/raise :type :validation
+                :code :missing-arguments))
+
+    (db/tx-run! (assoc cfg ::db/rollback true)
+                (fn [cfg]
+                  (let [file (bfc/get-file cfg file-id)
+                        libs (bfc/get-resolved-file-libraries cfg file-id)]
+                    (if file
+                      (let [errors (cfv/validate-file file libs)]
+                        {::yres/status  200
+                         ::yres/headers {"content-type" "text/plain"}
+                         ::yres/body    (if (empty? errors)
+                                          "NO VALIDATION ERRORS FOUND"
+                                          (pp/pprint-str errors))})
+                      (ex/raise :type :not-found
+                                :code :empty-data
+                                :hint "empty response")))))))
+
+(defn- repair-file
+  [cfg {:keys [params] :as request}]
+  (let [file-id        (some-> params :file-id parse-uuid)
+        skip-snapshot? (contains? params :skip-snapshot)
+        profile-id     (:app.http.session/profile-id request)]
+
+    (when-not file-id
+      (ex/raise :type :validation
+                :code :missing-arguments))
+
+    (let [output (StringBuilder.)
+
+          repair-file
+          (fn [file libs _]
+            (let [errors (cfv/validate-file file libs)]
+              (.append output (if (empty? errors)
+                                "NO VALIDATION ERRORS FOUND\n"
+                                (str "VALIDATION ERRORS FOUND:\n"
+                                     (pp/pprint-str errors) "\n")))
+              (if (empty? errors)
+                file
+                (let [changes (cfr/repair-file file libs errors)]
+                  (-> file
+                      (update :revn inc)
+                      (update :data cfc/process-changes changes))))))]
+
+      (add-watch l/log-record ::repair-watcher
+                 (fn [_ _ _ record]
+                   (when (= "app.common.files.repair" (::l/logger record))
+                     (let [props (::l/props record)
+                           hint (get props :hint "")
+                           args (dissoc props :hint)
+                           message (str hint " "
+                                        (when-not (empty? args)
+                                          args)
+                                        "\n")]
+                       (.append output message)))))
+      (try
+        (db/tx-run! cfg
+                    h/process-file!
+                    file-id
+                    repair-file
+                    {::h/with-libraries? true
+                     ::h/validate? false
+                     ::h/profile-id profile-id
+                     ::h/snapshot-label (when-not skip-snapshot? "repair")})
+
+        (.append output "\nREPAIR FINISHED")
+
+        {::yres/status  200
+         ::yres/headers {"content-type" "text/plain"}
+         ::yres/body    (.toString output)}
+
+        (finally
+          (remove-watch l/log-record ::repair-watcher))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; OTHER SMALL VIEWS/HANDLERS
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -576,5 +669,7 @@
       {:handler (partial handle-team-features cfg)}]
      ["/file-export" {:handler (partial export-handler cfg)}]
      ["/file-import" {:handler (partial import-handler cfg)}]
-     ["/file-raw-export-import" {:handler (partial raw-export-import-handler cfg)}]]]])
+     ["/file-raw-export-import" {:handler (partial raw-export-import-handler cfg)}]
+     ["/file-validate" {:handler (partial validate-file cfg)}]
+     ["/file-repair" {:handler (partial repair-file cfg)}]]]])
 

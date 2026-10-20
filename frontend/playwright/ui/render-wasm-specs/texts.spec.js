@@ -209,7 +209,10 @@ test("Renders a file with emoji and text decoration", async ({ page }) => {
     pageId: "82d128e1-d3b1-80a5-8006-ae60fedcd5e8",
   });
   await workspace.waitForFirstRenderWithoutUI();
-  await expect(workspace.canvas).toHaveScreenshot();
+  await expect(workspace.canvas).toHaveScreenshot({
+    maxDiffPixelRatio: 0,
+    threshold: 0.1,
+  });
 });
 
 test("Renders a file with multiple emoji", async ({ page }) => {
@@ -586,4 +589,42 @@ test.skip("Updates text alignment edition - part 3", async ({ page }) => {
   await workspace.hideUI();
 
   await expect(workspace.canvas).toHaveScreenshot({ timeout: 10000 });
+});
+
+
+test("Renders a file with group with strokes and not 100% opacities", async ({
+  page,
+}) => {
+  const workspace = new WasmWorkspacePage(page);
+  await workspace.setupEmptyFile();
+  await workspace.mockGetFile("render-wasm/get-file-strokes-and-not-100-percent-opacities.json");
+
+  await workspace.goToWorkspace({
+    id: "effcbebc-b8c8-802f-8007-b0ebecd7ebf4",
+    pageId: "3e9e17c3-fc57-80ce-8007-101743996fe9",
+  });
+
+  await workspace.waitForFirstRenderWithoutUI();
+  await expect(workspace.canvas).toHaveScreenshot({
+    maxDiffPixelRatio: 0,
+    threshold: 0.01,
+  });
+});
+
+test("Renders background blur on text shapes", async ({ page }) => {
+  const workspace = new WasmWorkspacePage(page);
+  await workspace.setupEmptyFile();
+  await workspace.mockFileMediaAsset(
+    "814272d9-d3f8-812d-8008-55a1fb78211b",
+    "render-wasm/assets/squares-background.png",
+  );
+  await workspace.mockGetFile("render-wasm/get-file-text-background-blur.json");
+
+  await workspace.goToWorkspace({
+    id: "814272d9-d3f8-812d-8008-54c11cbba219",
+    pageId: "814272d9-d3f8-812d-8008-54c11cbba21a",
+  });
+
+  await workspace.waitForFirstRenderWithoutUI();
+  await expect(workspace.canvas).toHaveScreenshot();
 });

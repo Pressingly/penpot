@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.binfile.v3
   "A ZIP based binary file exportation"
@@ -42,6 +42,7 @@
    [datoteka.io :as io])
   (:import
    java.io.File
+   java.io.FilterInputStream
    java.io.InputStream
    java.io.OutputStreamWriter
    java.lang.AutoCloseable
@@ -73,7 +74,7 @@
   [:map {:title "StorageObject"}
    [:id ::sm/uuid]
    [:size ::sm/int]
-   [:content-type :string]
+   [:content-type bfc/schema:content-type]
    [:bucket [::sm/one-of {:format :string} sto/valid-buckets]]
    [:hash {:optional true} :string]])
 
@@ -221,8 +222,9 @@
   [{:keys [::bfc/embed-assets ::bfc/include-libraries] :as cfg} file-id]
 
   (when (and include-libraries embed-assets)
-    (throw (IllegalArgumentException.
-            "the `include-libraries` and `embed-assets` are mutally excluding options")))
+    (ex/raise :type :validation
+              :code :incompatible-options
+              :hint "the `include-libraries` and `embed-assets` are mutually exclusive options"))
 
   (let [detach? (and (not embed-assets) (not include-libraries))]
     (db/tx-run! cfg (fn [cfg]
@@ -392,7 +394,7 @@
           params {:type "penpot/export-files"
                   :version 1
                   :generated-by (str "penpot/" (:full cf/version))
-                  :refer "penpot"
+                  :referer "penpot"
                   :files (vec (vals files))
                   :relations rels}]
       (write-entry! output "manifest.json" params))))
@@ -430,6 +432,32 @@
   [^ZipFile input ^ZipEntry entry]
   (.getInputStream input entry))
 
+(defn- size-limiting-stream
+  "Wraps an InputStream to enforce a maximum number of decompressed bytes.
+  Raises :validation :max-file-size-reached when the limit is exceeded."
+  ^InputStream
+  [^InputStream input ^long max-size]
+  (let [counter (atom 0)
+        on-read (fn [n]
+                  (when (pos? n)
+                    (when (> (swap! counter + (long n)) max-size)
+                      (ex/raise :type :validation
+                                :code :max-file-size-reached
+                                :hint (str "stream exceeded max size: " max-size))))
+                  n)]
+    (proxy [FilterInputStream] [input]
+      (read
+        ([]
+         (let [b (.read input)]
+           (when (pos? b) (on-read 1))
+           b))
+        ([^bytes buf]
+         (on-read (.read input buf 0 (alength buf))))
+        ([^bytes buf off]
+         (on-read (.read input buf (int off) (- (alength buf) (int off)))))
+        ([^bytes buf off len]
+         (on-read (.read input buf (int off) (int len))))))))
+
 (defn- zip-entry-reader
   [^ZipFile input ^ZipEntry entry]
   (-> (zip-entry-stream input entry)
@@ -438,10 +466,12 @@
 (defn- zip-entry-storage-content
   "Wraps a ZipFile and ZipEntry into a penpot storage compatible
   object and avoid creating temporal objects"
-  [input entry]
-  (let [hash  (delay (->> entry
-                          (zip-entry-stream input)
-                          (sto.impl/calculate-hash)))]
+  [input entry & {:keys [max-size]}]
+  (let [stream-fn (fn []
+                    (cond-> (zip-entry-stream input entry)
+                      max-size (size-limiting-stream max-size)))
+        hash      (delay (->> (stream-fn)
+                              (sto.impl/calculate-hash)))]
     (reify
       sto.impl/IContentObject
       (get-size [_]
@@ -458,7 +488,7 @@
         (throw (UnsupportedOperationException. "not implemented")))
 
       (make-input-stream [_ _]
-        (zip-entry-stream input entry))
+        (stream-fn))
       (make-output-stream [_ _]
         (throw (UnsupportedOperationException. "not implemented"))))))
 
@@ -734,7 +764,7 @@
      :plugin-data plugin-data}))
 
 (defn- import-file
-  [{:keys [::db/conn ::bfc/project-id] :as cfg} {file-id :id file-name :name}]
+  [{:keys [::db/conn ::bfc/project-id ::manifest] :as cfg} {file-id :id file-name :name}]
   (let [file-id'   (bfc/lookup-index file-id)
         file       (read-file cfg file-id)
         media      (read-file-media cfg file-id)
@@ -801,8 +831,10 @@
                    (assoc :data data)
                    (assoc :name file-name)
                    (assoc :project-id project-id)
+                   (assoc :metadata (d/without-nils
+                                     {:generated-by (get manifest :generated-by)
+                                      :referer (or (get manifest :referer) (get manifest :refer))}))
                    (dissoc :options))
-
           file  (bfc/process-file cfg file)
           file  (ctf/check-file file)]
 
@@ -824,10 +856,10 @@
                :file-id (str file-id)
                :lib-id (str libr-id)
                ::l/sync? true)
-        (db/insert! conn :file-library-rel
-                    {:synced-at timestamp
-                     :file-id file-id
-                     :library-file-id libr-id})))))
+        (let [rel-params {:file-id file-id
+                          :library-file-id libr-id}]
+          (db/insert! conn :file-library-rel rel-params)
+          (bfc/upsert-file-library-sync! conn (assoc rel-params :synced-at timestamp)))))))
 
 (defn- import-storage-objects
   [{:keys [::bfc/input ::entries ::bfc/timestamp] :as cfg}]
@@ -839,14 +871,15 @@
     (doseq [{:keys [id entry]} entries]
       (let [object  (-> (read-entry input entry)
                         (decode-storage-object)
+                        (d/update-when :content-type bfc/normalize-content-type)
                         (update :bucket d/nilv sto/default-bucket)
                         (validate-storage-object))
 
             ext     (cmedia/mtype->extension (:content-type object))
             path    (str "objects/" id ext)
-            content (->> path
-                         (get-zip-entry input)
-                         (zip-entry-storage-content input))]
+            content (zip-entry-storage-content input
+                                               (get-zip-entry input path)
+                                               :max-size (::bfc/import-max-object-size cfg))]
 
         (when (not= (:size object) (sto/get-size content))
           (ex/raise :type :validation
@@ -855,6 +888,15 @@
                     :path path
                     :expected-size (:size object)
                     :found-size (sto/get-size content)))
+
+        (when-let [max (::bfc/import-max-object-size cfg)]
+          (when (> (sto/get-size content) max)
+            (ex/raise :type :validation
+                      :code :max-file-size-reached
+                      :hint (str "storage object exceeds maximum size: " (sto/get-size content))
+                      :path path
+                      :max max
+                      :found (sto/get-size content))))
 
         (when-let [hash (get object :hash)]
           (when (not= hash (sto/get-hash content))
@@ -865,7 +907,17 @@
                       :expected-hash (:hash object)
                       :found-hash (sto/get-hash content))))
 
-        (let [params  (-> object
+        (let [clean   (when (bfc/svg-object? object)
+                        (let [limit (::bfc/import-max-object-size cfg)
+                              raw   (with-open [istream (cond-> (zip-entry-stream input (get-zip-entry input path))
+                                                          limit (size-limiting-stream limit))]
+                                      (io/read istream))]
+                          (bfc/sanitize-imported-svg object raw)))
+              content (if-let [{:keys [bytes hash]} clean]
+                        (-> (sto/content bytes)
+                            (sto/wrap-with-hash hash))
+                        content)
+              params  (-> object
                           (dissoc :id :size)
                           (assoc ::sto/content content)
                           (assoc ::sto/deduplicate? true)
@@ -938,6 +990,15 @@
   (let [manifest (-> (read-manifest input)
                      (validate-manifest))
         entries  (read-zip-entries input)
+
+        _        (when-let [max (::bfc/import-max-zip-entries cfg)]
+                   (when (> (count entries) max)
+                     (ex/raise :type :validation
+                               :code :too-many-zip-entries
+                               :hint (str "zip file has too many entries: " (count entries))
+                               :max max
+                               :found (count entries))))
+
         cfg      (-> cfg
                      (assoc ::entries entries)
                      (assoc ::manifest manifest)

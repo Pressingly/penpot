@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 //
-// Copyright (c) KALEIDOS INC
+// Copyright (c) KALEIDOS INC Sucursal en España SL
 
 @use "ds/_borders.scss" as *;
 @use "ds/_sizes.scss" as *;
@@ -14,14 +14,11 @@
   --input-checkbox-border-color-hover: var(--color-accent-primary-muted);
   --input-checkbox-foreground-color: var(--color-foreground-primary);
   --input-checkbox-background-color: var(--color-background-quaternary);
-
   --input-checkbox-border-color-checked: var(--color-background-quaternary);
   --input-checkbox-foreground-color-checked: var(--color-background-primary);
   --input-checkbox-background-color-checked: var(--color-accent-primary);
-
   --input-checkbox-foreground-color-disabled: var(--color-background-primary);
   --input-checkbox-background-color-disabled: var(--color-foreground-secondary);
-
   --input-checkbox-text-color: var(--color-foreground-secondary);
 }
 
@@ -73,6 +70,7 @@
 
 .checkbox-text {
   @include use-typography("body-small");
+
   padding-inline-start: var(--sp-s);
   color: var(--input-checkbox-text-color);
 }

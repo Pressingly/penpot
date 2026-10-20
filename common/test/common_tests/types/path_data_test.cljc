@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns common-tests.types.path-data-test
   (:require
@@ -667,6 +667,41 @@
           result (path.subpath/close-subpaths content)]
       (t/is (seq result)))))
 
+(t/deftest subpath-merge-touching-subpaths
+  (t/testing "adjacent subpaths sharing an endpoint collapse into one chain"
+    ;; Heroicons-style fragment: continuous polyline split as M-L M-L M-L
+    ;; with the second/third subpath starting at the first's endpoint.
+    (let [content [{:command :move-to :params {:x 0.0  :y 10.0}}
+                   {:command :line-to :params {:x 10.0 :y 10.0}}
+                   {:command :move-to :params {:x 10.0 :y 10.0}}
+                   {:command :line-to :params {:x 5.0  :y 0.0}}
+                   {:command :move-to :params {:x 10.0 :y 10.0}}
+                   {:command :line-to :params {:x 5.0  :y 20.0}}]
+          result  (path.subpath/merge-touching-subpaths content)
+          moves   (filter #(= :move-to (:command %)) result)]
+      ;; Subpaths 1+2 share (10,10) → merged. Subpath 3 also starts at (10,10),
+      ;; but the merged chain now ends at (5,0), so it does NOT match and
+      ;; is preserved as its own subpath. Two move-tos in the final result.
+      (t/is (= 2 (count moves)))
+      (t/is (= 5 (count result)))))
+  (t/testing "non-touching subpaths are left untouched"
+    (let [content [{:command :move-to :params {:x 0.0  :y 0.0}}
+                   {:command :line-to :params {:x 5.0  :y 0.0}}
+                   {:command :move-to :params {:x 50.0 :y 50.0}}
+                   {:command :line-to :params {:x 60.0 :y 60.0}}]
+          result  (path.subpath/merge-touching-subpaths content)]
+      (t/is (= content (vec result)))))
+  (t/testing "closed subpath is not absorbed into a neighbour"
+    (let [content [{:command :move-to   :params {:x 0.0 :y 0.0}}
+                   {:command :line-to   :params {:x 5.0 :y 0.0}}
+                   {:command :line-to   :params {:x 5.0 :y 5.0}}
+                   {:command :line-to   :params {:x 0.0 :y 0.0}}
+                   {:command :move-to   :params {:x 0.0 :y 0.0}}
+                   {:command :line-to   :params {:x 1.0 :y 1.0}}]
+          result  (path.subpath/merge-touching-subpaths content)
+          moves   (filter #(= :move-to (:command %)) result)]
+      (t/is (= 2 (count moves))))))
+
 (t/deftest subpath-reverse-content
   (let [result (path.subpath/reverse-content simple-open-content)]
     (t/is (= (count simple-open-content) (count result)))
@@ -964,6 +999,35 @@
     ;; result should have more segments than original (splits added)
     (t/is (> (count result) (count sample-content-square)))))
 
+;; Regression test for issue #8301: clicking a hover point on a path segment
+;; must insert exactly one node. The bug caused two actions to fire together —
+;; create-node-at-position (correct) and add-node (extra) — so the midpoint M
+;; was appended again as a tail endpoint, giving [M A L M L B L M] instead of
+;; the correct [M A L M L B]. The stroke markerEnd then landed in the middle.
+;; The invariant: split-segments on a 2-command open path produces exactly 3
+;; commands and does not repeat the inserted midpoint at the tail.
+(t/deftest segment-split-segments-no-duplicate-endpoint
+  (let [;; Simple open path: A=(0,0) → B=(100,0)
+        segments [{:command :move-to :params {:x 0.0 :y 0.0}}
+                  {:command :line-to :params {:x 100.0 :y 0.0}}]
+        from-p   (gpt/point 0.0 0.0)
+        to-p     (gpt/point 100.0 0.0)
+        content  (path/content segments)
+        result   (path.segment/split-segments content #{from-p to-p} 0.5)
+        cmds     (mapv :command result)]
+
+    ;; Must be exactly 3 commands: move-to A, line-to M, line-to B
+    (t/is (= 3 (count result)))
+    (t/is (= [:move-to :line-to :line-to] cmds))
+
+    ;; Midpoint M must be at (50, 0)
+    (t/is (mth/close? 50.0 (get-in result [1 :params :x])))
+    (t/is (mth/close? 0.0  (get-in result [1 :params :y])))
+
+    ;; Original endpoint B must still be at (100, 0) — not shadowed by a duplicate M
+    (t/is (mth/close? 100.0 (get-in result [2 :params :x])))
+    (t/is (mth/close? 0.0   (get-in result [2 :params :y])))))
+
 (t/deftest segment-content->selrect
   (let [content (path/content sample-content-square)
         rect    (path.segment/content->selrect content)]
@@ -1099,6 +1163,24 @@
         result  (path/close-subpaths content)]
     (t/is (path/content? result))
     (t/is (seq (vec result)))))
+
+(t/deftest path-merge-touching-subpaths
+  (t/testing "regression for #5283 — heroicons arrow path serialises as a single chain"
+    ;; SVG `d` originally split a continuous polyline by inserting a
+    ;; redundant moveto at the elbow. Importing it must collapse the
+    ;; first two subpaths so that stroke-linejoin renders the rounded tip.
+    (let [content (path/from-string
+                   (str "M350.5,1846 L365.5,1846"
+                        " M365.5,1846 L358.75,1839.25"
+                        " M365.5,1846 L358.75,1852.75"))
+          merged   (path/merge-touching-subpaths content)
+          rendered (str merged)]
+      (t/is (path/content? merged))
+      ;; First two subpaths fold into M ... L ... L ... ; third stays
+      ;; separate (its start point matches the original M, not the merged
+      ;; chain's tail), so exactly two M commands remain.
+      (t/is (= 2 (count (re-seq #"M" rendered))))
+      (t/is (= 3 (count (re-seq #"L" rendered)))))))
 
 (t/deftest path-move-content
   (let [content  (path/content sample-content-square)
@@ -1287,6 +1369,15 @@
         result (path/convert-to-path shape {})]
     ;; A path shape stays a path shape unchanged
     (t/is (= :path (:type result)))))
+
+(t/deftest shape-to-path-svg-raw-does-not-throw
+  (let [shape  {:type :svg-raw :x 0.0 :y 0.0 :width 100.0 :height 50.0
+                :selrect (make-selrect 0.0 0.0 100.0 50.0)
+                :content {:tag :text :attrs {:style {}}
+                          :content [{:tag :tspan :attrs {} :content ["x"]}]}}
+        result (path/convert-to-path shape {})]
+    (t/is (= :svg-raw (:type result)))
+    (t/is (some? (:content result)))))
 
 (t/deftest shape-to-path-rect-with-radius
   (let [shape  {:type :rect :x 0.0 :y 0.0 :width 100.0 :height 100.0

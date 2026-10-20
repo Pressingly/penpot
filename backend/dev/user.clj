@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns user
   (:require
@@ -104,24 +104,20 @@
   []
   (try
     (main/start)
-    :started
     (catch Throwable cause
       (ex/print-throwable cause))))
 
 (defn- stop
   []
-  (main/stop)
-  :stopped)
+  (main/stop))
 
 (defn restart
   []
-  (stop)
-  (repl/refresh :after 'user/start))
+  (main/restart))
 
 (defn restart-all
   []
-  (stop)
-  (repl/refresh-all :after 'user/start))
+  (main/restart-all))
 
 ;; (defn compression-bench
 ;;   [data]

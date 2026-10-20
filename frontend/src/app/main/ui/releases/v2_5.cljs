@@ -2,12 +2,13 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.ui.releases.v2-5
   (:require-macros [app.main.style :as stl])
   (:require
    [app.common.data.macros :as dm]
+   [app.main.ui.ds.buttons.button :refer [button*]]
    [app.main.ui.releases.common :as c]
    [rumext.v2 :as mf]))
 
@@ -47,8 +48,10 @@
            "Let’s dive in!"]]
 
          [:div {:class (stl/css :navigation)}
-          [:button {:class (stl/css :next-btn)
-                    :on-click next} "Continue"]]]]]]
+          [:> button* {:class (stl/css :next-btn)
+                       :on-click next
+                       :variant "primary"}
+           "Continue"]]]]]]
 
      0
      [:div {:class (stl/css-case :modal-overlay true)}
@@ -72,13 +75,15 @@
            "And that’s not all. We’ve also added quick actions to flip and rotate gradients, plus now you can adjust the radius for radial gradients. More control, more flexibility, more fun."]]
 
          [:div {:class (stl/css :navigation)}
-          [:& c/navigation-bullets
+          [:> c/navigation-bullets*
            {:slide slide
             :navigate navigate
             :total 4}]
 
-          [:button {:on-click next
-                    :class (stl/css :next-btn)} "Continue"]]]]]]
+          [:> button* {:class (stl/css :next-btn)
+                       :on-click next
+                       :variant "primary"}
+           "Continue"]]]]]]
 
      1
      [:div {:class (stl/css-case :modal-overlay true)}
@@ -102,13 +107,15 @@
            "We’ve also added a new section in your profile where you can customize your notifications, choosing what to receive on your dashboard and via email. On top of that, comments got a UI refresh, making everything clearer and better organized. And this is just the first batch of improvements—expect even more comment-related upgrades in the next Penpot release."]]
 
          [:div {:class (stl/css :navigation)}
-          [:& c/navigation-bullets
+          [:> c/navigation-bullets*
            {:slide slide
             :navigate navigate
             :total 4}]
 
-          [:button {:on-click next
-                    :class (stl/css :next-btn)} "Continue"]]]]]]
+          [:> button* {:class (stl/css :next-btn)
+                       :on-click next
+                       :variant "primary"}
+           "Continue"]]]]]]
 
      2
      [:div {:class (stl/css-case :modal-overlay true)}
@@ -136,13 +143,15 @@
            "Less manual work for a faster workflow. We hope you find it as useful as we do."]]
 
          [:div {:class (stl/css :navigation)}
-          [:& c/navigation-bullets
+          [:> c/navigation-bullets*
            {:slide slide
             :navigate navigate
             :total 4}]
 
-          [:button {:on-click next
-                    :class (stl/css :next-btn)} "Continue"]]]]]]
+          [:> button* {:class (stl/css :next-btn)
+                       :on-click next
+                       :variant "primary"}
+           "Continue"]]]]]]
 
      3
      [:div {:class (stl/css-case :modal-overlay true)}
@@ -165,11 +174,12 @@
 
          [:div {:class (stl/css :navigation)}
 
-          [:& c/navigation-bullets
+          [:> c/navigation-bullets*
            {:slide slide
             :navigate navigate
             :total 4}]
 
-          [:button {:on-click finish
-                    :class (stl/css :next-btn)} "Let's go"]]]]]])))
-
+          [:> button* {:class (stl/css :next-btn)
+                       :on-click finish
+                       :variant "primary"}
+           "Let's go"]]]]]])))

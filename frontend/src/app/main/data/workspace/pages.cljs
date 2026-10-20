@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.data.workspace.pages
   (:require
@@ -88,6 +88,7 @@
       (let [page (dsh/lookup-page state file-id page-id)
             uris (into #{} xf:collect-file-media (:objects page))]
         (rx/merge
+         (rx/of (ptk/data-event ::initialized page-id))
          (->> (rx/from uris)
               (rx/map #(http/fetch-data-uri % false))
               (rx/ignore))
@@ -134,7 +135,8 @@
     ptk/UpdateEvent
     (update [_ state]
       (let [local (-> (:workspace-local state)
-                      (dissoc :edition :edit-path :selected))
+                      (dissoc :edition :edit-path :selected
+                              :selected-pages :selected-pages-anchor))
             exit? (not= :workspace (rt/lookup-name state))
             state (-> state
                       (update :workspace-cache assoc [file-id page-id] local)
@@ -328,11 +330,31 @@
   (ptk/reify ::rename-page
     ptk/WatchEvent
     (watch [it state _]
-      (let [page    (dsh/lookup-page state id)
-            changes (-> (pcb/empty-changes it)
-                        (pcb/with-page page)
-                        (pcb/mod-page page {:name name}))]
-        (rx/of (dch/commit-changes changes))))))
+      (let [page             (dsh/lookup-page state id)
+            objects          (:objects page)
+            empty-page?       (and (= 1 (count objects))
+                                   (= uuid/zero (first (keys objects))))
+            changes          (-> (pcb/empty-changes it)
+                                 (pcb/with-page page)
+                                 (pcb/mod-page page {:name name}))
+            pages            (-> (dsh/lookup-file-data state) :pages)
+            index            (d/index-of pages id)
+            prev-id          (when (and (some? index) (pos? index))
+                               (nth pages (dec index) nil))
+            next-id          (when (some? index)
+                               (nth pages (inc index) nil))
+            fallback-page-id (or prev-id next-id)
+            separator?       (= "---" (str/trim name))]
+        (rx/concat
+         (rx/of (dch/commit-changes changes))
+         ;; Go to other page only if page is empty (only has the root shape)
+         ;; and the separator page is being renamed, otherwise user can rename
+         ;; any page to separator and be forced to go to another page
+         (when (and separator?
+                    empty-page?
+                    (= id (:current-page-id state))
+                    (some? fallback-page-id))
+           (rx/of (dcm/go-to-workspace :page-id fallback-page-id))))))))
 
 (defn- delete-page-components
   [changes page]
@@ -359,15 +381,119 @@
             pages   (:pages fdata)
 
             index   (d/index-of pages id)
-            page    (get pindex id)
-            page    (assoc page :index index)
-            pages   (filter #(not= % id) pages)
+            page    (get pindex id)]
 
-            changes (-> (pcb/empty-changes it)
-                        (pcb/with-library-data fdata)
-                        (delete-page-components page)
-                        (pcb/del-page page))]
+        (if (nil? page)
+          (rx/empty)
+          (let [page    (assoc page :index index)
+                pages   (filter #(not= % id) pages)
 
-        (rx/of (dch/commit-changes changes)
-               (when (= id (:current-page-id state))
-                 (dcm/go-to-workspace {:page-id (first pages)})))))))
+                changes (-> (pcb/empty-changes it)
+                            (pcb/with-library-data fdata)
+                            (delete-page-components page)
+                            (pcb/del-page page))]
+
+            (rx/of (dch/commit-changes changes)
+                   (when (= id (:current-page-id state))
+                     (dcm/go-to-workspace {:page-id (first pages)})))))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Page selection (sitemap multi-selection)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn clear-page-selection
+  "Clear the sitemap multi-selection state."
+  []
+  (ptk/reify ::clear-page-selection
+    ptk/UpdateEvent
+    (update [_ state]
+      (update state :workspace-local dissoc :selected-pages :selected-pages-anchor))))
+
+(defn select-page
+  "Set the sitemap selection to a single page (plain click). It also
+  sets the anchor used by range (shift+click) selection."
+  [id]
+  (ptk/reify ::select-page
+    ptk/UpdateEvent
+    (update [_ state]
+      (update state :workspace-local assoc
+              :selected-pages (d/ordered-set id)
+              :selected-pages-anchor id))))
+
+(defn toggle-page-selection
+  "Add or remove a page from the sitemap multi-selection (ctrl/cmd + click)."
+  [id]
+  (ptk/reify ::toggle-page-selection
+    ptk/UpdateEvent
+    (update [_ state]
+      (let [current-id (:current-page-id state)
+            selected   (or (not-empty (dm/get-in state [:workspace-local :selected-pages]))
+                           (d/ordered-set current-id))
+            selected   (if (contains? selected id)
+                         (disj selected id)
+                         (conj selected id))]
+        (update state :workspace-local assoc
+                :selected-pages selected
+                :selected-pages-anchor id)))))
+
+(defn select-pages-range
+  "Select every page between the current anchor and `id`, both included
+  (shift + click). The anchor is kept unchanged."
+  [id]
+  (ptk/reify ::select-pages-range
+    ptk/UpdateEvent
+    (update [_ state]
+      (let [current-id (:current-page-id state)
+            pages      (-> (dsh/lookup-file-data state) :pages vec)
+            anchor     (or (dm/get-in state [:workspace-local :selected-pages-anchor])
+                           current-id)
+            a-idx      (d/index-of pages anchor)
+            b-idx      (d/index-of pages id)]
+        (if (and (some? a-idx) (some? b-idx))
+          (let [start (min a-idx b-idx)
+                end   (inc (max a-idx b-idx))
+                range (subvec pages start end)]
+            (update state :workspace-local assoc
+                    :selected-pages (into (d/ordered-set) range)))
+          state)))))
+
+(defn delete-pages
+  "Delete a collection of pages in a single change (single undo entry),
+  always keeping at least one page in the file."
+  [ids]
+  (ptk/reify ::delete-pages
+    ptk/WatchEvent
+    (watch [it state _]
+      (let [file-id (:current-file-id state)
+            fdata   (dsh/lookup-file-data state file-id)
+            pindex  (:pages-index fdata)
+            pages   (:pages fdata)
+
+            ids     (set ids)
+            ;; A file must keep at least one page: if every page is
+            ;; selected, keep the first one in page order.
+            ids     (if (>= (count ids) (count pages))
+                      (set (rest (filter ids pages)))
+                      ids)
+
+            ;; Pages to delete, in page order.
+            del-ids   (filter ids pages)
+            remaining (remove ids pages)
+
+            changes (reduce
+                     (fn [changes id]
+                       (let [page (-> (get pindex id)
+                                      (assoc :index (d/index-of pages id)))]
+                         (-> changes
+                             (delete-page-components page)
+                             (pcb/del-page page))))
+                     (-> (pcb/empty-changes it)
+                         (pcb/with-library-data fdata))
+                     (reverse del-ids))]
+
+        (if (empty? del-ids)
+          (rx/empty)
+          (rx/of (dch/commit-changes changes)
+                 (clear-page-selection)
+                 (when (contains? ids (:current-page-id state))
+                   (dcm/go-to-workspace {:page-id (first remaining)}))))))))

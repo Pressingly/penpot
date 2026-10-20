@@ -2,12 +2,13 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.util.text.content.from-dom
   (:require
    [app.common.data :as d]
    [app.common.types.text :as txt]
+   [app.util.dom :as dom]
    [app.util.text.content.styles :as styles]))
 
 (defn is-text-node
@@ -41,8 +42,7 @@
   (let [attrs (or attrs [])
         value-empty? (fn [v]
                        (or (nil? v)
-                           (and (string? v) (empty? v))
-                           (and (coll? v) (empty? v))))]
+                           (and (string? v) (empty? v))))]
     (reduce (fn [acc key]
               (let [style (.-style element)
                     value (if (contains? styles/mapping key)
@@ -50,17 +50,33 @@
                                   [_ style-decode] (get styles/mapping key)]
                               (style-decode (.getPropertyValue style style-name)))
                             (let [style-name (styles/get-style-name key)]
-                              (styles/normalize-attr-value key (.getPropertyValue style style-name))))]
-                (assoc acc key (if (value-empty? value) (get defaults key) value))))
+                              (styles/normalize-attr-value key (.getPropertyValue style style-name))))
+                    default (get defaults key)
+                    final-value (if (value-empty? value) default value)]
+                ;; Omit attrs with no CSS value when the default is nil (e.g.
+                ;; typography-ref-id). Avoids polluting round-tripped content.
+                (if (and (value-empty? value) (nil? default))
+                  acc
+                  (assoc acc key final-value))))
             {} attrs)))
 
 (defn get-text-span-styles
   [element]
-  (get-attrs-from-styles element txt/text-node-attrs (txt/get-default-text-attrs)))
+  (get-attrs-from-styles element txt/text-span-attrs (txt/get-default-text-attrs)))
 
 (defn get-paragraph-styles
   [element]
-  (get-attrs-from-styles element (d/concat-set txt/paragraph-attrs txt/text-node-attrs) (d/merge txt/default-paragraph-attrs txt/default-text-attrs)))
+  (let [styles (get-attrs-from-styles element
+                                      (d/concat-set txt/paragraph-attrs txt/text-node-attrs)
+                                      (d/merge txt/default-paragraph-attrs txt/default-text-attrs))
+        ;; Recover real font-size from data attribute, which to_dom/get-paragraph-styles may have
+        ;; changed to "0" ("0" trick to avoid it interfering with height calculation in the browser).
+        saved-font-size (dom/get-data element "saved-font-size")
+        saved-font-size (when (and (string? saved-font-size) (not (empty? saved-font-size)))
+                          saved-font-size)]
+    (cond-> styles
+      (some? saved-font-size)
+      (assoc :font-size saved-font-size))))
 
 (defn get-root-styles
   [element]

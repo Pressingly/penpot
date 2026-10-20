@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC
+;; Copyright (c) KALEIDOS INC Sucursal en España SL
 
 (ns app.main.ui.dashboard.deleted
   (:require-macros [app.main.style :as stl])
@@ -12,10 +12,13 @@
    [app.main.data.common :as dcm]
    [app.main.data.dashboard :as dd]
    [app.main.data.modal :as modal]
+   [app.main.data.nitrate :as dnt]
    [app.main.refs :as refs]
    [app.main.store :as st]
    [app.main.ui.components.context-menu-a11y :refer [context-menu*]]
    [app.main.ui.dashboard.grid :refer [grid*]]
+   [app.main.ui.dashboard.layout-toggle :as lt :refer [layout-toggle*]]
+   [app.main.ui.dashboard.subscription :refer [get-subscription-type]]
    [app.main.ui.ds.buttons.button :refer [button*]]
    [app.main.ui.ds.product.empty-placeholder :refer [empty-placeholder*]]
    [app.main.ui.hooks :as hooks]
@@ -54,12 +57,14 @@
                 :on-accept accept-fn}))))
 
 (mf/defc header*
-  {::mf/props :obj
-   ::mf/private true}
-  []
-  [:header {:class (stl/css :dashboard-header) :data-testid "dashboard-header"}
+  {::mf/private true}
+  [{:keys [layout on-change]}]
+  [:header {:class (stl/css :dashboard-header)
+            :data-testid "dashboard-header"}
    [:div#dashboard-deleted-title {:class (stl/css :dashboard-title)}
-    [:h1 (tr "dashboard.projects-title")]]])
+    [:h1 (tr "dashboard.projects-title")]]
+   [:div {:class (stl/css :dashboard-header-actions)}
+    [:> layout-toggle* {:layout layout :on-change on-change}]]])
 
 (mf/defc project-context-menu*
   {::mf/private true}
@@ -86,18 +91,17 @@
             :id     "project-delete"
             :handler on-delete-project}])]
 
-    [:> context-menu*
-     {:on-close on-close
-      :show show
-      :fixed (or (not= top 0) (not= left 0))
-      :min-width true
-      :top top
-      :left left
-      :options options}]))
+    [:> context-menu* {:on-close on-close
+                       :show show
+                       :fixed (or (not= top 0) (not= left 0))
+                       :min-width true
+                       :top top
+                       :left left
+                       :options options}]))
 
 (mf/defc deleted-project-item*
   {::mf/private true}
-  [{:keys [project files]}]
+  [{:keys [project files layout]}]
   (let [project-files  (filterv #(= (:project-id %) (:id project)) files)
 
         empty?         (empty? project-files)
@@ -175,14 +179,14 @@
                                 :type 1
                                 :subtitle (tr "dashboard.empty-placeholder-files-subtitle")}]
 
-        [:> grid*
-         {:project project
-          :files project-files
-          :origin :deleted
-          :can-edit false
-          :can-restore true
-          :limit limit
-          :selected-files selected-files}])]]))
+        [:> grid* {:project project
+                   :files project-files
+                   :origin :deleted
+                   :can-edit false
+                   :can-restore true
+                   :limit limit
+                   :layout layout
+                   :selected-files selected-files}])]]))
 
 (mf/defc menu*
   {::mf/private true}
@@ -215,7 +219,7 @@
        (tr "labels.deleted")]]]))
 
 (mf/defc deleted-section*
-  [{:keys [team projects]}]
+  [{:keys [team projects layout on-layout-change]}]
   (let [deleted-map
         (mf/deref ref:deleted-files)
 
@@ -240,13 +244,15 @@
 
         ;; Calculate deletion days based on team subscription
         deletion-days
-        (let [subscription (get team :subscription)
-              sub-type     (get subscription :type)
-              sub-status   (get subscription :status)
-              canceled?    (contains? #{"canceled" "unpaid"} sub-status)]
+        (let [profile           (mf/deref refs/profile)
+              subscription-type (get-subscription-type (:subscription team))
+              nitrate-type      (get-in profile [:subscription :type])
+              nitrate-active?   (dnt/is-valid-license? profile)]
           (cond
-            (and (= "unlimited" sub-type) (not canceled?)) 30
-            (and (= "enterprise" sub-type) (not canceled?)) 90
+            (and nitrate-active?
+                 (contains? #{"enterprise" "nitrate"} nitrate-type)) 90
+            (= subscription-type "unlimited") 30
+            (= subscription-type "enterprise") 90
             :else 7))
 
         on-delete-all
@@ -283,13 +289,16 @@
                 (dd/clear-selected-files)))
 
     [:*
-     [:> header* {:team team}]
+     [:> header* {:team team
+                  :layout layout
+                  :on-change on-layout-change}]
      [:section {:class (stl/css :dashboard-container :no-bg)
                 :data-testid "deleted-page-section"}
       [:*
        [:div {:class (stl/css :no-bg)}
 
-        [:> menu* {:team-id team-id :section :dashboard-deleted}]
+        [:> menu* {:team-id team-id
+                   :section :dashboard-deleted}]
 
         (if (seq projects)
           [:*
@@ -319,6 +328,7 @@
                                 (sort-by :modified-at #(compare %2 %1))))]
                [:> deleted-project-item* {:project project
                                           :files files
+                                          :layout layout
                                           :key id}]))]
 
           ;; when no deleted projects
