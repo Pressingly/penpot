@@ -81,6 +81,29 @@ export class ImportImageTool extends Tool<ImportImageArgs> {
         );
     }
 
+    /**
+     * Builds the plugin code that imports the image. The file name and data are caller-influenced and the
+     * code runs with the writable Penpot API, so they are embedded as JSON string literals rather than
+     * spliced in raw.
+     *
+     * @param params - the encoded image and the optional placement arguments
+     */
+    static buildImportCode(
+        params: Pick<ImportImageArgs, "x" | "y" | "width" | "height"> & {
+            base64Data: string;
+            mimeType: string;
+            fileName: string;
+        }
+    ): string {
+        return `
+            const rectangle = await penpotUtils.importImage(
+                ${JSON.stringify(params.base64Data)}, ${JSON.stringify(params.mimeType)}, ${JSON.stringify(params.fileName)}, 
+                ${params.x ?? "undefined"}, ${params.y ?? "undefined"}, 
+                ${params.width ?? "undefined"}, ${params.height ?? "undefined"});
+            return { shapeId: rectangle.id };
+            `;
+    }
+
     protected async executeCore(args: ImportImageArgs): Promise<ToolResponse> {
         // check that file path is absolute
         FileUtils.checkPathIsAbsolute(args.filePath);
@@ -106,15 +129,7 @@ export class ImportImageTool extends Tool<ImportImageArgs> {
 
         // generate and execute JavaScript code to import the image
         const fileName = path.basename(args.filePath);
-        const escapedBase64 = base64Data.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-        const escapedFileName = fileName.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-        const code = `
-            const rectangle = await penpotUtils.importImage(
-                '${escapedBase64}', '${mimeType}', '${escapedFileName}', 
-                ${args.x ?? "undefined"}, ${args.y ?? "undefined"}, 
-                ${args.width ?? "undefined"}, ${args.height ?? "undefined"});
-            return { shapeId: rectangle.id };
-            `;
+        const code = ImportImageTool.buildImportCode({ base64Data, mimeType, fileName, ...args });
         const task = new ExecuteCodePluginTask({ code: code });
         const executionResult = await this.mcpServer.pluginBridge.executePluginTask(task);
 
