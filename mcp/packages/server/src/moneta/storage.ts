@@ -5,10 +5,10 @@
  * in-flight authorize transactions, our own authorization codes, and the
  * access-token → identity map. Two backends:
  *
- * - In-memory (default). Restarts drop everything, which is survivable:
- *   identity is re-derived from Cognito's userInfo endpoint, short-lived
- *   txns/codes just force the user back through /authorize, and MCP clients
- *   re-register on an invalid_client error. Single-replica only.
+ * - In-memory (default). Restarts drop everything: identity is re-derived
+ *   from Cognito's userInfo endpoint and short-lived txns/codes just force the
+ *   user back through /authorize, but MCP clients that cache their client_id
+ *   get invalid_client until they re-register by hand. Single-replica only.
  * - Valkey/Redis via MCP_OAUTH_STORAGE_URL (redis://valkey:6379/13 in the
  *   devstack), mirroring surfsense-mcp (DB 11) and plane-mcp (DB 12). Values
  *   are AES-256-GCM encrypted with a key HKDF-derived from the client secret
@@ -26,6 +26,7 @@ import type { Logger } from "pino";
 export interface KeyValueStore {
     get(collection: string, key: string): Promise<string | null>;
     set(collection: string, key: string, value: string, ttlSeconds: number): Promise<void>;
+    expire(collection: string, key: string, ttlSeconds: number): Promise<void>;
     delete(collection: string, key: string): Promise<void>;
 }
 
@@ -71,6 +72,14 @@ export class MemoryStore implements KeyValueStore {
 
     async set(collection: string, key: string, value: string, ttlSeconds: number): Promise<void> {
         this.entries.set(compoundKey(collection, key), { value, expiresAt: Date.now() + ttlSeconds * 1000 });
+    }
+
+    async expire(collection: string, key: string, ttlSeconds: number): Promise<void> {
+        const value = await this.get(collection, key);
+        if (value === null) {
+            return;
+        }
+        await this.set(collection, key, value, ttlSeconds);
     }
 
     async delete(collection: string, key: string): Promise<void> {
@@ -121,6 +130,7 @@ export class ValkeyStore implements KeyValueStore {
         private readonly redis: {
             get(key: string): Promise<string | null>;
             set(key: string, value: string, mode: "EX", ttl: number): Promise<unknown>;
+            expire(key: string, seconds: number): Promise<unknown>;
             del(key: string): Promise<unknown>;
         },
         private readonly encryption: ValueEncryption
@@ -136,6 +146,10 @@ export class ValkeyStore implements KeyValueStore {
 
     async set(collection: string, key: string, value: string, ttlSeconds: number): Promise<void> {
         await this.redis.set(compoundKey(collection, key), this.encryption.encrypt(value), "EX", Math.ceil(ttlSeconds));
+    }
+
+    async expire(collection: string, key: string, ttlSeconds: number): Promise<void> {
+        await this.redis.expire(compoundKey(collection, key), Math.ceil(ttlSeconds));
     }
 
     async delete(collection: string, key: string): Promise<void> {

@@ -161,7 +161,7 @@ export async function installMonetaAuth(app: ExpressApp, logger: Logger): Promis
             scopesSupported: UPSTREAM_SCOPE.split(" "),
             authorizationOptions: { rateLimit },
             tokenOptions: { rateLimit },
-            clientRegistrationOptions: { rateLimit },
+            clientRegistrationOptions: { rateLimit, clientSecretExpirySeconds: 0 },
         })
     );
 
