@@ -206,6 +206,18 @@ function redirectUriAllowed(uri: string, allowList: string[] | null): boolean {
 }
 
 /**
+ * Registrations made before clientSecretExpirySeconds was set to 0 carry the
+ * SDK's 30-day secret expiry, which /token enforces even while the sliding
+ * registration TTL keeps the record alive.
+ */
+function withNonExpiringSecret(client: OAuthClientInformationFull): OAuthClientInformationFull {
+    if (!client.client_secret_expires_at) {
+        return client;
+    }
+    return { ...client, client_secret_expires_at: 0 };
+}
+
+/**
  * DCR client store. The SDK's /register handler generates client_id/secret;
  * we only validate redirect URIs against MCP_ALLOWED_CLIENT_REDIRECT_URIS
  * (unset = allow all, matching the FastMCP servers' default — the real gate
@@ -223,8 +235,9 @@ export class MonetaClientsStore implements OAuthRegisteredClientsStore {
         if (!stored) {
             return undefined;
         }
+        const client = withNonExpiringSecret(JSON.parse(stored) as OAuthClientInformationFull);
         await this.extendClientLifetime(clientId);
-        return JSON.parse(stored) as OAuthClientInformationFull;
+        return client;
     }
 
     /**

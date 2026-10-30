@@ -62,6 +62,22 @@ test("getClient returns undefined for an unknown client without refreshing", asy
     assert.deepEqual(expireCalls, []);
 });
 
+test("getClient clears a legacy client secret expiry so /token keeps accepting the client", async () => {
+    const legacy = { ...CLIENT, client_secret: "secret", client_secret_expires_at: 1_702_592_000 };
+    const { store } = recordingStore({ [legacy.client_id]: JSON.stringify(legacy) });
+    const clients = new MonetaClientsStore(store, null, recordingLogger().logger);
+
+    assert.deepEqual(await clients.getClient(legacy.client_id), { ...legacy, client_secret_expires_at: 0 });
+});
+
+test("getClient does not refresh the TTL of a record that fails to parse", async () => {
+    const { store, expireCalls } = recordingStore({ [CLIENT.client_id]: "not-json" });
+    const clients = new MonetaClientsStore(store, null, recordingLogger().logger);
+
+    await assert.rejects(clients.getClient(CLIENT.client_id), SyntaxError);
+    assert.deepEqual(expireCalls, []);
+});
+
 test("getClient still returns the client and logs when the TTL refresh fails", async () => {
     const { store } = recordingStore({ [CLIENT.client_id]: JSON.stringify(CLIENT) }, async () => {
         throw new Error("valkey unavailable");
