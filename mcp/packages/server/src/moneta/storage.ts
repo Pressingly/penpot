@@ -5,10 +5,10 @@
  * in-flight authorize transactions, our own authorization codes, and the
  * access-token → identity map. Two backends:
  *
- * - In-memory (default). Restarts drop everything, which is survivable:
- *   identity is re-derived from Cognito's userInfo endpoint, short-lived
- *   txns/codes just force the user back through /authorize, and MCP clients
- *   re-register on an invalid_client error. Single-replica only.
+ * - In-memory (default). Restarts drop everything: identity is re-derived
+ *   from Cognito's userInfo endpoint and short-lived txns/codes just force the
+ *   user back through /authorize, but MCP clients that cache their client_id
+ *   get invalid_client until they re-register by hand. Single-replica only.
  * - Valkey/Redis via MCP_OAUTH_STORAGE_URL (redis://valkey:6379/13 in the
  *   devstack), mirroring surfsense-mcp (DB 11) and plane-mcp (DB 12). Values
  *   are AES-256-GCM encrypted with a key HKDF-derived from the client secret
