@@ -26,6 +26,7 @@ import type { Logger } from "pino";
 export interface KeyValueStore {
     get(collection: string, key: string): Promise<string | null>;
     set(collection: string, key: string, value: string, ttlSeconds: number): Promise<void>;
+    expire(collection: string, key: string, ttlSeconds: number): Promise<void>;
     delete(collection: string, key: string): Promise<void>;
 }
 
@@ -71,6 +72,14 @@ export class MemoryStore implements KeyValueStore {
 
     async set(collection: string, key: string, value: string, ttlSeconds: number): Promise<void> {
         this.entries.set(compoundKey(collection, key), { value, expiresAt: Date.now() + ttlSeconds * 1000 });
+    }
+
+    async expire(collection: string, key: string, ttlSeconds: number): Promise<void> {
+        const value = await this.get(collection, key);
+        if (value === null) {
+            return;
+        }
+        await this.set(collection, key, value, ttlSeconds);
     }
 
     async delete(collection: string, key: string): Promise<void> {
@@ -121,6 +130,7 @@ export class ValkeyStore implements KeyValueStore {
         private readonly redis: {
             get(key: string): Promise<string | null>;
             set(key: string, value: string, mode: "EX", ttl: number): Promise<unknown>;
+            expire(key: string, seconds: number): Promise<unknown>;
             del(key: string): Promise<unknown>;
         },
         private readonly encryption: ValueEncryption
@@ -136,6 +146,10 @@ export class ValkeyStore implements KeyValueStore {
 
     async set(collection: string, key: string, value: string, ttlSeconds: number): Promise<void> {
         await this.redis.set(compoundKey(collection, key), this.encryption.encrypt(value), "EX", Math.ceil(ttlSeconds));
+    }
+
+    async expire(collection: string, key: string, ttlSeconds: number): Promise<void> {
+        await this.redis.expire(compoundKey(collection, key), Math.ceil(ttlSeconds));
     }
 
     async delete(collection: string, key: string): Promise<void> {

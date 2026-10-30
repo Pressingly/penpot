@@ -220,7 +220,25 @@ export class MonetaClientsStore implements OAuthRegisteredClientsStore {
 
     async getClient(clientId: string): Promise<OAuthClientInformationFull | undefined> {
         const stored = await this.storage.get(COLLECTION_CLIENTS, clientId);
-        return stored ? (JSON.parse(stored) as OAuthClientInformationFull) : undefined;
+        if (!stored) {
+            return undefined;
+        }
+        await this.extendClientLifetime(clientId);
+        return JSON.parse(stored) as OAuthClientInformationFull;
+    }
+
+    /**
+     * Sliding expiry: MCP clients cache their client_id and never re-register,
+     * so a fixed TTL from registration would strand active clients. Only
+     * clients unused for CLIENT_TTL_SECONDS expire. Best-effort: a failed
+     * refresh must not fail the lookup that already succeeded.
+     */
+    private async extendClientLifetime(clientId: string): Promise<void> {
+        try {
+            await this.storage.expire(COLLECTION_CLIENTS, clientId, CLIENT_TTL_SECONDS);
+        } catch (error) {
+            this.logger.warn(error, "Could not extend the registration TTL of MCP client %s", clientId);
+        }
     }
 
     async registerClient(
