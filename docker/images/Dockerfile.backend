@@ -64,11 +64,21 @@ ENV LANG='C.UTF-8' \
     TZ=Etc/UTC \
     LD_LIBRARY_PATH=/opt/imagick/lib/deps
 
+# DHI's +deb13uN+dhiM gcc-14 revisions sort below the base image's +dhiM, so
+# apt never moves gcc-14-base to the libgomp1 candidate on its own.
 RUN set -ex; \
     apt-get -qq update; \
     apt-get -qqy --no-install-recommends install passwd; \
     useradd -U -M -u 1001 -s /bin/false -d /opt/penpot penpot; \
     apt-get -qq -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" dist-upgrade; \
+    GCC14_VERSION="$(apt-cache policy libgomp1 | awk '/Candidate:/ {print $2}')"; \
+    apt-get -qqy --no-install-recommends --allow-downgrades --no-remove install \
+        gcc-14-base="${GCC14_VERSION}" \
+        libgcc-s1="${GCC14_VERSION}" \
+        libstdc++6="${GCC14_VERSION}" \
+        libgomp1="${GCC14_VERSION}" \
+        libatomic1="${GCC14_VERSION}" \
+    ; \
     apt-get -qqy --no-install-recommends install \
         ca-certificates \
         curl \
@@ -77,7 +87,6 @@ RUN set -ex; \
         libfontconfig1 \
         libfreetype6 \
         libglib2.0-0 \
-        libgomp1 \
         libheif1 \
         libjpeg62-turbo \
         liblcms2-2 \
