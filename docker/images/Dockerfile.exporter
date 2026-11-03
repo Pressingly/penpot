@@ -29,11 +29,12 @@ RUN set -ex; \
 RUN set -ex; \
     apt-get -qq update; \
     GCC14_VERSION="$(apt-cache policy libgomp1 | awk '/Candidate:/ {print $2}')"; \
-    apt-get -qqy --no-install-recommends --allow-downgrades install \
+    apt-get -qqy --no-install-recommends --allow-downgrades --no-remove install \
       gcc-14-base="${GCC14_VERSION}" \
       libgcc-s1="${GCC14_VERSION}" \
       libstdc++6="${GCC14_VERSION}" \
       libgomp1="${GCC14_VERSION}" \
+      libatomic1="${GCC14_VERSION}" \
     ; \
     apt-get -qqy install \
       \
