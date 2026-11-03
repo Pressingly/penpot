@@ -24,8 +24,18 @@ RUN set -ex; \
     locale-gen; \
     find /usr/share/i18n/locales/ -type f ! -name "en_US" ! -name "POSIX" ! -name "C" -delete;
 
+# DHI's +deb13uN+dhiM gcc-14 revisions sort below the base image's +dhiM, so
+# apt never moves gcc-14-base to the libgomp1 candidate on its own.
 RUN set -ex; \
     apt-get -qq update; \
+    GCC14_VERSION="$(apt-cache policy libgomp1 | awk '/Candidate:/ {print $2}')"; \
+    apt-get -qqy --no-install-recommends --allow-downgrades --no-remove install \
+      gcc-14-base="${GCC14_VERSION}" \
+      libgcc-s1="${GCC14_VERSION}" \
+      libstdc++6="${GCC14_VERSION}" \
+      libgomp1="${GCC14_VERSION}" \
+      libatomic1="${GCC14_VERSION}" \
+    ; \
     apt-get -qqy install \
       \
       xvfb \
@@ -64,7 +74,6 @@ RUN set -ex; \
       libxkbcommon0 \
       libxrandr2 \
       \
-      libgomp1 \
       libheif1 \
       libjpeg62-turbo \
       liblcms2-2 \
