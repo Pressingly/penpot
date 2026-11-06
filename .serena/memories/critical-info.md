@@ -7,7 +7,7 @@ You are working on the GitHub project `penpot/penpot`, a monorepo.
 - Edits/stale refs/duplication cleanup: `mem:memory-maintenance`.
 - Cross-cutting testing principles, TDD workflow, and anti-patterns: `mem:testing`.
 - Verified Clojure language behaviors that contradict common assumptions (e.g. `int?` covers `Long`; `integer?` is the general predicate): `mem:clojure/idioms` — read before assuming stdlib predicate semantics.
-- When designing a solution or an API, read `mem:clojure/design-rules` (function shape, boundary checks, naming).
+- Read `mem:clojure/design-rules` (function shape, boundary checks, naming) before writing or modifying Clojure/ClojureScript code — not only when designing a solution or an API.
 
 # Development workflow
 
@@ -16,6 +16,7 @@ You are working on the GitHub project `penpot/penpot`, a monorepo.
   - Before `gh issue create` → `mem:workflow/creating-issues` (title derivation, body template, labels, Issue Type)
   - Before `gh pr create` / `gh pr edit` → `mem:workflow/creating-prs` (title format, body structure, "Note:" line)
 - Before a repo-wide pnpm version update → `mem:workflow/updating-pnpm` (workspace layout, `scripts/sync-pnpm-version` flow, the stamp-missing-field and ignored-builds gotchas, verification steps)
+- Before bumping a non-JS dependency pinned in `docker/images/` (JDK, ImageMagick) → `mem:workflow/docker-images`
 - **Never `git push`, force-push, or modify `git origin`** (or any other remote). The user pushes from their own shell; if a push is required, say so and wait. Never amend a commit that the user has already pushed unless explicitly asked.
 - **Never edit `CHANGES.md` by hand.** The changelog is generated from GitHub milestones during the release process; update it only via the `update-changelog` skill flow or on explicit user request.
 - You have access to the GitHub CLI `gh` or corresponding MCP tools.
@@ -55,6 +56,8 @@ The memory is structured in a way that you can get the critical information abou
 - `scripts/psql` — PostgreSQL client wrapper with devenv defaults. Companion: `scripts/db-schema` for DDL dumps. See `mem:scripts/psql`.
 - `scripts/taiga.py` — Fetch public issues, user stories, and tasks from the Penpot Taiga project without authentication. See `mem:scripts/taiga`.
 - `scripts/gh.py` — GitHub operations helper: list milestone issues, fetch PR details, compare against CHANGES.md. Requires `gh` CLI. See `mem:scripts/gh`.
+- `scripts/project-anomalies.py` — Main-board anomaly check for a milestone (`check` writes `tmp/<MILESTONE>-ANOMALIES.md`). Bulk resolution via `scripts/gh.py`. See `mem:scripts/project-anomalies`.
+- `scripts/changelog.py` — Changelog checks for the `update-changelog` skill: `check-merged` (PR merge status), `cross-ref` (milestone PRs vs changelog section), `report` (anomaly report to CHANGES-ISSUES.md). Calls `scripts/gh.py` via subprocess. See `mem:scripts/changelog`.
 - `scripts/error-reports.mjs` — Query error reports via RPC API with token authentication. Supports list/get operations with filtering and pagination. See `mem:scripts/error-reports`.
 - `scripts/clean-node-modules` — Remove stale `node_modules` from all pnpm workspaces (root, modules, member packages). Keeps the shared pnpm store at `<repo>/.pnpm-store` unless `--store`; ignores `external/` and `.opencode/`. Usage and reinstall steps: `mem:workflow/updating-pnpm`.
 - `scripts/ci` — CI orchestration script: runs lint, tests, and format checks per module (`frontend backend common render-wasm exporter mcp plugins library`). Logs go to `.ci-logs/`; read the log file on failure. See `mem:scripts/ci`.

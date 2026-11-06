@@ -1,5 +1,36 @@
 # CHANGELOG
 
+## 2.18.6
+
+### :bug: Bugs fixed
+
+- Fix upload endpoints storing server files when the path points outside the temp dir [#12771](https://github.com/penpot/penpot/issues/12771) (PR: [#12772](https://github.com/penpot/penpot/pull/12772))
+
+## 2.18.5
+
+### :bug: Bugs fixed
+
+- Fix the Admin Console failing on every URL on Docker deployments by reverting the subpath support [#12358](https://github.com/penpot/penpot/pull/12358)
+
+## 2.18.4
+
+### :bug: Bugs fixed
+
+- Fix storage GC deleting nothing when one pending object is still referenced [#12276](https://github.com/penpot/penpot/issues/12276) (PR: [#12269](https://github.com/penpot/penpot/pull/12269))
+- Fix objects GC stopping file deletion when one file still has a child row [#12277](https://github.com/penpot/penpot/issues/12277) (PR: [#12269](https://github.com/penpot/penpot/pull/12269))
+- Fix file restore leaving its storage objects marked for deletion [#12278](https://github.com/penpot/penpot/issues/12278) (PR: [#12269](https://github.com/penpot/penpot/pull/12269))
+- Fix backend workers staying parked forever when nested calls take the same concurrency limits [#12279](https://github.com/penpot/penpot/issues/12279) (PR: [#12269](https://github.com/penpot/penpot/pull/12269))
+- Fix one profile's activity blocking the audit events of every other profile [#12280](https://github.com/penpot/penpot/issues/12280) (PR: [#12269](https://github.com/penpot/penpot/pull/12269))
+- Fix storage garbage collection blocking database vacuum during long deletions [#12396](https://github.com/penpot/penpot/issues/12396) (PR: [#12397](https://github.com/penpot/penpot/pull/12397))
+- Fix saving a version taking seconds and the version quota never counting saved versions [#12404](https://github.com/penpot/penpot/issues/12404) (PR: [#12405](https://github.com/penpot/penpot/pull/12405))
+- Fix file_change accumulating revisions that the objects GC never collects [#12418](https://github.com/penpot/penpot/issues/12418) (PR: [#12419](https://github.com/penpot/penpot/pull/12419))
+
+### :sparkles: New features & Enhancements
+
+- Add a graceful instance drain through the /readyz endpoint [#12281](https://github.com/penpot/penpot/issues/12281) (PR: [#12269](https://github.com/penpot/penpot/pull/12269))
+- Add an accumulated queue gauge to the CLIMIT metrics [#12282](https://github.com/penpot/penpot/issues/12282) (PR: [#12269](https://github.com/penpot/penpot/pull/12269))
+- Expose the backend log events as a metric by logger and level [#12312](https://github.com/penpot/penpot/issues/12312) (PR: [#12313](https://github.com/penpot/penpot/pull/12313))
+
 ## 2.18.3
 
 ### :bug: Bugs fixed
@@ -257,6 +288,7 @@
 - Use hard reload for render engine switching in the workspace menu [#10441](https://github.com/penpot/penpot/issues/10441) (PR: [#10444](https://github.com/penpot/penpot/pull/10444))
 - Rotate size badge when shape is rotated [#10386](https://github.com/penpot/penpot/issues/10386) (PR: [#10393](https://github.com/penpot/penpot/pull/10393))
 - Add separate internal URI for exporter to handle Docker deployments where internal and public URIs differ [#10627](https://github.com/penpot/penpot/issues/10627) (PR: [#10630](https://github.com/penpot/penpot/pull/10630))
+- Make throwValidationErrors default to true for v2 manifest plugins [#10401](https://github.com/penpot/penpot/issues/10401) (PR: [#10433](https://github.com/penpot/penpot/pull/10433))
 
 ### :bug: Bugs fixed
 
@@ -364,6 +396,14 @@
 - Fix text shape position-data to include required fills in WASM and DOM calculation paths [#10646](https://github.com/penpot/penpot/issues/10646) (PR: [#10650](https://github.com/penpot/penpot/pull/10650))
 - Log expired OIDC tokens as auth failures instead of server errors [#10635](https://github.com/penpot/penpot/issues/10635) (PR: [#10636](https://github.com/penpot/penpot/pull/10636))
 - Return 400 instead of 500 when ImageMagick rejects invalid uploaded images [#10642](https://github.com/penpot/penpot/issues/10642) (PR: [#10643](https://github.com/penpot/penpot/pull/10643))
+- Fix Plugin API board.guides setting and clearing throwing malli invalid-schema error (by @filipsajdak) [#9773](https://github.com/penpot/penpot/issues/9773) (PR: [#10503](https://github.com/penpot/penpot/pull/10503))
+- Fix Plugin API rejecting open-overlay and toggle-overlay interactions when position is not set (by @mvanhorn) [#10201](https://github.com/penpot/penpot/issues/10201) (PR: [#10503](https://github.com/penpot/penpot/pull/10503))
+- Fix Plugin API close-overlay interaction requiring animation field (by @mvanhorn) [#10202](https://github.com/penpot/penpot/issues/10202) (PR: [#10503](https://github.com/penpot/penpot/pull/10503))
+- Fix boards hidden from View Mode reappearing when adding prototype interactions (by @jeffrey701) [#10289](https://github.com/penpot/penpot/issues/10289) (PR: [#9695](https://github.com/penpot/penpot/pull/9695))
+- Fix Plugin API PenpotUtils.createVariantContainer assigning variant properties to wrong components [#10506](https://github.com/penpot/penpot/issues/10506) (PR: [#10562](https://github.com/penpot/penpot/pull/10562))
+- Fix mask inside flex layout shifting position or size when child image visibility changes [#10537](https://github.com/penpot/penpot/issues/10537) (PR: [#10697](https://github.com/penpot/penpot/pull/10697))
+- Fix path ends selector missing arrow icons and incorrect divider colors [#10593](https://github.com/penpot/penpot/issues/10593) (PR: [#10631](https://github.com/penpot/penpot/pull/10631))
+- Fix webhook form prefilling hardcoded metadata URI default [#10722](https://github.com/penpot/penpot/issues/10722) (PR: [#10723](https://github.com/penpot/penpot/pull/10723))
 
 ## 2.16.2
 

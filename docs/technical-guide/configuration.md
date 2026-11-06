@@ -447,6 +447,16 @@ In a high-availability (HA) scenario, managing the state outside of replicas is 
 - Valkey: Penpot only needs one Valkey instance to function correctly. Due to the nature of the data it manages, replication isn't even essential.
 - User media storage: This should not be configured with local storage but rather with centralized storage, such as Kubernetes PVC or S3.
 
+### Draining a backend instance
+
+To restart one backend without affecting ongoing clients, take it out of the
+load balancer first. From the backend REPL, run `(app.srepl.main/set-offline)`.
+The `/readyz` endpoint then answers `503 OFFLINE`, so the load balancer stops
+sending new requests to that instance while the requests already in flight
+finish normally. Wait for the traffic to drop, restart the process, and the
+instance comes back online on its own. To undo the drain without a restart,
+run `(app.srepl.main/set-online)`. Drain one instance at a time.
+
 ## Backend
 
 This section enumerates the backend only configuration variables.
@@ -474,7 +484,7 @@ PENPOT_SECRET_KEY: my-super-secure-key
 
 ### Database
 
-Penpot only supports PostgreSQL and we highly recommend >=13 version. If you are using official
+Penpot only supports PostgreSQL and we highly recommend >=15 version. If you are using official
 docker images this is already solved for you.
 
 Essential database configuration:

@@ -2,6 +2,12 @@
 
 Commit only on explicit request. Before commit: `git status`; exclude unrelated user changes.
 
+**Never stage a plan file.** A plan is session bookkeeping, not part of the
+change: the commit carries the code and the tests. The `implement-plan` flow
+still closes the plan (`Status: done` plus one `Review Log` line with the issue
+URL); that is not a file to ship, and its absence from the commit is correct,
+not a missing piece.
+
 Do not guess or hallucinate git author information (Name or Email). Never include the
 `--author` flag in git commands unless specifically instructed by the user for a unique
 case; assume the local environment is already configured. Allow git commit to
@@ -37,8 +43,10 @@ that breaks them is wrong, even if the code is right.
   - For another commit: `./scripts/check-commit -c <ref>`
 - **NEVER** hand-wave the body as "one long line". If a line exceeds 76,
   break it at a space.
+- **NEVER add a `Co-authored-by:` trailer.** It is forbidden; `scripts/check-commit` fails the commit when any line matches it (case-insensitive).
+- CI runs `scripts/check-commit` on every new commit (`mem:workflow/creating-commits` is enforced by `.github/workflows/commit-checker.yml`), so a forbidden trailer fails the build.
 - Exceptions inside the body (do not wrap these): `Signed-off-by:`,
-  `Co-authored-by:`, `AI-assisted-by:` trailers, and lines carrying a URL.
+  `AI-assisted-by:` trailers, and lines carrying a URL.
 
 **AI-assisted-by trailer rules:**
 - Use only the model name, e.g. `mimo-v2.5`, `deepseek-v4-flash`
