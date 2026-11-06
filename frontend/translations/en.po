@@ -1535,6 +1535,10 @@ msgstr ""
 msgid "errors.comment-error"
 msgstr "There was an error with the comment"
 
+#: src/app/main/errors.cljs:499
+msgid "errors.connection-error"
+msgstr "Cannot reach the server. Check your connection and try again."
+
 #: src/app/main/errors.cljs:414
 msgid "errors.deprecated"
 msgstr ""
@@ -1584,6 +1588,10 @@ msgstr "The email «%s» has many permanent bounce reports."
 #: src/app/main/ui/dashboard/team.cljs:219, src/app/main/ui/dashboard/team.cljs:1062, src/app/main/ui/onboarding/team_choice.cljs:121
 msgid "errors.email-spam-or-permanent-bounces"
 msgstr "The email «%s» has been reported as spam or permanently bounce."
+
+#: src/app/main/data/exports/assets.cljs
+msgid "errors.export-failed"
+msgstr "The export failed. Try again in a moment."
 
 #: src/app/main/errors.cljs:391
 msgid "errors.feature-mismatch"
@@ -1799,7 +1807,16 @@ msgstr "The registration is currently disabled."
 #: src/app/main/errors.cljs:216
 msgid "errors.save-failed"
 msgstr ""
-"Autosave is not working due to an error. Contact support to report the error and reload to continue from your last saved version."
+"Autosave has stopped for this session, so your changes since the last successful save cannot be saved. Download the report to help us fix it, then reload the page, or leave this file and open it again, to keep editing."
+
+#: src/app/main/data/persistence.cljs:310
+msgid "errors.save-retrying"
+msgstr "Connection lost. Retrying to save your changes."
+
+#: src/app/main/errors.cljs
+msgid "errors.save-still-retrying"
+msgstr ""
+"Your changes are not saved yet because Penpot cannot reach the server. They are kept, and Penpot will keep trying to save them. Keep this tab open until they are saved."
 
 #: src/app/main/errors.cljs:337
 msgid "errors.svg-parser.invalid-svg"
@@ -2159,6 +2176,10 @@ msgstr "Include shared library assets in file libraries"
 #: src/app/main/ui/exports/files.cljs:123
 msgid "files-download-modal.title"
 msgstr "Download files"
+
+#: src/app/main/ui/exports/files.cljs
+msgid "files-download-modal.unsaved-changes"
+msgstr "Some of your latest changes are not saved yet, so this download will not include them."
 
 #: src/app/main/ui/settings/password.cljs:31
 msgid "generic.error"
@@ -6906,6 +6927,10 @@ msgstr "Remove guide"
 msgid "workspace.debug.title"
 msgstr "Debugging tools"
 
+#: src/app/main/data/exports/assets.cljs
+msgid "workspace.export.unsaved-changes"
+msgstr "Some of your latest changes are not saved yet, so this export may not include them."
+
 #: src/app/main/ui/workspace/sidebar/layers.cljs:841
 msgid "workspace.focus.focus-mode"
 msgstr "Focus mode"
@@ -7132,6 +7157,10 @@ msgstr "Unlock guides"
 #: src/app/main/ui/viewer/header.cljs:98, src/app/main/ui/workspace/right_header.cljs:95
 msgid "workspace.header.reset-zoom"
 msgstr "Reset"
+
+#: src/app/main/ui/workspace/left_header.cljs:125
+msgid "workspace.header.retrying"
+msgstr "Retrying to save"
 
 #: src/app/main/ui/workspace/left_header.cljs:123
 msgid "workspace.header.save-error"
