@@ -4,9 +4,8 @@ Backend: JVM Clojure; Integrant; PostgreSQL; Redis/Valkey; RPC; HTTP; storage; m
 
 ## Focused memories
 
-- RPC, DB helpers, workers, cron: `mem:backend/rpc-db-worker-subtleties`
+- RPC, DB helpers, workers, cron, CLIMIT, config and HTTP/session middleware, http self-metrics, media processing, and file data persistence: `mem:backend/subtleties`
 - Storage abstraction, logical buckets, object lifecycle, deduplication, access, and garbage collection: `mem:backend/storage`.
-- HTTP sessions, config, media processing, and file data persistence: `mem:backend/http-storage-filedata-subtleties`.
 - Auth flows, permission model, teams, projects, invitations, comments, webhooks, audit: `mem:backend/auth-permissions-product-domains`
 - Audit-log event collection (RPC wrapper, frontend ingestion), telemetry duality, webhook fan-out, error reporters, Nexus archival and retention: `mem:backend/audit-log`
 - Services, task-queue/Pub-Sub topology constraints -> `mem:prod-infra/core`.
@@ -23,6 +22,7 @@ Backend: JVM Clojure; Integrant; PostgreSQL; Redis/Valkey; RPC; HTTP; storage; m
 - `app.worker`: task execution/cron plumbing.
 - `app.main`: Integrant system map and component wiring.
 - `app.config`: `PENPOT_*` env config and feature flags.
+- `app.health`: per-process availability flag; `/readyz` answers 503 while offline. Flipped from `app.srepl.main` (`set-offline` / `set-online`).
 - `app.srepl.*`: development REPL helpers for manual backend operations (data inspection, migration helpers, one-off admin tasks).
 - `app.nitrate`, `app.rpc.commands.nitrate`, and `app.rpc.management.nitrate`: external Nitrate subscription/organization integration, gated by the `:nitrate` feature flag and shared-key HTTP calls.
 
@@ -41,16 +41,18 @@ Backend RPC command areas without focused memories include access tokens, binfil
 
 Database migrations live in `backend/src/app/migrations/`; pure SQL migrations are under `backend/src/app/migrations/sql/`. SQL filenames conventionally start with a sequence and verb/table description, e.g. `0026-mod-profile-table-add-is-active-field`. Applied migrations are tracked in the `migrations` table.
 
+Migrations must stay within PostgreSQL 15 syntax: the official docker images (`docker/images/docker-compose.yaml`) pin `postgres:15`, so anything newer breaks those deployments (`SET STORAGE DEFAULT` is PostgreSQL 16, for instance). The documented floor is >=15.
+
 For interactive PostgreSQL access with correct dev defaults, use `scripts/psql`; to dump
 the current DDL schema, use `scripts/db-schema` (see `mem:scripts/psql`).
 
-For deeper details on transaction semantics, advisory locks, Transit vs JSON helpers, and dev/test DB URLs: `mem:backend/rpc-db-worker-subtleties`.
+For deeper details on transaction semantics, advisory locks, Transit vs JSON helpers, and dev/test DB URLs: `mem:backend/subtleties`.
 
 ## Background tasks
 
 A task handler is an Integrant component with `ig/assert-key`, `ig/expand-key`, and `ig/init-key`, returning the function run by the worker. New tasks also need wiring in `app.main`: handler config, worker registry entry, and cron entry if scheduled.
 
-For worker dispatch, cron, retry semantics, deduplication, and queue internals: `mem:backend/rpc-db-worker-subtleties`.
+For worker dispatch, cron, retry semantics, deduplication, and queue internals: `mem:backend/subtleties`.
 
 ## REPL
 
@@ -87,7 +89,7 @@ Fixtures can populate local data for manual testing/perf work. From the backend 
 
 * **Type Hinting:** Use explicit JVM type hints (e.g. `^String`, `^long`) in performance-critical paths to avoid reflection overhead.
 * **Batch inserts:** Use `db/insert-many!` for bulk row inserts — generates a single SQL with multiple parameter tuples. Avoid on very large datasets (SQL length / parameter count limits).
-* **Server-side cursors:** Use `db/plan` (fetch-size 1000, forward-only, read-only) or `db/cursor` for large result sets. Never fetch large collections into memory at once.
+* **Server-side cursors:** Use `db/plan` (fetch-size 1000, forward-only, read-only) for large result sets. Never fetch large collections into memory at once. `db/plan` is an `IReduceInit`: `reduce`/`transduce` over it (`sequence` does not work on it), and with `partition-all` the transducer's completing arity is what flushes the last partial chunk. A plan row is a **view over the open result set**, valid only inside the reducing function: read the columns you need right there — buffering rows to read them later (a `partition-all` buffer, a lazy seq) silently yields nil columns. `db/cursor` (manual `DECLARE`/`FETCH`) is a leftover with no callers left.
 * **Transaction discipline:** Use `tx-run!` for writes (opens a transaction), `run!` for reads (single connection, no transaction). Set `:read-only` on `tx-run!` when applicable to let PostgreSQL optimize.
 
 ## Lint and Format

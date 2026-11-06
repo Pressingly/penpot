@@ -40,11 +40,13 @@
 
 (declare create-file-media-object)
 
-(def ^:private sql:get-team-id-for-file
-  "SELECT p.team_id
-     FROM file AS f
-     JOIN project AS p ON (p.id = f.project_id)
-    WHERE f.id = ?")
+;; TEMPORARILY DISABLED (2026-10-19): only used by the disabled
+;; media-storage-bytes-per-team quote check below. Kept for re-enable.
+;; (def ^:private sql:get-team-id-for-file
+;;   "SELECT p.team_id
+;;      FROM file AS f
+;;      JOIN project AS p ON (p.id = f.project_id)
+;;     WHERE f.id = ?")
 
 (def ^:private schema:upload-file-media-object
   [:map {:title "upload-file-media-object"}
@@ -61,14 +63,20 @@
                 [:process-image/global]]}
   [{:keys [::db/pool] :as cfg} {:keys [::rpc/profile-id file-id content] :as params}]
   (files/check-edition-permissions! pool profile-id file-id)
-  (media.v/validate-media-type! content)
-  (media.v/validate-media-size! content)
+  (media.v/check-media-type content)
+  (media.v/check-media-size content)
+  (media.v/check-upload-path content)
 
-  (let [team-id (:team-id (db/exec-one! pool [sql:get-team-id-for-file file-id]))]
-    (quotes/check! cfg {::quotes/id        ::quotes/media-storage-bytes-per-team
-                        ::quotes/profile-id profile-id
-                        ::quotes/team-id    team-id
-                        ::quotes/incr       (:size content)}))
+  ;; TEMPORARILY DISABLED (2026-10-19): media-storage-bytes-per-team
+  ;; quote performs a full SUM over storage_object per upload (3-12s in
+  ;; prod on a 3.5TB DB, ~34 slow executions/hour). Disabled until we
+  ;; land a cheaper approximation (cached counter / rewritten query).
+  ;; TODO: re-enable with the new implementation.
+  ;; (let [team-id (:team-id (db/exec-one! pool [sql:get-team-id-for-file file-id]))]
+  ;;   (quotes/check! cfg {::quotes/id        ::quotes/media-storage-bytes-per-team
+  ;;                       ::quotes/profile-id profile-id
+  ;;                       ::quotes/team-id    team-id
+  ;;                       ::quotes/incr       (:size content)}))
 
   (db/run! cfg (fn [{:keys [::db/conn] :as cfg}]
                  ;; We get the minimal file for proper checking if
@@ -358,6 +366,7 @@
    ::sm/params schema:upload-chunk
    ::sm/result schema:upload-chunk-result}
   [cfg {:keys [::rpc/profile-id session-id index content]}]
+  (media.v/check-upload-path content)
   (let [session (db/tx-run! cfg check-upload-chunk-slot session-id profile-id index content)]
     (l/trc :hint "upload-chunk"
            :session-id session-id
@@ -506,8 +515,8 @@
                       content (-> content
                                   (assoc :filename (str "upload:" name))
                                   (assoc :mtype mtype)
-                                  (media.v/validate-media-type!)
-                                  (media.v/validate-media-size!))
+                                  (media.v/check-media-type)
+                                  (media.v/check-media-size))
                       mobj    (create-file-media-object cfg (assoc params
                                                                    :id id
                                                                    :from-chunks? true
