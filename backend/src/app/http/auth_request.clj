@@ -81,8 +81,15 @@
   (some-> (cf/get :mpass-edge-secret) str/trim))
 
 (defn- corporate-id
+  "The configured SMB corporate id, or nil when unset or blank. A
+  CHANGE_ME_ placeholder is returned as-is so the gate stays on and
+  refuses everyone instead of failing open."
   []
-  (mpass-token/configured (cf/get :smb-corporate-id)))
+  (some-> (cf/get :smb-corporate-id) str/trim not-empty))
+
+(defn- placeholder-corporate-id?
+  [expected]
+  (str/starts-with? expected "CHANGE_ME_"))
 
 (defn- carries-identity-headers?
   [request]
@@ -123,20 +130,27 @@
   [request verifier]
   (when-let [expected (corporate-id)]
     (let [token (yreq/get-header request "x-auth-request-access-token")]
-      (if (str/blank? token)
+      (cond
+        (placeholder-corporate-id? expected)
+        "placeholder_config"
+
+        (str/blank? token)
         "missing_token"
+
+        :else
         (let [{:keys [claims reason]} (mpass-token/verify verifier token)]
           (cond
             reason                                       reason
             (not= "true" (get claims corporate-claim))   "not_corporate"
             (not= expected (get claims corporate-id-claim)) "wrong_organization"))))))
 
-;; A signed token whose claims name another organization is refused even
-;; on an established session; any other failure there (expired, JWKS
-;; outage) is only logged, since mpass-auth-proxy already enforces the
-;; corporate id at login and on every refresh.
+;; A signed token whose claims name another organization, or a placeholder
+;; corporate id, is refused even on an established session; any other
+;; failure there (expired, JWKS outage) is only logged, since
+;; mpass-auth-proxy already enforces the corporate id at login and on every
+;; refresh.
 (def ^:private claim-mismatch-reasons
-  #{"not_corporate" "wrong_organization"})
+  #{"not_corporate" "wrong_organization" "placeholder_config"})
 
 (defn- established-session?
   [cfg session-pid email]
@@ -362,6 +376,8 @@
     (l/err :hint (str "x-auth-request: PENPOT_MPASS_EDGE_SECRET is unset, a CHANGE_ME_ placeholder "
                       "or shorter than " edge/min-secret-length " characters, mPass identity "
                       "headers will be ignored and SSO login is disabled")))
+  (when (some-> (corporate-id) placeholder-corporate-id?)
+    (l/err :hint "x-auth-request: SMB_CORPORATE_ID is a CHANGE_ME_ placeholder: every mPass login is refused"))
   (when (and (corporate-id)
              (or (nil? (mpass-token/cognito-issuer-from-config cf/config))
                  (not (mpass-token/configured? verifier))))

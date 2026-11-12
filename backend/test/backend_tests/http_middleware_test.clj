@@ -686,8 +686,25 @@
     (t/is (= {:status 200 :profile-id (:id bob)}
              (gated-request {:profile bob :session-pid (:id alice) :token (tk/sign (tk/access-claims))})))))
 
-(t/deftest x-auth-request-placeholder-corporate-id-disables-the-gate
+(t/deftest x-auth-request-placeholder-corporate-id-refuses-everyone
   (binding [cf/config (assoc cf/config :smb-corporate-id "  CHANGE_ME_SMB_CORPORATE_ID ")]
+    (let [{:keys [calls fetch]} (tk/counting-fetcher)
+          alice    (th/create-profile* (swap! profile-seq inc) {:is-active true})
+          bob      (th/create-profile* (swap! profile-seq inc) {:is-active true})
+          captured (volatile! nil)
+          handler  (capturing-handler captured (gate-cfg fetch))
+          token    (tk/sign (tk/access-claims))
+          send     (fn [profile session-pid]
+                     (handler (cond-> (edge-request {:headers {"x-auth-request-email" (:email profile)
+                                                               "x-auth-request-access-token" token}})
+                                session-pid (assoc ::session/profile-id session-pid))))]
+      (t/is (= 403 (::yres/status (send alice nil))) "establishing a session")
+      (t/is (= 403 (::yres/status (send bob (:id alice)))) "re-keying a session")
+      (t/is (= 403 (::yres/status (send alice (:id alice)))) "established session")
+      (t/is (= 0 @calls) "no token is verified"))))
+
+(t/deftest x-auth-request-blank-corporate-id-keeps-the-gate-off
+  (binding [cf/config (assoc cf/config :smb-corporate-id "   ")]
     (let [profile  (th/create-profile* (swap! profile-seq inc) {:is-active true})
           captured (volatile! nil)
           handler  (capturing-handler captured (gate-cfg failing-fetch))
