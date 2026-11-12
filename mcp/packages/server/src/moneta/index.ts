@@ -8,9 +8,9 @@
  * - `index.ts`            — forces multi-user mode when Cognito auth is enabled.
  * - `PenpotMcpServer.ts`  — `start()` calls `installMonetaAuth(app, logger)`
  *                           before registering the /mcp /sse /messages routes.
- * - `PluginBridge.ts`     — prefers `monetaIdentityFromUpgrade(request)` over
- *                           the ?userToken= query parameter when pairing
- *                           plugin connections.
+ * - `PluginBridge.ts`     — `pluginUserToken(request, queryToken)` pairs
+ *                           plugin connections; in Cognito mode it uses only
+ *                           edge-trusted identity headers, never ?userToken=.
  *
  * The flow itself mirrors surfsense-mcp / plane-mcp: the /mcp endpoint is NOT
  * behind mPass (Traefik keeps strip-auth-headers only) and this server is its
@@ -20,4 +20,4 @@
 
 export { monetaAuthEnabled } from "./config";
 export { installMonetaAuth } from "./install";
-export { monetaIdentityFromUpgrade } from "./bridge";
+export { monetaIdentityFromUpgrade, pluginUserToken } from "./bridge";

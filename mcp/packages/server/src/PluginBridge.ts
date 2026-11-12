@@ -5,7 +5,7 @@ import { RemotePluginTask } from "./RemotePluginTask";
 import { PluginTaskRequest, PluginTaskResponse, PluginTaskResult } from "@penpot/mcp-common";
 import { createLogger } from "./logger";
 import type { PenpotMcpServer } from "./PenpotMcpServer";
-import { monetaIdentityFromUpgrade } from "./moneta";
+import { pluginUserToken } from "./moneta";
 import type { RedisBridge } from "./RedisBridge";
 
 const KEEP_ALIVE_TIME = 30000; // 30 seconds
@@ -108,9 +108,9 @@ export class PluginBridge {
     private setupWebSocketHandlers(): void {
         this.wsServer.on("connection", (ws: WebSocket, request: http.IncomingMessage) => {
             // extract userToken from query parameters
-            // (Moneta fork: the mPass identity headers take precedence in Cognito mode)
+            // (Moneta fork: edge-trusted mPass identity headers replace it in Cognito mode)
             const url = new URL(request.url!, `ws://${request.headers.host}`);
-            const userToken = monetaIdentityFromUpgrade(request) ?? url.searchParams.get("userToken");
+            const userToken = pluginUserToken(request, url.searchParams.get("userToken"));
 
             // require userToken if running in multi-user mode
             if (this.mcpServer.isMultiUserMode() && !userToken) {
