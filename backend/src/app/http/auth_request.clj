@@ -9,9 +9,15 @@
   proxy (e.g. oauth2-proxy, Authelia, Traefik ForwardAuth).
 
   Enabled via PENPOT_FLAGS: enable-x-auth-request-headers (parsed as :x-auth-request-headers).
-  Any request carrying an X-Auth-Request-Email header is treated as pre-authenticated.
-  A Penpot session cookie is created on the response so that the browser
-  does not need to visit the login screen.
+  A request carrying an X-Auth-Request-Email header is treated as
+  pre-authenticated only when it also carries PENPOT_MPASS_EDGE_SECRET in
+  X-Mpass-Edge-Secret, which Traefik sets on the SSO router; otherwise the
+  identity headers are ignored. A Penpot session cookie is created on the
+  response so that the browser does not need to visit the login screen.
+
+  With PENPOT_SMB_CORPORATE_ID set, the forwarded X-Auth-Request-Access-Token
+  is verified against the issuer's JWKS before its corporate claims are read
+  (see app.auth.mpass-token).
 
   Optional: enable-x-auth-request-auto-register (parsed as :x-auth-request-auto-register)
   automatically creates a Penpot profile (with a default team) for email addresses
@@ -20,20 +26,19 @@
   PENPOT_SMB_DEFAULT_WORKSPACE_NAME (team.name); no fallback to another team."
 
   (:require
+   [app.auth.mpass-token :as mpass-token]
    [app.common.logging :as l]
    [app.config :as cf]
    [app.db :as db]
    [app.http :as-alias http]
    [app.http.access-token :as-alias actoken]
+   [app.http.mpass-edge :as edge]
    [app.http.session :as session]
    [app.rpc.commands.auth :as auth]
    [app.rpc.commands.profile :as profile]
-   [app.util.json :as json]
    [cuerdas.core :as str]
    [yetti.request :as yreq]
-   [yetti.response :as yres])
-  (:import
-   java.util.Base64))
+   [yetti.response :as yres]))
 
 (set! *warn-on-reflection* true)
 
@@ -57,40 +62,72 @@
              :domain domain)
       (str (first (str/split email-claim #"@")) "@" domain))))
 
-(defn- check-corporate-id
-  "Validates the access_token's custom:corporate_id matches the configured
-  SMB corporate ID. Returns nil when the check passes (or enforcement is
-  disabled), or a 403 ring response map when it fails."
+(def ^:private identity-headers
+  ["x-auth-request-email" "x-auth-request-user"])
+
+(def ^:private mpass-id-headers
+  ["x-auth-request-user" "x-auth-request-preferred-username"])
+
+(def ^:private corporate-claim (keyword "custom:is_corporate"))
+(def ^:private corporate-id-claim (keyword "custom:corporate_id"))
+
+(def ^:private access-denied
+  {::yres/status  403
+   ::yres/headers {"content-type" "application/json"}
+   ::yres/body    "{\"error\":\"access_denied\"}"})
+
+(defn- edge-secret
+  []
+  (some-> (cf/get :mpass-edge-secret) str/trim))
+
+(defn- corporate-id
+  []
+  (some-> (cf/get :smb-corporate-id) str/trim not-empty))
+
+(defn- carries-identity-headers?
   [request]
-  (let [expected (cf/get :smb-corporate-id)]
-    (when (and expected (not (str/blank? expected)))
-      (let [access-token (yreq/get-header request "x-auth-request-access-token")]
-        (if (str/blank? access-token)
-          (do
-            (l/wrn :hint "x-auth-request: corporate-id enforcement active but no access token present")
-            {::yres/status  403
-             ::yres/headers {"content-type" "application/json"}
-             ::yres/body    "{\"error\":\"access_denied\"}"})
-          (let [parts   (str/split access-token #"\.")
-                payload (when (>= (count parts) 2)
-                          (try
-                            (let [decoded (String. ^bytes (.decode (Base64/getUrlDecoder) ^String (nth parts 1)) "UTF-8")]
-                              (json/decode decoded))
-                            (catch Exception e
-                              (l/wrn :hint "x-auth-request: failed to decode access token payload"
-                                     :cause e)
-                              nil)))
-                is-corp (get payload (keyword "custom:is_corporate"))
-                corp-id (get payload (keyword "custom:corporate_id"))]
-            (when (or (not= is-corp "true")
-                      (not= corp-id expected))
-              (l/wrn :hint "x-auth-request: corporate-id mismatch — denying access"
-                     :expected expected
-                     :is-corporate is-corp
-                     :corporate-id corp-id)
-              {::yres/status  403
-               ::yres/headers {"content-type" "application/json"}
-               ::yres/body    "{\"error\":\"access_denied\"}"})))))))
+  (some #(not (str/blank? (yreq/get-header request %))) identity-headers))
+
+(defn- mpass-id-for-logs
+  "The caller's mPass id, never an email: with email capture on,
+  X-Auth-Request-User carries the email."
+  [request]
+  (or (->> mpass-id-headers
+           (keep #(some-> (yreq/get-header request %) str/trim))
+           (remove #(or (str/blank? %) (str/includes? % "@")))
+           (first))
+      "-"))
+
+(defn- trusted-email-claim
+  "The proxy-asserted email, or nil when the request did not come
+  through the edge. Untrusted identity headers are dropped before
+  anything acts on them, so a forged header can neither log anyone in
+  nor re-key an existing session."
+  [request]
+  (cond
+    (edge/from-edge? request (edge-secret))
+    (yreq/get-header request "x-auth-request-email")
+
+    (carries-identity-headers? request)
+    (l/wrn :hint "x-auth-request: identity headers ignored, request lacks the edge secret"
+           :mpass-id (mpass-id-for-logs request)
+           :path (yreq/path request)
+           :remote-addr (yreq/remote-addr request))))
+
+(defn- corporate-rejection
+  "Why the caller fails the SMB corporate gate, or nil when it passes.
+  With PENPOT_SMB_CORPORATE_ID unset the gate is off and no token is
+  read."
+  [request verifier]
+  (when-let [expected (corporate-id)]
+    (let [token (yreq/get-header request "x-auth-request-access-token")]
+      (if (str/blank? token)
+        "missing_token"
+        (let [{:keys [claims reason]} (mpass-token/verify verifier token)]
+          (cond
+            reason                                       reason
+            (not= "true" (get claims corporate-claim))   "not_corporate"
+            (not= expected (get claims corporate-id-claim)) "wrong_organization"))))))
 
 (defn- auto-join-team!
   "_auto_join_workspace: ensure a ``team_profile_rel`` row for
@@ -174,7 +211,7 @@
   (fn [request]
     (let [atoken-pid  (::actoken/profile-id request)
           session-pid (::session/profile-id request)
-          email-claim (yreq/get-header request "x-auth-request-email")]
+          email-claim (trusted-email-claim request)]
       (cond
         ;; Access-token (API key) — programmatic identity issued out-of-band
         ;; by the user. Not a browser SSO session, so the header is not
@@ -182,8 +219,8 @@
         (some? atoken-pid)
         (handler request)
 
-        ;; No proxy header — trust whatever wrap-session decided. Without a
-        ;; header we have no upstream identity to compare against.
+        ;; No trusted proxy header — trust whatever wrap-session decided.
+        ;; Without one we have no upstream identity to compare against.
         (str/blank? email-claim)
         (handler request)
 
@@ -192,8 +229,13 @@
         ;; place that derives it from the resolved email local-part. We never
         ;; trust an upstream-supplied name (oauth2-proxy put the Cognito sub
         ;; UUID in x-auth-request-user), so there is nothing to forward here.
-        (if-let [corp-deny (check-corporate-id request)]
-          corp-deny
+        (if-let [reason (corporate-rejection request (::token-verifier cfg))]
+          (do
+            (l/wrn :hint "x-auth-request: mPass login refused"
+                   :reason reason
+                   :mpass-id (mpass-id-for-logs request)
+                   :path (yreq/path request))
+            access-denied)
           (let [email   (resolve-email email-claim)
                 profile (try
                           (get-or-register-profile cfg email nil)
@@ -276,6 +318,29 @@
                   ;; Fresh auth-token cookie; replaces the stale one the
                   ;; browser still has (if any).
                   (create-session! request response))))))))))
+
+(defn- report-misconfiguration!
+  [verifier]
+  (when-not (edge/usable-secret? (edge-secret))
+    (l/err :hint (str "x-auth-request: PENPOT_MPASS_EDGE_SECRET is unset or shorter than "
+                      edge/min-secret-length " characters, mPass identity headers will be "
+                      "ignored and SSO login is disabled")))
+  (when (and (corporate-id)
+             (or (nil? (mpass-token/cognito-issuer-from-config cf/config))
+                 (not (mpass-token/configured? verifier))))
+    (l/err :hint (str "x-auth-request: PENPOT_SMB_CORPORATE_ID is set but no Cognito issuer "
+                      "(PENPOT_MPASS_COGNITO_ISSUER_URL) or client id (PENPOT_MPASS_OIDC_CLIENT_ID) "
+                      "is configured, every mPass login will be refused"))))
+
+(defn with-token-verifier
+  "Adds the mPass token verifier the middleware checks forwarded tokens
+  with. Built once per router so every route shares one JWKS cache."
+  [cfg]
+  (if (contains? cf/flags :x-auth-request-headers)
+    (let [verifier (mpass-token/verifier-from-config cf/config)]
+      (report-misconfiguration! verifier)
+      (assoc cfg ::token-verifier verifier))
+    cfg))
 
 (def authz
   {:name ::authz
