@@ -127,3 +127,71 @@
   (t/is (nil? (mpass-token/token-issuer-from-config {:mpass-token-issuer-url "CHANGE_ME_"})))
   (t/is (= "https://issuer.example/.well-known/jwks.json"
            (mpass-token/jwks-url "https://issuer.example/"))))
+
+(t/deftest verified-tokens-are-remembered-until-they-expire
+  (let [now      (atom (System/currentTimeMillis))
+        {:keys [calls fetch]} (tk/counting-fetcher)
+        verifier (tk/make-verifier :fetch fetch :clock #(deref now))
+        exp      (+ (quot @now 1000) 120)
+        token    (tk/sign (tk/access-claims :exp exp))]
+    (t/is (some? (:claims (verify verifier token))))
+    (reset! (::mpass-token/state verifier) {:jwks {} :failed-at {tk/cognito-issuer @now}})
+    (t/is (some? (:claims (verify verifier token))) "served from the verified cache")
+    (t/is (= 1 @calls))
+    (reset! now (* 1000 (+ exp 120)))
+    (t/is (= "expired" (reason verifier token)) "re-verified once past exp")))
+
+(t/deftest failed-verifications-are-not-remembered
+  (let [verifier (tk/make-verifier)
+        token    (tk/sign (tk/access-claims) tk/attacker-key-pair)]
+    (t/is (= "bad_signature" (reason verifier token)))
+    (t/is (empty? @(::mpass-token/verified verifier)))))
+
+(t/deftest verified-cache-is-bounded
+  (let [verifier (mpass-token/make-verifier {:issuers [tk/cognito-issuer]
+                                             :client-id tk/client-id
+                                             :fetch-jwks (:fetch (tk/counting-fetcher))
+                                             :max-verified 3})]
+    (doseq [n (range 10)]
+      (t/is (some? (:claims (verify verifier (tk/sign (tk/access-claims :sub (str "user-" n)))))))
+      (t/is (<= (count @(::mpass-token/verified verifier)) 3)))))
+
+(t/deftest last-good-jwks-is-served-for-a-day-after-refresh-failures
+  (let [now      (atom 1000000000)
+        healthy? (atom true)
+        calls    (atom 0)
+        fetch    (fn [issuer]
+                   (swap! calls inc)
+                   (if @healthy?
+                     (get tk/jwks-by-issuer issuer)
+                     (throw (java.net.SocketTimeoutException. "timed out"))))
+        verifier (tk/make-verifier :fetch fetch :clock #(deref now))
+        fresh    #(tk/sign (tk/access-claims :sub (str (random-uuid))
+                                             :iat (quot @now 1000)
+                                             :exp (+ (quot @now 1000) 3600)))]
+    (t/is (some? (:claims (verify verifier (fresh)))))
+    (reset! healthy? false)
+    (swap! now + mpass-token/jwks-lifespan-ms)
+    (t/is (some? (:claims (verify verifier (fresh)))) "stale set served after a failed refresh")
+    (t/is (= 2 @calls))
+    (t/is (some? (:claims (verify verifier (fresh)))) "stale set served during the backoff")
+    (t/is (= 2 @calls) "no fetch inside the backoff window")
+    (swap! now + (- mpass-token/jwks-stale-max-ms mpass-token/jwks-lifespan-ms))
+    (t/is (= "jwks_unavailable" (reason verifier (fresh))) "older than a day")
+    (reset! healthy? true)
+    (swap! now + mpass-token/jwks-failure-backoff-ms)
+    (t/is (some? (:claims (verify verifier (fresh)))) "recovers once the IdP answers")))
+
+(t/deftest one-jwks-fetch-in-flight-per-issuer
+  (let [calls    (atom 0)
+        fetch    (fn [issuer]
+                   (swap! calls inc)
+                   (Thread/sleep 200)
+                   (get tk/jwks-by-issuer issuer))
+        verifier (tk/make-verifier :fetch fetch)
+        results  (->> (range 8)
+                      (map (fn [n] (future (verify verifier (tk/sign (tk/access-claims :sub (str "u" n)))))))
+                      (doall)
+                      (map deref))]
+    (t/is (every? :claims results))
+    (t/is (= 1 @calls))))

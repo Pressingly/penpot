@@ -14,22 +14,29 @@
   against its own JWKS, and nothing else is.
 
   `verify` returns `{:claims claims}` or `{:reason code}`; it never
-  throws."
+  throws. Verified tokens are remembered by digest until they expire.
+  A JWKS set that cannot be refreshed keeps being served for up to a day,
+  so an IdP blip does not lock out every user."
   (:require
    [app.common.exceptions :as ex]
    [app.common.logging :as l]
    [app.util.json :as json]
+   [buddy.core.codecs :as bc]
+   [buddy.core.hash :as bh]
    [buddy.sign.jwk :as jwk]
    [buddy.sign.jwt :as jwt]
    [cuerdas.core :as str]
    [java-http-clj.core :as http])
   (:import
    java.nio.charset.StandardCharsets
-   java.util.Base64))
+   java.util.Base64
+   java.util.concurrent.locks.ReentrantLock))
 
 (set! *warn-on-reflection* true)
 
 (def jwks-lifespan-ms (* 60 60 1000))
+(def jwks-stale-max-ms (* 24 60 60 1000))
+(def verified-cache-max-entries 10000)
 (def jwks-fetch-timeout-ms 2000)
 (def jwks-failure-backoff-ms (* 30 1000))
 (def unknown-kid-refresh-ms (* 30 1000))
@@ -91,7 +98,10 @@
   [{:keys [kid kty] :as jwk-data}]
   (when (and (string? kid) (= "RSA" kty))
     (let [pkey (ex/try! (jwk/public-key jwk-data))]
-      (when-not (ex/exception? pkey)
+      (if (ex/exception? pkey)
+        (l/wrn :hint "mpass token: skipping a JWK that cannot be imported"
+               :kid kid
+               :cause (ex-message pkey))
         [kid pkey]))))
 
 (defn jwks->keys
@@ -124,13 +134,18 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn make-verifier
-  [{:keys [issuers client-id fetch-jwks clock]
-    :or {clock #(System/currentTimeMillis)}}]
-  {::issuers (into #{} (keep issuer-url) issuers)
-   ::client-id (configured client-id)
-   ::fetch-jwks fetch-jwks
-   ::clock clock
-   ::state (atom {:jwks {} :failed-at {}})})
+  [{:keys [issuers client-id fetch-jwks clock max-verified]
+    :or {clock #(System/currentTimeMillis)
+         max-verified verified-cache-max-entries}}]
+  (let [issuers (into #{} (keep issuer-url) issuers)]
+    {::issuers issuers
+     ::client-id (configured client-id)
+     ::fetch-jwks fetch-jwks
+     ::clock clock
+     ::max-verified max-verified
+     ::locks (into {} (map (fn [issuer] [issuer (ReentrantLock.)])) issuers)
+     ::state (atom {:jwks {} :failed-at {}})
+     ::verified (atom {})}))
 
 (defn verifier-from-config
   [config]
@@ -180,45 +195,62 @@
   (when-let [failed-at (get-in state [:failed-at issuer])]
     (< (- now failed-at) jwks-failure-backoff-ms)))
 
-(defn- fresh-entry
-  [state issuer now]
-  (let [{:keys [fetched-at] :as entry} (get-in state [:jwks issuer])]
-    (when (and entry (< (- now fetched-at) jwks-lifespan-ms))
-      entry)))
+(defn- entry-age
+  [entry now]
+  (- now (:fetched-at entry)))
 
-(defn- refresh-jwks!
+(defn- needs-refresh?
+  [state issuer kid now]
+  (let [entry (get-in state [:jwks issuer])]
+    (and (not (recently-failed? state issuer now))
+         (or (nil? entry)
+             (>= (entry-age entry now) jwks-lifespan-ms)
+             (and (not (contains? (:keys entry) kid))
+                  (>= (entry-age entry now) unknown-kid-refresh-ms))))))
+
+(defn- fetch-into-state!
   [{:keys [::fetch-jwks ::state]} issuer now]
   (try
     (let [entry {:keys (fetch-jwks issuer) :fetched-at now}]
-      (swap! state assoc-in [:jwks issuer] entry)
-      entry)
+      (swap! state #(-> %
+                        (assoc-in [:jwks issuer] entry)
+                        (update :failed-at dissoc issuer))))
     (catch Throwable cause
-      (l/wrn :hint "mpass token: unable to fetch JWKS"
-             :issuer issuer
-             :cause (ex-message cause))
-      (swap! state assoc-in [:failed-at issuer] now)
-      nil)))
+      (let [last-good (get-in @state [:jwks issuer])]
+        (l/wrn :hint "mpass token: unable to fetch JWKS"
+               :issuer issuer
+               :serving-last-good-set (boolean (and last-good (< (entry-age last-good now) jwks-stale-max-ms)))
+               :cause (ex-message cause)))
+      (swap! state assoc-in [:failed-at issuer] now))))
 
-(defn- may-refresh-for-unknown-kid?
-  [entry kid now]
-  (and (not (contains? (:keys entry) kid))
-       (>= (- now (:fetched-at entry)) unknown-kid-refresh-ms)))
+(defn- refresh-jwks!
+  "Fetches the issuer's JWKS unless another caller refreshed it while
+  this one waited, so at most one fetch per issuer is in flight."
+  [verifier issuer kid]
+  (let [^ReentrantLock lock (get (::locks verifier) issuer)]
+    (.lock lock)
+    (try
+      (let [now (now-ms verifier)]
+        (when (needs-refresh? @(::state verifier) issuer kid now)
+          (fetch-into-state! verifier issuer now)))
+      (finally
+        (.unlock lock)))))
 
 (defn- signing-key
   [verifier issuer kid]
+  (when (needs-refresh? @(::state verifier) issuer kid (now-ms verifier))
+    (refresh-jwks! verifier issuer kid))
   (let [now   (now-ms verifier)
-        state @(::state verifier)]
-    (if (recently-failed? state issuer now)
+        entry (get-in @(::state verifier) [:jwks issuer])]
+    (cond
+      (or (nil? entry) (>= (entry-age entry now) jwks-stale-max-ms))
       (reject "jwks_unavailable")
-      (let [entry (or (fresh-entry state issuer now)
-                      (refresh-jwks! verifier issuer now))
-            entry (if (and entry (may-refresh-for-unknown-kid? entry kid now))
-                    (refresh-jwks! verifier issuer now)
-                    entry)]
-        (cond
-          (nil? entry)                (reject "jwks_unavailable")
-          (get-in entry [:keys kid])  {:key (get-in entry [:keys kid])}
-          :else                       (reject "unknown_signing_key"))))))
+
+      (contains? (:keys entry) kid)
+      {:key (get-in entry [:keys kid])}
+
+      :else
+      (reject "unknown_signing_key"))))
 
 (defn- unsign
   [verifier token pkey issuer]
@@ -259,13 +291,10 @@
           result
           (check-claims verifier (:claims result)))))))
 
-(defn verify
+(defn- verify-uncached
   [verifier token]
-  (let [parts (when (string? token) (unverified-parts token))]
+  (let [parts (unverified-parts token)]
     (cond
-      (not (configured? verifier))
-      (reject "verifier_unconfigured")
-
       (nil? parts)
       (reject "malformed")
 
@@ -277,3 +306,36 @@
 
       :else
       (verify-signed verifier token parts))))
+
+(defn- token-digest
+  [^String token]
+  (-> (.getBytes token StandardCharsets/UTF_8) bh/sha256 bc/bytes->hex))
+
+(defn- cached-claims
+  [verifier digest now]
+  (let [{:keys [claims expires-at]} (get @(::verified verifier) digest)]
+    (when (and claims (< now expires-at))
+      claims)))
+
+(defn- drop-expired
+  [cache now]
+  (into {} (filter (fn [[_ {:keys [expires-at]}]] (< now expires-at))) cache))
+
+(defn- remember
+  [cache max-entries digest claims now]
+  (let [cache (cond-> cache (>= (count cache) max-entries) (drop-expired now))
+        cache (if (>= (count cache) max-entries) {} cache)]
+    (assoc cache digest {:claims claims :expires-at (* 1000 (long (:exp claims)))})))
+
+(defn verify
+  [verifier token]
+  (if (or (not (configured? verifier)) (not (string? token)))
+    (reject (if (configured? verifier) "malformed" "verifier_unconfigured"))
+    (let [digest (token-digest token)
+          now    (now-ms verifier)]
+      (if-let [claims (cached-claims verifier digest now)]
+        {:claims claims}
+        (let [result (verify-uncached verifier token)]
+          (when-let [claims (:claims result)]
+            (swap! (::verified verifier) remember (::max-verified verifier) digest claims now))
+          result)))))

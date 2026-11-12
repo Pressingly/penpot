@@ -636,6 +636,59 @@
       (t/is (= (:id profile) (::session/profile-id @captured)))
       (t/is (= 0 @calls)))))
 
+(defn- gated-request
+  [{:keys [profile session-pid token fetch]}]
+  (binding [cf/config (assoc cf/config :smb-corporate-id tk/corporate-id)]
+    (let [captured (volatile! nil)
+          handler  (capturing-handler captured (gate-cfg (or fetch (:fetch (tk/counting-fetcher)))))
+          headers  (cond-> {"x-auth-request-email" (:email profile)}
+                     token (assoc "x-auth-request-access-token" token))
+          request  (cond-> (edge-request {:headers headers})
+                     session-pid (assoc ::session/profile-id session-pid))
+          response (handler request)]
+      {:status (::yres/status response)
+       :profile-id (::session/profile-id @captured)})))
+
+(defn- failing-fetch
+  [_]
+  (throw (java.net.SocketTimeoutException. "timed out")))
+
+(t/deftest x-auth-request-gate-is-lenient-on-an-established-session
+  (let [profile (th/create-profile* (swap! profile-seq inc) {:is-active true})
+        passes  {:status 200 :profile-id (:id profile)}
+        request #(gated-request (merge {:profile profile :session-pid (:id profile)} %))]
+    (t/is (= passes (request {:token (tk/sign (tk/access-claims :exp (- (tk/now-seconds) 3600)))})) "expired")
+    (t/is (= passes (request {:token (tk/sign (tk/access-claims)) :fetch failing-fetch})) "jwks unavailable")
+    (t/is (= passes (request {:token nil})) "missing token")
+    (t/is (= passes (request {:token (tk/sign (tk/access-claims) tk/attacker-key-pair)})) "unverifiable signature")
+    (t/is (= {:status 403 :profile-id nil}
+             (request {:token (tk/sign (tk/access-claims (keyword "custom:corporate_id") "other-corp"))}))
+          "signed wrong organization")
+    (t/is (= {:status 403 :profile-id nil}
+             (request {:token (tk/sign (tk/access-claims (keyword "custom:is_corporate") "false"))}))
+          "signed not corporate")))
+
+(t/deftest x-auth-request-gate-is-strict-when-re-keying
+  (let [alice (th/create-profile* (swap! profile-seq inc) {:is-active true})
+        bob   (th/create-profile* (swap! profile-seq inc) {:is-active true})]
+    (t/is (= {:status 403 :profile-id nil}
+             (gated-request {:profile bob :session-pid (:id alice)
+                             :token (tk/sign (tk/access-claims :exp (- (tk/now-seconds) 3600)))})))
+    (t/is (= {:status 403 :profile-id nil}
+             (gated-request {:profile bob :session-pid (:id alice)
+                             :token (tk/sign (tk/access-claims)) :fetch failing-fetch})))
+    (t/is (= {:status 200 :profile-id (:id bob)}
+             (gated-request {:profile bob :session-pid (:id alice) :token (tk/sign (tk/access-claims))})))))
+
+(t/deftest x-auth-request-placeholder-corporate-id-disables-the-gate
+  (binding [cf/config (assoc cf/config :smb-corporate-id "  CHANGE_ME_SMB_CORPORATE_ID ")]
+    (let [profile  (th/create-profile* (swap! profile-seq inc) {:is-active true})
+          captured (volatile! nil)
+          handler  (capturing-handler captured (gate-cfg failing-fetch))
+          response (handler (edge-request {:headers {"x-auth-request-email" (:email profile)}}))]
+      (t/is (= 200 (::yres/status response)))
+      (t/is (= (:id profile) (::session/profile-id @captured))))))
+
 (t/deftest x-auth-request-with-token-verifier-builds-one-verifier
   (binding [cf/flags (conj cf/flags :x-auth-request-headers)]
     (t/is (some? (:app.http.auth-request/token-verifier
