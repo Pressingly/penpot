@@ -3,6 +3,7 @@ import type * as http from "node:http";
 import test, { afterEach, beforeEach } from "node:test";
 import {
     createEdgeGate,
+    EDGE_SECRET_ENV,
     EDGE_SECRET_HEADER,
     edgeSecretProblem,
     monetaIdentityFromUpgrade,
@@ -85,6 +86,11 @@ test("ignores identity headers when the edge secret header is wrong", () => {
 test("ignores identity headers when the edge secret header is duplicated", () => {
     const request = edgeRequest({ [EDGE_SECRET_HEADER]: `${SECRET}, ${SECRET}` });
     assert.equal(monetaIdentityFromUpgrade(request, createEdgeGate(SECRET)), null);
+});
+
+test("reads the same edge secret variable as the Penpot backend", () => {
+    assert.equal(EDGE_SECRET_ENV, "PENPOT_MPASS_EDGE_SECRET");
+    assert.match(edgeSecretProblem(undefined) ?? "", /^PENPOT_MPASS_EDGE_SECRET is unset/);
 });
 
 test("an unusable configured secret trusts nothing, even a matching header", () => {

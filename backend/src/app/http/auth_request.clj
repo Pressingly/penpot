@@ -359,9 +359,9 @@
 (defn- report-misconfiguration!
   [verifier]
   (when-not (edge/usable-secret? (edge-secret))
-    (l/err :hint (str "x-auth-request: PENPOT_MPASS_EDGE_SECRET is unset or shorter than "
-                      edge/min-secret-length " characters, mPass identity headers will be "
-                      "ignored and SSO login is disabled")))
+    (l/err :hint (str "x-auth-request: PENPOT_MPASS_EDGE_SECRET is unset, a CHANGE_ME_ placeholder "
+                      "or shorter than " edge/min-secret-length " characters, mPass identity "
+                      "headers will be ignored and SSO login is disabled")))
   (when (and (corporate-id)
              (or (nil? (mpass-token/cognito-issuer-from-config cf/config))
                  (not (mpass-token/configured? verifier))))

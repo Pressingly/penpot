@@ -17,7 +17,7 @@
  *
  * Trust: the docker backend network is not a boundary — any container on it
  * can reach this port directly and set X-Auth-Request-* itself. Traefik's
- * SSO router therefore also sets X-Mpass-Edge-Secret to PENPOT_EDGE_SECRET,
+ * SSO router therefore also sets X-Mpass-Edge-Secret to PENPOT_MPASS_EDGE_SECRET,
  * and the identity headers are trusted only when that header matches. An
  * unusable secret trusts nothing.
  *
@@ -35,7 +35,7 @@ import { monetaAuthEnabled } from "./config";
 
 const logger = createLogger("moneta.bridge");
 
-export const EDGE_SECRET_ENV = "PENPOT_EDGE_SECRET";
+export const EDGE_SECRET_ENV = "PENPOT_MPASS_EDGE_SECRET";
 export const EDGE_SECRET_HEADER = "x-mpass-edge-secret";
 export const MIN_EDGE_SECRET_LENGTH = 32;
 const PLACEHOLDER_PREFIX = "CHANGE_ME_";

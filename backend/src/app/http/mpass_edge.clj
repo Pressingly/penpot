@@ -23,10 +23,13 @@
 
 (def min-secret-length 32)
 
+(def ^:private placeholder-prefix "CHANGE_ME_")
+
 (defn usable-secret?
   [secret]
   (and (string? secret)
-       (>= (count secret) min-secret-length)))
+       (>= (count secret) min-secret-length)
+       (not (.startsWith ^String secret ^String placeholder-prefix))))
 
 (defn- utf8-bytes
   ^bytes [^String s]

@@ -35,8 +35,12 @@ https://design-mcp.<domain>/mcp           wss://design.<domain>/mcp/ws
   `X-Auth-Request-User`. No identity → fail closed (401).
 - **Plugin leg.** Unchanged for the user: the Penpot plugin connects to
   `wss://design.<domain>/mcp/ws` (the URL penpot's `cfg/mcp-ws-uri` already
-  produces), which traverses mPass. The bridge prefers the injected
-  `X-Auth-Request-Email` header over the upstream `?userToken=` JWE.
+  produces), which traverses mPass. The bridge takes the pairing identity only
+  from edge-trusted headers: `X-Auth-Request-Email` / `X-Auth-Request-User`
+  count only when `X-Mpass-Edge-Secret` matches `PENPOT_MPASS_EDGE_SECRET`,
+  which Traefik injects on the SSO router. In Cognito mode the caller-controlled
+  `?userToken=` JWE is ignored, so a connection without a trusted identity gets
+  no token and is rejected.
 - The resolved identity is exposed to the untouched upstream handlers as
   `req.query.userToken`, so session bookkeeping and `PluginBridge` pairing
   work exactly as upstream wrote them. Each `mcp-session-id` is additionally
@@ -62,6 +66,7 @@ upstream `/mcp/stream?userToken=<JWE>` path effectively retires in this mode
 | `MCP_OAUTH_STORAGE_URL` | `redis://valkey:6379/13` — encrypted OAuth state (AES-256-GCM, key HKDF-derived from `OIDC_CLIENT_SECRET` or `MCP_JWT_SIGNING_KEY`). Unset = in-memory. |
 | `MCP_JWT_SIGNING_KEY` | Storage-encryption key material when there is no client secret. |
 | `MCP_ENV` | `production` logs a warning when storage is in-memory. |
+| `PENPOT_MPASS_EDGE_SECRET` | Edge secret, at least 32 characters, equal to the `X-Mpass-Edge-Secret` value Traefik sets on the Penpot SSO router (the same value the Penpot backend reads). Unset, short or `CHANGE_ME_`: identity headers are never trusted and every plugin connection is refused. |
 
 Valkey DB allocation: 11 = surfsense-mcp, 12 = plane-mcp, **13 = penpot-mcp**.
 

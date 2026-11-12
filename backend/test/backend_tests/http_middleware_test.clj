@@ -552,6 +552,12 @@
     (assert-ignored (th/make-dummy-request {:headers {"x-auth-request-email" "victim@example.com"
                                                       "x-mpass-edge-secret" "too-short"}}))))
 
+(t/deftest x-auth-request-placeholder-edge-secret-trusts-nothing
+  (let [placeholder "CHANGE_ME_PENPOT_EDGE_SECRET_0123456789abcdef"]
+    (binding [cf/config (assoc cf/config :mpass-edge-secret placeholder)]
+      (assert-ignored (th/make-dummy-request {:headers {"x-auth-request-email" "victim@example.com"
+                                                        "x-mpass-edge-secret" placeholder}})))))
+
 (t/deftest x-auth-request-unset-edge-secret-trusts-nothing
   (binding [cf/config (dissoc cf/config :mpass-edge-secret)]
     (assert-ignored (th/make-dummy-request {:headers {"x-auth-request-email" "victim@example.com"
