@@ -22,6 +22,7 @@
    [app.rpc.commands.profile :as profile]
    [app.tokens :as tokens]
    [backend-tests.helpers :as th]
+   [backend-tests.mpass-tokens :as tk]
    [clojure.string :as str]
    [clojure.test :as t]
    [mockery.core :refer [with-mocks]]
@@ -30,8 +31,22 @@
   (:import
    io.undertow.server.RequestTooBigException))
 
+(def ^:private test-edge-secret
+  "0123456789abcdef0123456789abcdef0123456789abcdef")
+
+(defn- with-test-edge-secret
+  [next]
+  (binding [cf/config (assoc cf/config :mpass-edge-secret test-edge-secret)]
+    (next)))
+
 (t/use-fixtures :once th/state-init)
-(t/use-fixtures :each th/database-reset)
+(t/use-fixtures :each th/database-reset with-test-edge-secret)
+
+(defn- edge-request
+  "A request as Traefik forwards it from the SSO router: carrying the
+  edge secret next to the identity headers."
+  [params]
+  (th/make-dummy-request (update params :headers assoc "x-mpass-edge-secret" test-edge-secret)))
 
 (t/deftest auth-middleware-1
   (let [request (volatile! nil)
@@ -272,7 +287,7 @@
         handler    (#'app.http.auth-request/wrap-authz
                     (fn [req] req)
                     (make-xauth-cfg))
-        request    (-> (th/make-dummy-request {:headers {"x-auth-request-email" "user@example.com"}})
+        request    (-> (edge-request {:headers {"x-auth-request-email" "user@example.com"}})
                        (assoc ::session/profile-id profile-id))
         result     (handler request)]
     (t/is (= profile-id (::session/profile-id result)))))
@@ -290,7 +305,7 @@
         handler  (#'app.http.auth-request/wrap-authz
                   (fn [req] (vreset! captured req) {::yres/status 200})
                   cfg)
-        request  (-> (th/make-dummy-request {:headers {"x-auth-request-email" (:email bob)}})
+        request  (-> (edge-request {:headers {"x-auth-request-email" (:email bob)}})
                      (assoc ::session/profile-id (:id alice)))
         response (handler request)]
     ;; Downstream handler sees bob's profile-id, not alice's.
@@ -308,7 +323,7 @@
         handler  (#'app.http.auth-request/wrap-authz
                   (fn [req] (vreset! captured req) {::yres/status 200})
                   cfg)
-        request  (-> (th/make-dummy-request {:headers {"x-auth-request-email" (:email profile)}})
+        request  (-> (edge-request {:headers {"x-auth-request-email" (:email profile)}})
                      (assoc ::session/profile-id (:id profile)))
         response (handler request)]
     (t/is (= (:id profile) (::session/profile-id @captured)))
@@ -328,7 +343,7 @@
         handler  (#'app.http.auth-request/wrap-authz
                   (fn [req] (vreset! captured req) {::yres/status 200})
                   cfg)
-        request  (-> (th/make-dummy-request {:headers {"x-auth-request-email" (:email bob)}})
+        request  (-> (edge-request {:headers {"x-auth-request-email" (:email bob)}})
                      (assoc ::session/profile-id (:id alice))
                      (assoc ::http/auth-data {:type :cookie
                                               :claims {:uid (:id alice)
@@ -353,7 +368,7 @@
         handler       (#'app.http.auth-request/wrap-authz
                        (fn [req] (vreset! captured req) {::yres/status 200})
                        cfg)
-        request       (-> (th/make-dummy-request {:headers {"x-auth-request-email" (:email bob)}})
+        request       (-> (edge-request {:headers {"x-auth-request-email" (:email bob)}})
                           (assoc ::session/profile-id (:id alice))
                           (assoc ::session/session alice-session))]
     (handler request)
@@ -393,8 +408,8 @@
                                                   :auth-token-cookie-renewal-max-age
                                                   renewal-threshold)
                                  ct/*clock* (ct/fixed-clock t1)]
-                         (middleware (th/make-dummy-request {:headers {"x-auth-request-email" (:email bob)}
-                                                             :cookies {"auth-token" seeded-token}})))
+                         (middleware (edge-request {:headers {"x-auth-request-email" (:email bob)}
+                                                    :cookies {"auth-token" seeded-token}})))
         rekeyed-token  (get-in response [::yres/cookies "auth-token" :value])
         followup       (middleware (th/make-dummy-request {:cookies {"auth-token" rekeyed-token}}))]
     ;; Cookie was re-keyed (not just renewed): the new token differs.
@@ -412,7 +427,7 @@
         handler    (#'app.http.auth-request/wrap-authz
                     (fn [req] req)
                     (make-xauth-cfg))
-        request    (-> (th/make-dummy-request {:headers {"x-auth-request-email" "user@example.com"}})
+        request    (-> (edge-request {:headers {"x-auth-request-email" "user@example.com"}})
                        (assoc ::access-token/profile-id profile-id))
         result     (handler request)]
     (t/is (= profile-id (::access-token/profile-id result)))))
@@ -424,7 +439,7 @@
         handler  (#'app.http.auth-request/wrap-authz
                   (fn [req] (vreset! captured req) {::yres/status 200})
                   cfg)
-        response (handler (th/make-dummy-request {:headers {"x-auth-request-email" (:email profile)}}))]
+        response (handler (edge-request {:headers {"x-auth-request-email" (:email profile)}}))]
     ;; The profile-id must be injected into the request seen by the downstream handler
     (t/is (= (:id profile) (::session/profile-id @captured)))
     ;; A session cookie must be set on the response
@@ -436,7 +451,7 @@
         handler  (#'app.http.auth-request/wrap-authz
                   (fn [_] {::yres/status 200})
                   (make-xauth-cfg))
-        response (handler (th/make-dummy-request {:headers {"x-auth-request-email" (:email profile)}}))]
+        response (handler (edge-request {:headers {"x-auth-request-email" (:email profile)}}))]
     (t/is (= 403 (::yres/status response)))))
 
 (t/deftest x-auth-request-inactive-profile-returns-403
@@ -444,7 +459,7 @@
         handler  (#'app.http.auth-request/wrap-authz
                   (fn [_] {::yres/status 200})
                   (make-xauth-cfg))
-        response (handler (th/make-dummy-request {:headers {"x-auth-request-email" (:email profile)}}))]
+        response (handler (edge-request {:headers {"x-auth-request-email" (:email profile)}}))]
     (t/is (= 403 (::yres/status response)))))
 
 (t/deftest x-auth-request-unknown-email-no-autoregister
@@ -452,7 +467,7 @@
         handler  (#'app.http.auth-request/wrap-authz
                   (fn [req] (vreset! captured req) {::yres/status 200})
                   (make-xauth-cfg))]
-    (handler (th/make-dummy-request {:headers {"x-auth-request-email" "nobody@example.com"}}))
+    (handler (edge-request {:headers {"x-auth-request-email" "nobody@example.com"}}))
     (t/is (nil? (::session/profile-id @captured)))))
 
 (t/deftest x-auth-request-auto-register-creates-active-profile
@@ -467,8 +482,8 @@
           ;; Cognito sub UUID. The middleware must IGNORE that header and derive
           ;; :fullname from the email local-part — sending it here proves it is
           ;; not trusted for the display name.
-          response (handler (th/make-dummy-request {:headers {"x-auth-request-email" email
-                                                              "x-auth-request-user" "892ae5ac-0021-7000-8000-000000000000"}}))]
+          response (handler (edge-request {:headers {"x-auth-request-email" email
+                                                     "x-auth-request-user" "892ae5ac-0021-7000-8000-000000000000"}}))]
       ;; Profile must be injected into the downstream request
       (t/is (uuid? (::session/profile-id @captured)))
       ;; A session cookie must be set so the browser is authenticated
@@ -495,7 +510,7 @@
           handler  (#'app.http.auth-request/wrap-authz
                     (fn [req] (vreset! captured req) {::yres/status 200})
                     cfg)
-          _        (handler (th/make-dummy-request {:headers {"x-auth-request-email" email}}))
+          _        (handler (edge-request {:headers {"x-auth-request-email" email}}))
           profile  (db/tx-run! cfg
                                (fn [{:keys [::db/conn]}]
                                  (profile/get-profile-by-email conn email)))
@@ -503,6 +518,206 @@
       (t/is (uuid? (:id profile)))
       (t/is (some #(not= (:team-id %) (:default-team-id profile)) rels)
             "profile should have a membership on the provisioned SMB (shared) team"))))
+
+;; X-Auth-Request edge trust and corporate gate (FOSS-781)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- capturing-handler
+  ([captured] (capturing-handler captured (make-xauth-cfg)))
+  ([captured cfg]
+   (#'app.http.auth-request/wrap-authz
+    (fn [req] (vreset! captured req) {::yres/status 200})
+    cfg)))
+
+(defn- assert-ignored
+  [request]
+  (binding [cf/flags (conj cf/flags :x-auth-request-auto-register)]
+    (let [captured (volatile! nil)
+          response ((capturing-handler captured) request)]
+      (t/is (= 200 (::yres/status response)))
+      (t/is (nil? (::session/profile-id @captured)))
+      (t/is (not (contains? (::yres/cookies response) "auth-token")))
+      (t/is (empty? (db/query th/*pool* :profile {:email "victim@example.com"}))))))
+
+(t/deftest x-auth-request-forged-header-without-edge-secret-is-ignored
+  (assert-ignored (th/make-dummy-request {:headers {"x-auth-request-email" "victim@example.com"
+                                                    "x-auth-request-user" "victim"}})))
+
+(t/deftest x-auth-request-forged-header-with-wrong-edge-secret-is-ignored
+  (assert-ignored (th/make-dummy-request {:headers {"x-auth-request-email" "victim@example.com"
+                                                    "x-mpass-edge-secret" (str test-edge-secret "x")}})))
+
+(t/deftest x-auth-request-short-edge-secret-trusts-nothing
+  (binding [cf/config (assoc cf/config :mpass-edge-secret "too-short")]
+    (assert-ignored (th/make-dummy-request {:headers {"x-auth-request-email" "victim@example.com"
+                                                      "x-mpass-edge-secret" "too-short"}}))))
+
+(t/deftest x-auth-request-placeholder-edge-secret-trusts-nothing
+  (let [placeholder "CHANGE_ME_PENPOT_EDGE_SECRET_0123456789abcdef"]
+    (binding [cf/config (assoc cf/config :mpass-edge-secret placeholder)]
+      (assert-ignored (th/make-dummy-request {:headers {"x-auth-request-email" "victim@example.com"
+                                                        "x-mpass-edge-secret" placeholder}})))))
+
+(t/deftest x-auth-request-unset-edge-secret-trusts-nothing
+  (binding [cf/config (dissoc cf/config :mpass-edge-secret)]
+    (assert-ignored (th/make-dummy-request {:headers {"x-auth-request-email" "victim@example.com"
+                                                      "x-mpass-edge-secret" ""}}))))
+
+(t/deftest x-auth-request-forged-header-does-not-rekey-existing-session
+  (let [alice    (th/create-profile* 1 {:is-active true})
+        bob      (th/create-profile* 2 {:is-active true})
+        captured (volatile! nil)
+        request  (-> (th/make-dummy-request {:headers {"x-auth-request-email" (:email bob)}})
+                     (assoc ::session/profile-id (:id alice)))
+        response ((capturing-handler captured) request)]
+    (t/is (= (:id alice) (::session/profile-id @captured)))
+    (t/is (not (contains? (::yres/cookies response) "auth-token")))))
+
+(t/deftest x-auth-request-access-token-path-ignores-forged-headers
+  (let [profile-id (random-uuid)
+        captured   (volatile! nil)
+        request    (-> (th/make-dummy-request {:headers {"x-auth-request-email" "victim@example.com"}})
+                       (assoc ::access-token/profile-id profile-id))
+        response   ((capturing-handler captured) request)]
+    (t/is (= 200 (::yres/status response)))
+    (t/is (= profile-id (::access-token/profile-id @captured)))
+    (t/is (nil? (::session/profile-id @captured)))))
+
+(defn- gate-cfg
+  [fetch]
+  (assoc (make-xauth-cfg) :app.http.auth-request/token-verifier (tk/make-verifier :fetch fetch)))
+
+(def ^:private profile-seq (atom 100))
+
+(defn- gated-login
+  [token & {:keys [fetch]}]
+  (binding [cf/config (assoc cf/config :smb-corporate-id tk/corporate-id)]
+    (let [profile  (th/create-profile* (swap! profile-seq inc) {:is-active true})
+          captured (volatile! nil)
+          handler  (capturing-handler captured (gate-cfg (or fetch (:fetch (tk/counting-fetcher)))))
+          headers  (cond-> {"x-auth-request-email" (:email profile)}
+                     token (assoc "x-auth-request-access-token" token))
+          response (handler (edge-request {:headers headers}))]
+      {:status (::yres/status response)
+       :logged-in? (= (:id profile) (::session/profile-id @captured))})))
+
+(t/deftest x-auth-request-gate-admits-verified-corporate-token
+  (t/is (= {:status 200 :logged-in? true} (gated-login (tk/sign (tk/access-claims)))))
+  (t/is (= {:status 200 :logged-in? true} (gated-login (tk/sign (tk/id-claims :iss tk/proxy-issuer) tk/proxy-key-pair)))))
+
+(t/deftest x-auth-request-gate-refuses-unverified-or-foreign-tokens
+  (let [refused {:status 403 :logged-in? false}]
+    (t/is (= refused (gated-login nil)) "missing token")
+    (t/is (= refused (gated-login (tk/sign (tk/access-claims) tk/attacker-key-pair))) "bad signature")
+    (t/is (= refused (gated-login (tk/sign (tk/access-claims :exp (- (tk/now-seconds) 3600))))) "expired")
+    (t/is (= refused (gated-login (tk/sign (tk/access-claims :iss "https://evil.example")))) "wrong issuer")
+    (t/is (= refused (gated-login (tk/sign (tk/access-claims :client_id "other")))) "wrong audience")
+    (t/is (= refused (gated-login (tk/unsigned-token (tk/access-claims)))) "alg none")
+    (t/is (= refused (gated-login (tk/hs256-token (tk/access-claims)))) "HS256")
+    (t/is (= refused (gated-login (tk/sign (tk/access-claims (keyword "custom:is_corporate") "false")))) "not corporate")
+    (t/is (= refused (gated-login (tk/sign (tk/access-claims (keyword "custom:corporate_id") "other-corp")))) "wrong organization")))
+
+(t/deftest x-auth-request-gate-refuses-when-jwks-is-unavailable
+  (t/is (= {:status 403 :logged-in? false}
+           (gated-login (tk/sign (tk/access-claims))
+                        :fetch (fn [_] (throw (java.net.SocketTimeoutException. "timed out")))))))
+
+(t/deftest x-auth-request-gate-refuses-without-a-verifier
+  (binding [cf/config (assoc cf/config :smb-corporate-id tk/corporate-id)]
+    (let [profile  (th/create-profile* 1 {:is-active true})
+          handler  (capturing-handler (volatile! nil))
+          response (handler (edge-request {:headers {"x-auth-request-email" (:email profile)
+                                                     "x-auth-request-access-token" (tk/sign (tk/access-claims))}}))]
+      (t/is (= 403 (::yres/status response))))))
+
+(t/deftest x-auth-request-gate-unset-reads-no-token
+  (binding [cf/config (dissoc cf/config :smb-corporate-id)]
+    (let [{:keys [calls fetch]} (tk/counting-fetcher)
+          profile               (th/create-profile* 1 {:is-active true})
+          captured              (volatile! nil)
+          handler               (capturing-handler captured (gate-cfg fetch))
+          response              (handler (edge-request {:headers {"x-auth-request-email" (:email profile)
+                                                                  "x-auth-request-access-token" "not-a-jwt"}}))]
+      (t/is (= 200 (::yres/status response)))
+      (t/is (= (:id profile) (::session/profile-id @captured)))
+      (t/is (= 0 @calls)))))
+
+(defn- gated-request
+  [{:keys [profile session-pid token fetch]}]
+  (binding [cf/config (assoc cf/config :smb-corporate-id tk/corporate-id)]
+    (let [captured (volatile! nil)
+          handler  (capturing-handler captured (gate-cfg (or fetch (:fetch (tk/counting-fetcher)))))
+          headers  (cond-> {"x-auth-request-email" (:email profile)}
+                     token (assoc "x-auth-request-access-token" token))
+          request  (cond-> (edge-request {:headers headers})
+                     session-pid (assoc ::session/profile-id session-pid))
+          response (handler request)]
+      {:status (::yres/status response)
+       :profile-id (::session/profile-id @captured)})))
+
+(defn- failing-fetch
+  [_]
+  (throw (java.net.SocketTimeoutException. "timed out")))
+
+(t/deftest x-auth-request-gate-is-lenient-on-an-established-session
+  (let [profile (th/create-profile* (swap! profile-seq inc) {:is-active true})
+        passes  {:status 200 :profile-id (:id profile)}
+        request #(gated-request (merge {:profile profile :session-pid (:id profile)} %))]
+    (t/is (= passes (request {:token (tk/sign (tk/access-claims :exp (- (tk/now-seconds) 3600)))})) "expired")
+    (t/is (= passes (request {:token (tk/sign (tk/access-claims)) :fetch failing-fetch})) "jwks unavailable")
+    (t/is (= passes (request {:token nil})) "missing token")
+    (t/is (= passes (request {:token (tk/sign (tk/access-claims) tk/attacker-key-pair)})) "unverifiable signature")
+    (t/is (= {:status 403 :profile-id nil}
+             (request {:token (tk/sign (tk/access-claims (keyword "custom:corporate_id") "other-corp"))}))
+          "signed wrong organization")
+    (t/is (= {:status 403 :profile-id nil}
+             (request {:token (tk/sign (tk/access-claims (keyword "custom:is_corporate") "false"))}))
+          "signed not corporate")))
+
+(t/deftest x-auth-request-gate-is-strict-when-re-keying
+  (let [alice (th/create-profile* (swap! profile-seq inc) {:is-active true})
+        bob   (th/create-profile* (swap! profile-seq inc) {:is-active true})]
+    (t/is (= {:status 403 :profile-id nil}
+             (gated-request {:profile bob :session-pid (:id alice)
+                             :token (tk/sign (tk/access-claims :exp (- (tk/now-seconds) 3600)))})))
+    (t/is (= {:status 403 :profile-id nil}
+             (gated-request {:profile bob :session-pid (:id alice)
+                             :token (tk/sign (tk/access-claims)) :fetch failing-fetch})))
+    (t/is (= {:status 200 :profile-id (:id bob)}
+             (gated-request {:profile bob :session-pid (:id alice) :token (tk/sign (tk/access-claims))})))))
+
+(t/deftest x-auth-request-placeholder-corporate-id-refuses-everyone
+  (binding [cf/config (assoc cf/config :smb-corporate-id "  CHANGE_ME_SMB_CORPORATE_ID ")]
+    (let [{:keys [calls fetch]} (tk/counting-fetcher)
+          alice    (th/create-profile* (swap! profile-seq inc) {:is-active true})
+          bob      (th/create-profile* (swap! profile-seq inc) {:is-active true})
+          captured (volatile! nil)
+          handler  (capturing-handler captured (gate-cfg fetch))
+          token    (tk/sign (tk/access-claims))
+          send     (fn [profile session-pid]
+                     (handler (cond-> (edge-request {:headers {"x-auth-request-email" (:email profile)
+                                                               "x-auth-request-access-token" token}})
+                                session-pid (assoc ::session/profile-id session-pid))))]
+      (t/is (= 403 (::yres/status (send alice nil))) "establishing a session")
+      (t/is (= 403 (::yres/status (send bob (:id alice)))) "re-keying a session")
+      (t/is (= 403 (::yres/status (send alice (:id alice)))) "established session")
+      (t/is (= 0 @calls) "no token is verified"))))
+
+(t/deftest x-auth-request-blank-corporate-id-keeps-the-gate-off
+  (binding [cf/config (assoc cf/config :smb-corporate-id "   ")]
+    (let [profile  (th/create-profile* (swap! profile-seq inc) {:is-active true})
+          captured (volatile! nil)
+          handler  (capturing-handler captured (gate-cfg failing-fetch))
+          response (handler (edge-request {:headers {"x-auth-request-email" (:email profile)}}))]
+      (t/is (= 200 (::yres/status response)))
+      (t/is (= (:id profile) (::session/profile-id @captured))))))
+
+(t/deftest x-auth-request-with-token-verifier-builds-one-verifier
+  (binding [cf/flags (conj cf/flags :x-auth-request-headers)]
+    (t/is (some? (:app.http.auth-request/token-verifier
+                  (app.http.auth-request/with-token-verifier {})))))
+  (binding [cf/flags (disj cf/flags :x-auth-request-headers)]
+    (t/is (= {} (app.http.auth-request/with-token-verifier {})))))
 
 (t/deftest parse-request-illegal-argument-exception
   ;; clojure.data.json raises IllegalArgumentException (case
