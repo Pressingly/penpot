@@ -238,6 +238,12 @@
     [:default-email-domain {:optional true} :string]
     [:smb-default-workspace-name {:optional true} :string]
     [:smb-corporate-id {:optional true} :string]
+    [:mpass-edge-secret {:optional true} :string]
+    [:mpass-cognito-issuer-url {:optional true} :string]
+    [:mpass-token-issuer-url {:optional true} :string]
+    [:mpass-oidc-client-id {:optional true} :string]
+    [:cognito-aws-region {:optional true} :string]
+    [:cognito-user-pool-id {:optional true} :string]
 
     [:ldap-attrs-email {:optional true} :string]
     [:ldap-attrs-fullname {:optional true} :string]

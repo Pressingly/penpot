@@ -23,6 +23,7 @@
 import type { Logger } from "pino";
 import { getOAuthProtectedResourceMetadataUrl, mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
+import { edgeGate } from "./bridge";
 import { CognitoClient } from "./cognito";
 import { loadMonetaAuthConfig, UPSTREAM_SCOPE } from "./config";
 import { CognitoProxyProvider } from "./provider";
@@ -128,6 +129,7 @@ function identityAsUserTokenMiddleware() {
  */
 export async function installMonetaAuth(app: ExpressApp, logger: Logger): Promise<void> {
     const config = loadMonetaAuthConfig();
+    edgeGate();
     if (config.allowedClientRedirectUris === null && config.isProduction) {
         // Matches the FastMCP siblings' default, but in production an open
         // allow-list lets any DCR client register any callback — the Cognito

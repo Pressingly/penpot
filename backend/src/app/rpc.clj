@@ -499,7 +499,8 @@
 (defmethod ig/init-key ::routes
   [_ {:keys [::methods ::management-methods ::setup/shared-keys] :as cfg}]
 
-  (let [public-uri (cf/get :public-uri)]
+  (let [public-uri (cf/get :public-uri)
+        cfg        (auth-request/with-token-verifier cfg)]
     ["/api"
      ["/management"
       ["/methods/:method-name"
