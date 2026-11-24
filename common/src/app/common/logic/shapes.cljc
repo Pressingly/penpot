@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 
 (ns app.common.logic.shapes
   (:require
@@ -10,6 +10,7 @@
    [app.common.data.macros :as dm]
    [app.common.files.changes-builder :as pcb]
    [app.common.files.helpers :as cfh]
+   [app.common.files.shapes-helpers :as cfsh]
    [app.common.geom.shapes :as gsh]
    [app.common.logic.variant-properties :as clvp]
    [app.common.types.component :as ctk]
@@ -29,7 +30,7 @@
   "When updating attributes that have a token applied, we must unapply it, because the value
   of the attribute now has been given directly, and does not come from the token.
   When applying a typography asset style we also unapply any typographic tokens."
-  [changes objects changed-sub-attr]
+  [changes objects changed-sub-attr changed-item-index]
   (let [new-objects     (pcb/get-objects changes)
         mod-obj-changes (->> (:redo-changes changes)
                              (filter #(= (:type %) :mod-obj)))
@@ -53,9 +54,18 @@
         (fn [shape changes attr]
           (let [shape-id    (dm/get-prop shape :id)
                 tokens      (get shape :applied-tokens {})
-                token-attrs (if (and (cfh/text-shape? shape) (= attr :content))
-                              (text-changed-attrs shape)
-                              (cto/shape-attr->token-attrs attr changed-sub-attr))]
+                ;; Fill and stroke tokens only ever live on the first item of
+                ;; the collection, so editing a later item or reordering items
+                ;; while the first one stays in place must not unapply them.
+                later-item? (and (contains? #{:fills :strokes} attr)
+                                 (if (some? changed-item-index)
+                                   (not (zero? changed-item-index))
+                                   (= (first (get shape attr))
+                                      (first (get (get new-objects shape-id) attr)))))
+                token-attrs (when-not later-item?
+                              (if (and (cfh/text-shape? shape) (= attr :content))
+                                (text-changed-attrs shape)
+                                (cto/shape-attr->token-attrs attr changed-sub-attr)))]
 
             (if (some #(contains? tokens %) token-attrs)
               (pcb/update-shapes changes [shape-id] #(cto/unapply-tokens-from-shape % token-attrs))
@@ -75,7 +85,7 @@
     (reduce check-shape changes mod-obj-changes)))
 
 (defn generate-update-shapes
-  [changes ids update-fn objects {:keys [attrs changed-sub-attr ignore-tree ignore-touched with-objects? translation?]}]
+  [changes ids update-fn objects {:keys [attrs changed-sub-attr changed-item-index ignore-tree ignore-touched with-objects? translation? skip-grid-reassignment?]}]
   (let [changes   (reduce
                    (fn [changes id]
                      (let [opts {:attrs attrs
@@ -86,9 +96,9 @@
                    (cond-> changes
                      (some? objects) (pcb/with-objects objects))
                    ids)
-        ;; Translation doesn't shift children between grid cells, so
-        ;; cell reassignment + child reorder are no-ops.
-        grid-ids (when-not translation?
+        ;; Translation keeps cell assignments; direction changes reflow them
+        ;; explicitly.
+        grid-ids (when-not (or translation? skip-grid-reassignment?)
                    (->> ids (filter (partial ctl/grid-layout? objects))))
         changes (cond-> changes
                   (seq grid-ids)
@@ -96,7 +106,7 @@
                       (pcb/reorder-grid-children ids))
 
                   (not ignore-touched)
-                  (generate-unapply-tokens objects changed-sub-attr))]
+                  (generate-unapply-tokens objects changed-sub-attr changed-item-index))]
     changes))
 
 (defn- generate-update-shape-flags
@@ -441,6 +451,18 @@
      [all-parents changes])))
 
 
+(defn- find-empty-variant-containers
+  [objects excluded-parent-id ids parent-ids]
+  (let [ids (set ids)]
+    (reduce (fn [to-delete candidate-id]
+              (let [parent (get objects candidate-id)]
+                (if (and (ctk/is-variant-container? parent)
+                         (empty? (remove ids (:shapes parent))))
+                  (conj to-delete (:id parent))
+                  to-delete)))
+            #{}
+            (remove #(= % excluded-parent-id) parent-ids))))
+
 (defn generate-relocate
   [changes parent-id to-index ids & {:keys [cell ignore-parents?]}]
   (let [objects     (pcb/get-objects changes)
@@ -544,128 +566,146 @@
 
 
         ;; Parents that are a variant-container that becomes empty
-        empty-variant-cont (reduce
-                            (fn [to-delete parent-id]
-                              (let [parent (get objects parent-id)]
-                                (if (and (ctk/is-variant-container? parent)
-                                         (empty? (remove (set ids) (:shapes parent))))
-                                  (conj to-delete (:id parent))
-                                  to-delete)))
-                            #{}
-                            (remove #(= % parent-id) all-parents))]
+        empty-variant-cont (find-empty-variant-containers objects parent-id ids all-parents)]
 
-    (-> changes
-        ;; Remove layout-item properties and tokens when moving a shape outside a layout
-        (cond-> (not (ctl/any-layout? parent))
-          (-> (pcb/update-shapes ids ctl/remove-layout-item-data)
-              (pcb/update-shapes ids cto/unapply-layout-item-tokens)))
+    (if (and (ctk/is-variant-container? parent)
+             (not (every? ctk/main-instance? shapes)))
+      changes
+      (-> changes
+          ;; Remove layout-item properties and tokens when moving a shape outside a layout
+          (cond-> (not (ctl/any-layout? parent))
+            (-> (pcb/update-shapes ids ctl/remove-layout-item-data)
+                (pcb/update-shapes ids cto/unapply-layout-item-tokens)))
 
-        ;; Remove the hide in viewer flag
-        (cond-> (and (not= uuid/zero parent-id) (cfh/frame-shape? parent))
-          (pcb/update-shapes ids #(cond-> % (cfh/frame-shape? %) (assoc :hide-in-viewer true))))
+          ;; Remove the hide in viewer flag
+          (cond-> (and (not= uuid/zero parent-id) (cfh/frame-shape? parent))
+            (pcb/update-shapes ids #(cond-> % (cfh/frame-shape? %) (assoc :hide-in-viewer true))))
 
-        ;; Remove the swap slots if it is moving to a different component
-        (pcb/update-shapes
-         child-heads-ids
-         (fn [shape]
-           (cond-> shape
-             (not= component-main-parent (ctn/find-component-main objects shape false))
-             (ctk/remove-swap-slot))))
+          ;; Remove the swap slots if it is moving to a different component
+          (pcb/update-shapes
+           child-heads-ids
+           (fn [shape]
+             (cond-> shape
+               (not= component-main-parent (ctn/find-component-main objects shape false))
+               (ctk/remove-swap-slot))))
 
-        ;; Remove component-root property when moving a shape inside a component
-        (cond-> (ctn/get-instance-root objects parent)
-          (pcb/update-shapes children-ids #(dissoc % :component-root)))
+          ;; Remove component-root property when moving a shape inside a component
+          (cond-> (ctn/get-instance-root objects parent)
+            (pcb/update-shapes children-ids #(dissoc % :component-root)))
 
-        ;; Add component-root property when moving a component outside a component
-        (cond-> (not (ctn/get-instance-root objects parent))
-          (pcb/update-shapes child-heads-ids #(assoc % :component-root true)))
+          ;; Add component-root property when moving a component outside a component
+          (cond-> (not (ctn/get-instance-root objects parent))
+            (pcb/update-shapes child-heads-ids #(assoc % :component-root true)))
 
-        ;; Remove variant info and rename when moving outside a variant-container
-        (cond-> (not (ctk/is-variant-container? parent))
-          (clvp/generate-make-shapes-no-variant variant-shapes))
+          ;; Remove variant info and rename when moving outside a variant-container
+          (cond-> (not (ctk/is-variant-container? parent))
+            (clvp/generate-make-shapes-no-variant variant-shapes))
 
-        ;; Add variant info and rename when moving into a different variant-container
-        (cond-> (ctk/is-variant-container? parent)
-          (clvp/generate-make-shapes-variant child-heads parent))
+          ;; Add variant info and rename when moving into a different variant-container
+          (cond-> (ctk/is-variant-container? parent)
+            (clvp/generate-make-shapes-variant child-heads parent))
 
-        ;; Move the shapes
-        (pcb/change-parent parent-id
-                           shapes
-                           to-index)
+          ;; Move the shapes
+          (pcb/change-parent parent-id
+                             shapes
+                             to-index)
 
-        ;; Remove empty groups
-        (pcb/remove-objects groups-to-delete)
+          ;; Remove empty groups
+          (pcb/remove-objects groups-to-delete)
 
-        ;; Unmask groups whose mask have moved outside
-        (pcb/update-shapes groups-to-unmask
-                           (fn [shape]
-                             (assoc shape :masked-group false)))
+          ;; Unmask groups whose mask have moved outside
+          (pcb/update-shapes groups-to-unmask
+                             (fn [shape]
+                               (assoc shape :masked-group false)))
 
-        ;; Detach shapes moved out of their component
-        (pcb/update-shapes shapes-to-detach ctk/detach-shape)
+          ;; Detach shapes moved out of their component
+          (pcb/update-shapes shapes-to-detach ctk/detach-shape)
 
-        ;; Make non root a component moved inside another one
-        (pcb/update-shapes shapes-to-deroot
-                           (fn [shape]
-                             (assoc shape :component-root nil)))
+          ;; Make non root a component moved inside another one
+          (pcb/update-shapes shapes-to-deroot
+                             (fn [shape]
+                               (assoc shape :component-root nil)))
 
-        ;; Make root a subcomponent moved outside its parent component
-        (pcb/update-shapes shapes-to-reroot
-                           (fn [shape]
-                             (assoc shape :component-root true)))
+          ;; Make root a subcomponent moved outside its parent component
+          (pcb/update-shapes shapes-to-reroot
+                             (fn [shape]
+                               (assoc shape :component-root true)))
 
-        ;; Reset constraints depending on the new parent
-        (pcb/update-shapes ids
-                           (fn [shape]
-                             (let [frame-id    (if (= (:type parent) :frame)
-                                                 (:id parent)
-                                                 (:frame-id parent))
-                                   moved-shape (assoc shape
-                                                      :parent-id parent-id
-                                                      :frame-id frame-id)]
-                               (assoc shape
-                                      :constraints-h (gsh/default-constraints-h moved-shape)
-                                      :constraints-v (gsh/default-constraints-v moved-shape))))
-                           {:ignore-touched true})
+          ;; Reset constraints depending on the new parent
+          (pcb/update-shapes ids
+                             (fn [shape]
+                               (let [frame-id    (if (= (:type parent) :frame)
+                                                   (:id parent)
+                                                   (:frame-id parent))
+                                     moved-shape (assoc shape
+                                                        :parent-id parent-id
+                                                        :frame-id frame-id)]
+                                 (assoc shape
+                                        :constraints-h (gsh/default-constraints-h moved-shape)
+                                        :constraints-v (gsh/default-constraints-v moved-shape))))
+                             {:ignore-touched true})
 
-        ;; Fix the sizing when moving a shape
-        (pcb/update-shapes parents
-                           (fn [parent]
-                             (if (ctl/flex-layout? parent)
-                               (cond-> parent
-                                 (ctl/change-h-sizing? (:id parent) objects (:shapes parent))
-                                 (assoc :layout-item-h-sizing :fix)
+          ;; Fix the sizing when moving a shape
+          (pcb/update-shapes parents
+                             (fn [parent]
+                               (if (ctl/flex-layout? parent)
+                                 (cond-> parent
+                                   (ctl/change-h-sizing? (:id parent) objects (:shapes parent))
+                                   (assoc :layout-item-h-sizing :fix)
 
-                                 (ctl/change-v-sizing? (:id parent) objects (:shapes parent))
-                                 (assoc :layout-item-v-sizing :fix))
-                               parent)))
+                                   (ctl/change-v-sizing? (:id parent) objects (:shapes parent))
+                                   (assoc :layout-item-v-sizing :fix))
+                                 parent)))
 
-        ;; Change the grid cell in a grid layout
-        (cond-> (ctl/grid-layout? objects parent-id)
-          (-> (pcb/update-shapes
-               [parent-id]
-               (fn [frame objects]
-                 (let [[row column] cell]
-                   (-> frame
-                       ;; Assign the cell when pushing into a specific grid cell
-                       (cond-> (some? cell)
-                         (-> (ctl/free-cell-shapes ids)
-                             (ctl/push-into-cell ids row column)
-                             (ctl/assign-cells objects)))
-                       (ctl/assign-cell-positions objects))))
-               {:with-objects? true})
-              (pcb/reorder-grid-children [parent-id])))
+          ;; Change the grid cell in a grid layout
+          (cond-> (ctl/grid-layout? objects parent-id)
+            (-> (pcb/update-shapes
+                 [parent-id]
+                 (fn [frame objects]
+                   (let [[row column] cell]
+                     (-> frame
+                         ;; Assign the cell when pushing into a specific grid cell
+                         (cond-> (some? cell)
+                           (-> (ctl/free-cell-shapes ids)
+                               (ctl/push-into-cell ids row column)
+                               (ctl/assign-cells objects)))
+                         (ctl/assign-cell-positions objects))))
+                 {:with-objects? true})
+                (pcb/reorder-grid-children [parent-id])))
 
-        ;; If parent locked, lock the added shapes
-        (cond-> (:blocked parent)
-          (pcb/update-shapes ids #(assoc % :blocked true)))
+          ;; If parent locked, lock the added shapes
+          (cond-> (:blocked parent)
+            (pcb/update-shapes ids #(assoc % :blocked true)))
 
-        ;; Resize parent containers that need to
-        (pcb/resize-parents parents)
+          ;; Resize parent containers that need to
+          (pcb/resize-parents parents)
 
-        ;; Remove parents when are a variant-container that becomes empty
-        (cond-> (seq empty-variant-cont)
-          (#(second (generate-delete-shapes % empty-variant-cont {})))))))
+          ;; Remove parents when are a variant-container that becomes empty
+          (cond-> (seq empty-variant-cont)
+            (#(second (generate-delete-shapes % empty-variant-cont {}))))))))
+
+(defn generate-move-shapes-into-frame
+  "Reparent `shapes` into `frame-id`, stripping variant records when a
+   variant main leaves its container. The builder must already have
+   objects and library data."
+  [changes frame-id shapes objects remove-layout-data?]
+  (let [parent-id          (dm/get-in objects [frame-id :parent-id])
+        ids                (remove #(= % parent-id) shapes)
+        to-move            (->> ids
+                                (map (d/getf objects))
+                                (filter some?))
+        new-parent         (get objects frame-id)
+        variant-shapes     (filter ctk/is-variant? to-move)
+        all-parents        (into #{frame-id} (map #(cfh/get-parent-id objects %)) ids)
+        empty-variant-cont (find-empty-variant-containers objects frame-id ids all-parents)]
+    (if (empty? to-move)
+      changes
+      (-> changes
+          (cond-> (not (ctk/is-variant-container? new-parent))
+            (clvp/generate-make-shapes-no-variant variant-shapes))
+          (cfsh/prepare-move-shapes-into-frame frame-id shapes objects remove-layout-data?)
+          (cond-> (seq empty-variant-cont)
+            (#(second (generate-delete-shapes % empty-variant-cont {}))))))))
 
 (defn change-show-in-viewer
   [shape hide?]

@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 
 (ns debug
   (:require
@@ -15,6 +15,9 @@
    [app.common.json :as json]
    [app.common.logging :as l]
    [app.common.pprint :as pp]
+   [app.common.render-wasm.helpers :as wasm.h]
+   [app.common.render-wasm.mem :as wasm.mem]
+   [app.common.render-wasm.wasm :as wasm]
    [app.common.transit :as t]
    [app.common.types.component :as ctk]
    [app.common.types.components-list :as ctkl]
@@ -36,9 +39,6 @@
    [app.main.errors :as errors]
    [app.main.repo :as rp]
    [app.main.store :as st]
-   [app.render-wasm.helpers :as wasm.h]
-   [app.render-wasm.mem :as wasm.mem]
-   [app.render-wasm.wasm :as wasm]
    [app.util.debug :as dbg]
    [app.util.dom :as dom]
    [app.util.http :as http]
@@ -50,11 +50,25 @@
 
 (l/set-level! :debug)
 
+(defn- coerce-keyword
+  "Coerce `v` to a keyword when it is a string or keyword, nil otherwise."
+  [v]
+  (when (or (keyword? v) (string? v))
+    (keyword v)))
+
 (defn ^:export set-logging
   ([level]
-   (l/set-level! :app (keyword level)))
+   (let [level (coerce-keyword level)]
+     (if (l/valid-level? level)
+       (l/set-level! "app" level)
+       (js/console.warn "ignoring invalid log level:" (pr-str level)))))
   ([ns level]
-   (l/set-level! (keyword ns) (keyword level))))
+   (let [ns    (coerce-keyword ns)
+         level (coerce-keyword level)]
+     (if (and (l/valid-logger? (some-> ns name))
+              (l/valid-level? level))
+       (l/set-level! (name ns) level)
+       (js/console.warn "ignoring invalid logging config:" (pr-str ns) (pr-str level))))))
 
 ;; These events are excluded when we activate the :events flag
 (def debug-exclude-events

@@ -2,17 +2,23 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 
 (ns app.main.ui.shortcuts
   (:require-macros [app.main.style :as stl])
   (:require
+   ["@penpot/mousetrap$default" :as mousetrap]
    [app.common.data :as d]
    [app.common.data.macros :as dm]
    [app.config :as cf]
+   [app.main.data.dashboard.shortcuts :as dsc]
    [app.main.data.dashboard.shortcuts.customize :as customize]
    [app.main.data.profile :as du]
    [app.main.data.shortcuts :as ds]
+   [app.main.data.viewer.shortcuts :as vsc]
+   [app.main.data.workspace.grid-layout.shortcuts :as gsc]
+   [app.main.data.workspace.path.shortcuts :as psc]
+   [app.main.data.workspace.shortcuts :as wsc]
    [app.main.store :as st]
    [app.main.ui.context :as ctx]
    [app.main.ui.ds.buttons.icon-button :refer [icon-button*]]
@@ -31,70 +37,270 @@
 
 (def ^:private key-name-map
   {"ArrowUp"    "up"
+   "Up"         "up"
    "ArrowDown"  "down"
+   "Down"       "down"
    "ArrowLeft"  "left"
+   "Left"       "left"
    "ArrowRight" "right"
+   "Right"      "right"
    "Escape"     "escape"
+   "Esc"        "escape"
    "Enter"      "enter"
    "Backspace"  "backspace"
    "Delete"     "del"
+   "Del"        "del"
+   "Insert"     "ins"
+   "Ins"        "ins"
    "Tab"        "tab"
+   "Home"       "home"
+   "End"        "end"
+   "PageUp"     "pageup"
+   "PageDown"   "pagedown"
+   "CapsLock"   "capslock"
+   "Spacebar"   "space"
+   "Control"    "ctrl"
+   "Shift"      "shift"
+   "Alt"        "alt"
+   "Meta"       "meta"
    " "          "space"})
+
+;; Mirrors how mousetrap reads a bind string (`_keysFromString` and
+;; `_getKeyInfo` in @penpot/mousetrap), so a command is valid exactly when
+;; mousetrap can match it.
+
+(def ^:private command-aliases
+  {"ctrl"    "ctrl"
+   "control" "ctrl"
+   "alt"     "alt"
+   "option"  "alt"
+   "shift"   "shift"
+   "meta"    "meta"
+   "command" "meta"
+   "return"  "enter"
+   "enter"   "enter"
+   "esc"     "escape"
+   "escape"  "escape"
+   "del"     "del"
+   "delete"  "del"
+   "ins"     "ins"
+   "insert"  "ins"
+   "space"   "space"
+   "plus"    "+"})
+
+(def ^:private command-modifiers
+  #{"ctrl" "alt" "shift" "meta"})
+
+(def ^:private command-named-keys
+  (into #{} (remove command-modifiers) (vals key-name-map)))
+
+(defn- canonical-command-key
+  [token]
+  (cond
+    ;; `mod` follows the platform, like `ds/c-mod`.
+    (= "mod" token)
+    (if (cf/check-platform? :macos) "meta" "ctrl")
+
+    (contains? command-aliases token)
+    (get command-aliases token)
+
+    (= 1 (count token))
+    (str/lower token)
+
+    :else
+    (str/lower (get key-name-map token token))))
+
+(defn- command-step-keys
+  "Splits one step of a command (\"ctrl+shift+z\") into canonical keys.
+   A lone \"+\" is the plus key, and \"++\" ends a step with it."
+  [step]
+  (if (= "+" step)
+    ["+"]
+    (->> (.split (str/replace step #"\+{2}" "+plus") "+")
+         (mapv canonical-command-key))))
+
+(defn- final-command-key?
+  [k]
+  (or (= 1 (count k))
+      (contains? command-named-keys k)
+      ;; Two-digit alternatives first: cljs `re-matches` does not
+      ;; backtrack into a longer alternative.
+      (some? (re-matches #"f(?:1[0-9]|2[0-4]|[1-9])" k))
+      (some? (re-matches #"num[0-9]" k))))
+
+(defn- valid-command-step?
+  "A lone modifier is a valid step: `:show-measure` binds a bare `alt`."
+  [step-keys]
+  (let [final-key (peek step-keys)]
+    (if (contains? command-modifiers final-key)
+      (= 1 (count step-keys))
+      (and (every? command-modifiers (pop step-keys))
+           (final-command-key? final-key)))))
+
+(defn valid-command?
+  "True when `command` is a key combination mousetrap can match: steps
+   separated by single spaces, each a lone modifier or modifiers joined
+   with \"+\" ending with a single character, a named key (`escape`, `up`,
+   ...), a function key (`f1`..`f24`) or a numpad digit (`num0`..`num9`).
+   The empty string is valid: it disables the shortcut."
+  [command]
+  (and (string? command)
+       (or (= "" command)
+           (every? (comp valid-command-step? command-step-keys)
+                   (.split command " ")))))
+
+(defn- canonical-command-step
+  "One step in the form mousetrap matches on: canonical keys with the
+   modifiers sorted, so `Shift+Ctrl+Z` and `ctrl+shift+z` compare equal."
+  [step]
+  (let [step-keys (command-step-keys step)
+        final-key (peek step-keys)]
+    (str/join "+" (conj (vec (sort (pop step-keys))) final-key))))
+
+(defn- reserved-command-steps
+  "Key combinations of the non-customizable workspace shortcuts (cancel,
+   copy, paste): assigning them to another action would bind one key to two
+   actions. The path editor's cancel also binds `v`, the move tool key,
+   so path shortcuts are left out."
+  []
+  (into #{}
+        (comp (filter #(false? (:customizable (val %))))
+              (mapcat #(let [command (:command (val %))]
+                         (if (vector? command) command [command])))
+              (mapcat #(.split % " "))
+              (map canonical-command-step))
+        wsc/shortcuts))
+
+(defn reserved-command?
+  "True when any step of `command` is a combination Penpot keeps for a
+   non-customizable shortcut."
+  [command]
+  (and (string? command)
+       (not= "" command)
+       (let [reserved (reserved-command-steps)]
+         (some? (some #(contains? reserved (canonical-command-step %))
+                      (.split command " "))))))
+
+(defn- event->native
+  "Unwraps a goog.events.BrowserEvent to the native event, since the
+   wrapper copies `key` but not `code`."
+  [^js event]
+  (if (fn? (.-getBrowserEvent event))
+    (or (.getBrowserEvent event) event)
+    event))
+
+(defn- alt-graph?
+  [^js event]
+  (boolean
+   (or (when (fn? (.-getModifierState event))
+         (.getModifierState event "AltGraph"))
+       (let [native (event->native event)]
+         (when (and (not (identical? native event))
+                    (fn? (.-getModifierState native)))
+           (.getModifierState native "AltGraph"))))))
+
+(defn- normalize-key
+  "Returns the key token Mousetrap matches for `event`, asking Mousetrap
+   itself (`keyForRecording`) so a recorded shortcut always fires: letters
+   and digits with a modifier by keyCode (`shift+1`, `alt+m`), punctuation
+   by position when the browser has a layout map, the typed glyph
+   otherwise."
+  [^js event]
+  (let [key (.-key event)]
+    (when (and (string? key) (not (contains? modifier-keys key)))
+      (.keyForRecording ^js mousetrap (event->native event)))))
+
+(defn- event->modifier-parts
+  [^js event]
+  (let [alt-graph? (alt-graph? event)]
+    (cond-> []
+      (and (.-ctrlKey event)
+           (not (cf/check-platform? :macos))
+           (not alt-graph?))
+      (conj "ctrl")
+
+      (and (.-metaKey event)
+           (cf/check-platform? :macos))
+      (conj "command")
+
+      (and (.-altKey event)
+           (not alt-graph?))
+      (conj "alt")
+
+      (.-shiftKey event)
+      (conj "shift"))))
 
 (defn- keyboard-event->mousetrap
   [^js event]
-  (let [parts (cond-> []
-                (and (.-ctrlKey event)
-                     (not (cf/check-platform? :macos)))
-                (conj "ctrl")
-
-                (and (.-metaKey event)
-                     (cf/check-platform? :macos))
-                (conj "command")
-
-                (.-altKey event)
-                (conj "alt")
-
-                (.-shiftKey event)
-                (conj "shift"))
-        key   (.-key event)
-        key   (if (contains? modifier-keys key)
-                nil
-                (or (get key-name-map key)
-                    (.toLowerCase key)))]
+  (let [parts (event->modifier-parts event)
+        key   (normalize-key event)]
     (when key
       (str/join "+" (conj parts key)))))
 
 (defn- keyboard-event->display-parts
   [^js event]
-  (let [parts (cond-> []
-                (and (.-ctrlKey event)
-                     (not (cf/check-platform? :macos)))
-                (conj "ctrl")
-
-                (and (.-metaKey event)
-                     (cf/check-platform? :macos))
-                (conj "command")
-
-                (.-altKey event)
-                (conj "alt")
-
-                (.-shiftKey event)
-                (conj "shift"))
+  (let [parts (event->modifier-parts event)
         key   (.-key event)]
     (if (contains? modifier-keys key)
       {:modifiers parts :finalized? false}
       {:modifiers parts
-       :final-key (or (get key-name-map key) (.toLowerCase key))
+       :final-key (normalize-key event)
        :finalized? true})))
+
+;; Shortcut labels live on the command definitions themselves as :label
+;; fns (see the app.main.data.*.shortcuts namespaces), so every key stays
+;; a static tr string literal visible to rehash with no declaration needed.
+
+(def ^:private section-labels
+  {:basics    (fn [] (tr "shortcuts.section.basics"))
+   :workspace (fn [] (tr "shortcuts.section.workspace"))
+   :dashboard (fn [] (tr "shortcuts.section.dashboard"))
+   :viewer    (fn [] (tr "shortcuts.section.viewer"))})
+
+(def ^:private subsection-labels
+  {:alignment            (fn [] (tr "shortcuts.subsection.alignment"))
+   :edit                 (fn [] (tr "shortcuts.subsection.edit"))
+   :generic              (fn [] (tr "shortcuts.subsection.generic"))
+   :main-menu            (fn [] (tr "shortcuts.subsection.main-menu"))
+   :modify-layers        (fn [] (tr "shortcuts.subsection.modify-layers"))
+   :navigation-dashboard (fn [] (tr "shortcuts.subsection.navigation-dashboard"))
+   :navigation-viewer    (fn [] (tr "shortcuts.subsection.navigation-viewer"))
+   :navigation-workspace (fn [] (tr "shortcuts.subsection.navigation-workspace"))
+   :panels               (fn [] (tr "shortcuts.subsection.panels"))
+   :path-editor          (fn [] (tr "shortcuts.subsection.path-editor"))
+   :shape                (fn [] (tr "shortcuts.subsection.shape"))
+   :text-editor          (fn [] (tr "shortcuts.subsection.text-editor"))
+   :tools                (fn [] (tr "shortcuts.subsection.tools"))
+   :zoom-viewer          (fn [] (tr "shortcuts.subsection.zoom-viewer"))
+   :zoom-workspace       (fn [] (tr "shortcuts.subsection.zoom-workspace"))})
+
+(def ^:private command-labels
+  "id -> :label fn index over every command definition map. Labels are
+  defined once on the definitions; this is only an index."
+  (into {}
+        (map (fn [[k v]] [k (:label v)]))
+        (concat wsc/shortcuts
+                psc/shortcuts
+                dsc/shortcuts
+                dsc/shortcuts-sidebar-navigation
+                dsc/shortcut-search
+                dsc/shortcut-create-new-project
+                vsc/shortcuts
+                gsc/shortcuts)))
 
 (defn translation-keyname
   [type keyname]
-  (let [translat-pre (case type
-                       :sc      "shortcuts."
-                       :sec     "shortcut-section."
-                       :sub-sec "shortcut-subsection.")]
-    (tr (str translat-pre (d/name keyname)))))
+  (let [label-fn (case type
+                   :sc (get command-labels keyname)
+                   :sec (get section-labels keyname)
+                   :sub-sec (get subsection-labels keyname))]
+    (if (fn? label-fn)
+      (label-fn)
+      (str (case type
+             :sc "shortcuts."
+             :sec "shortcuts.section."
+             :sub-sec "shortcuts.subsection.")
+           (d/name keyname)))))
 
 (defn- find-conflict
   [new-command all-shortcuts current-key]
@@ -107,14 +313,25 @@
 (def ^:private import-contexts
   [:workspace :dashboard :viewer])
 
+(def ^:private context->known-keys
+  {:workspace (into #{} (concat (keys psc/shortcuts) (keys wsc/shortcuts)))
+   :dashboard (into #{} (keys dsc/shortcuts))
+   :viewer    (into #{} (keys vsc/shortcuts))})
+
+(defn- build-context-shortcuts
+  [all-shortcuts ctx]
+  (let [known-keys (get context->known-keys ctx)]
+    (into {} (filter (fn [[k _]] (contains? known-keys k))) all-shortcuts)))
+
 (defn- import-context-group
-  "Imports a single context group from the payload, disabling any default
-   shortcut whose command collides with a newly imported one, and any
-   previously-imported entry in the same batch with a duplicate command."
-  [group all-shortcuts]
+  "Builds the custom-shortcuts map for one imported context group, disabling
+   any default shortcut (from `context-shortcuts`) whose command collides
+   with an imported one, and any earlier entry in the same batch with a
+   duplicate command."
+  [group context-shortcuts]
   (reduce
    (fn [acc [command recorded-command]]
-     (let [default-conflict (find-conflict recorded-command all-shortcuts command)
+     (let [default-conflict (find-conflict recorded-command context-shortcuts command)
            acc-conflict     (some (fn [[k v]]
                                     (when (and (not= k command) (= v recorded-command))
                                       k))
@@ -136,7 +353,8 @@
         new-customs (reduce
                      (fn [acc ctx]
                        (if (contains? shortcuts ctx)
-                         (assoc acc ctx (import-context-group (get shortcuts ctx) all-shortcuts))
+                         (let [ctx-sc (build-context-shortcuts all-shortcuts ctx)]
+                           (assoc acc ctx (import-context-group (get shortcuts ctx) ctx-sc)))
                          acc))
                      current-customs
                      import-contexts)]
@@ -146,6 +364,19 @@
 (defn add-translation
   [type item]
   (map (fn [[k v]] [k (assoc v :translation (translation-keyname type k))]) item))
+
+(defn shortcut->command-string
+  "Returns a lowercase, searchable string for a shortcut's key combo(s).
+  Prefers `:show-command` over `:command`; joins a vector command (key
+  sequence) with spaces so each token is searchable; returns \"\" when
+  there is no command (e.g. a section/subsection node)."
+  [shortcut]
+  (let [cmd (or (:show-command shortcut) (:command shortcut))]
+    (-> (cond
+          (nil? cmd)    ""
+          (vector? cmd) (str/join " " cmd)
+          :else         (str cmd))
+        (str/lower))))
 
 (defn shortcuts->subsections
   [shortcuts]
@@ -193,13 +424,13 @@
         db-subs (dissoc db-subs :basics)
         vw-subs (dissoc vw-subs :basics)
         all     {:basics    {:children {:none {:children basics}}
-                             :translation (tr "shortcut-section.basics")}
+                             :translation (tr "shortcuts.section.basics")}
                  :workspace {:children ws-subs
-                             :translation (tr "shortcut-section.workspace")}
+                             :translation (tr "shortcuts.section.workspace")}
                  :dashboard {:children db-subs
-                             :translation (tr "shortcut-section.dashboard")}
+                             :translation (tr "shortcuts.section.dashboard")}
                  :viewer    {:children vw-subs
-                             :translation (tr "shortcut-section.viewer")}}
+                             :translation (tr "shortcuts.section.viewer")}}
         all     (walk all nil)
         all-sc-names (map #(translation-keyname :sc %)
                           (concat (keys workspace-sc)
@@ -262,11 +493,11 @@
         vw-subs  (dissoc vw-subs :basics)
         ws-subs  (merge ws-subs pt-subs)
         all      {:workspace {:children ws-subs
-                              :translation (tr "shortcut-section.workspace")}
+                              :translation (tr "shortcuts.section.workspace")}
                   :dashboard {:children db-subs
-                              :translation (tr "shortcut-section.dashboard")}
+                              :translation (tr "shortcuts.section.dashboard")}
                   :viewer    {:children vw-subs
-                              :translation (tr "shortcut-section.viewer")}}
+                              :translation (tr "shortcuts.section.viewer")}}
         all      (walk all nil)
         all-sc-names (map #(translation-keyname :sc %)
                           (concat (keys workspace-sc)
@@ -308,39 +539,31 @@
 
 (mf/defc shortcuts-keys*
   [{:keys [content command is-customized has-conflict? light-shortcut]}]
-  (let [managed-list    (if (coll? content)
-                          content
-                          (conj () content))
-        chars-list      (map ds/split-sc managed-list)
-        last-element    (last chars-list)
-        short-char-list (if (= 1 (count chars-list))
-                          chars-list
-                          (drop-last chars-list))
-        penultimate     (last short-char-list)]
+  (let [managed-list (if (coll? content)
+                       content
+                       (conj () content))
+        chars-list   (map ds/split-sc managed-list)
+        last-index   (dec (count chars-list))
+        key-class    (cond
+                       has-conflict? (stl/css :conflict-key)
+                       is-customized (stl/css :customized-key)
+                       light-shortcut (stl/css :light-key))]
+    ;; Each combination is a group that never breaks; the list wraps
+    ;; between groups. The separator stays inside a group so no line
+    ;; starts with a comma.
     [:span {:class (stl/css :keys)}
-     (for [chars short-char-list]
-       [:* {:key (str/join chars)}
+     (for [[index chars] (d/enumerate chars-list)]
+       [:span {:key (dm/str index "-" (str/join chars))
+               :class (stl/css :key-group)}
+        (when (and (pos? index) (= index last-index))
+          [:span {:class (stl/css :space)} (tr "shortcuts.or")])
         (for [char chars]
           [:> converted-chars* {:key (dm/str char "-" (name command))
                                 :char char
                                 :command command
-                                :class (cond
-                                         has-conflict? (stl/css :conflict-key)
-                                         is-customized (stl/css :customized-key)
-                                         light-shortcut (stl/css :light-key))}])
-
-        (when (not= chars penultimate) [:span {:class (stl/css :space)} ","])])
-     (when (not= last-element penultimate)
-       [:*
-        [:span {:class (stl/css :space)} (tr "shortcuts.or")]
-        (for [char last-element]
-          [:> converted-chars* {:key (dm/str char "-" (name command))
-                                :char char
-                                :command command
-                                :class (cond
-                                         has-conflict? (stl/css :conflict-key)
-                                         is-customized (stl/css :customized-key)
-                                         light-shortcut (stl/css :light-key))}])])]))
+                                :class key-class}])
+        (when (< index (dec last-index))
+          [:span {:class (stl/css :space)} ","])])]))
 
 (mf/defc shortcut-row-editable*
   [{:keys [elements custom-shortcuts command-translate conflicts section-key]}]
@@ -429,12 +652,16 @@
                       effective-section-key))
            (clean-editing-state)))
 
+        reserved?              (and (some? recorded-command)
+                                    (not reset-pending)
+                                    (reserved-command? recorded-command))
+
         save-fn
         (mf/use-fn
-         (mf/deps recorded-command conflict command effective-section-key)
+         (mf/deps recorded-command reserved? conflict command effective-section-key)
          (fn [event]
            (dom/prevent-default event)
-           (when recorded-command
+           (when (and recorded-command (not reserved?))
              (if (deref reset-pending*)
                (st/emit! (customize/reset-custom-shortcut command recorded-command effective-section-key))
                (st/emit! (customize/set-custom-shortcut
@@ -484,7 +711,7 @@
           :key command-translate}
      [:button {:on-click start-editing
                :disabled is-editing
-               :aria-label (dm/str "Edit " command-translate)
+               :aria-label (tr "shortcuts.edit" command-translate)
                :class (stl/css-case :shortcut-button-editable true
                                     :shortcut-button-editing is-editing)}
       [:span {:class (stl/css :command-name)
@@ -538,9 +765,16 @@
                                 :has-conflict? false}]])
 
         (when (and recorded-command (not reset-pending))
-          (if conflict
+          (cond
+            reserved?
+            [:> context-notification* {:level :warning :class (stl/css :modal-error-msg)}
+             (tr "shortcuts.edit-modal.reserved")]
+
+            conflict
             [:> context-notification* {:level :warning :class (stl/css :modal-error-msg)}
              (tr "shortcuts.edit-modal.conflict" (:name conflict))]
+
+            :else
             [:> context-notification* {:level :success :class (stl/css :modal-success-msg)}
              (tr "shortcuts.edit-modal.success")]))
         [:div {:class (stl/css :edit-buttons)}
@@ -553,6 +787,7 @@
           [:> icon-button* {:variant "primary"
                             :aria-label (tr "labels.save")
                             :on-click save-fn
+                            :disabled reserved?
                             :icon i/tick
                             :icon-size "m"}]]
          [:div {:class (stl/css :confirmation-buttons)}
@@ -576,11 +811,19 @@
   [{:keys [elements filter-term is-match-section is-match-subsection
            editable? custom-shortcuts section-key conflicts hidden subsection-name]}]
   (let [shortcut-translations (->> elements vals (map :translation) sort)
-        match-shortcut?       (some #(matches-search % filter-term) shortcut-translations)
+        match-shortcut?       (some (fn [info]
+                                      (or (matches-search (:translation info) filter-term)
+                                          (matches-search (shortcut->command-string info) filter-term)))
+                                    (vals elements))
         filtered              (if (and (or is-match-section is-match-subsection) (not match-shortcut?))
                                 shortcut-translations
-                                (filter #(matches-search % filter-term) shortcut-translations))
-        sorted-filtered       (sort filtered)
+                                (->> (vals elements)
+                                     (filter (fn [info]
+                                               (or (matches-search (:translation info) filter-term)
+                                                   (matches-search (shortcut->command-string info) filter-term))))
+                                     (map :translation)
+                                     sort))
+        sorted-filtered       filtered
         trigger-ref            (mf/use-ref nil)]
 
     [:ul {:class (stl/css :sub-menu)
@@ -597,8 +840,9 @@
                                       (get custom-shortcuts section-key))
              group-map              (if (map? group-map) group-map {})
              customized?            (contains? group-map command)
-             has-conflict?          (contains? conflicts command)]
-         (if editable?
+             has-conflict?          (contains? conflicts command)
+             customizable?          (not (false? (:customizable command-info)))]
+         (if (and editable? customizable?)
            [:> shortcut-row-editable* {:elements elements
                                        :custom-shortcuts custom-shortcuts
                                        :section-key section-key
@@ -611,9 +855,13 @@
                  :data-conflict (str has-conflict?)
                  :aria-label command-translate
                  :key command-translate}
-            [:span {:class (stl/css :command-name)
-                    :id (dm/str command-translate "-label")}
-             command-translate]
+            [:span {:class (stl/css :command-label)}
+             [:span {:class (stl/css-case :command-name true
+                                          :not-customizable-label (not customizable?))
+                     :id (dm/str command-translate "-label")}
+              command-translate]
+             (when (not customizable?)
+               [:span {:class (stl/css :not-customizable-label)} "(not customizable)"])]
             [:div {:class (stl/css :shortcut-actions)
                    :aria-labelledby (dm/str command-translate "-label")}
              (if (and customized? (str/blank? content))

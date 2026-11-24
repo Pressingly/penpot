@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 (ns app.common.files.variant
   (:require
    [app.common.data.macros :as dm]
@@ -27,6 +27,25 @@
         (map #(dm/get-in objects [% :component-id]))
         (map #(ctcl/get-component data % true))
         reverse)))
+
+(defn collect-variant-properties
+  "Map of component-id → variant-properties for clipboard copy.
+   Variant container: every related component. Variant main: that
+   component only. Anything else: empty map."
+  [data objects shape]
+  (cond
+    (ctc/is-variant-container? shape)
+    (into {}
+          (map (juxt :id :variant-properties))
+          (find-variant-components data objects (:id shape)))
+
+    (ctc/is-variant-main? shape)
+    (if-let [component (ctcl/get-component data (:component-id shape) true)]
+      {(:id component) (:variant-properties component)}
+      {})
+
+    :else
+    {}))
 
 (defn extract-properties-names
   [shape data]

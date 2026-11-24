@@ -6,7 +6,9 @@ Run with:
     python3 scripts/test_check_commit.py
 
 Covers the body line-wrapping validator added to enforce the commit body
-wrap rule documented in .serena/memories/workflow/creating-commits.md.
+wrap rule documented in .serena/memories/workflow/creating-commits.md, and
+the Co-authored-by validator, which allows human co-authors and rejects AI
+providers and bots.
 """
 
 import importlib.machinery
@@ -55,20 +57,20 @@ class BodyLineLengthTests(unittest.TestCase):
         self.assert_ok(message)
 
     def test_line_at_limit_passes(self):
-        line = "x " * 38  # 76 chars, breakable
-        self.assertEqual(len(line), 76)
+        line = "x " * 40  # 80 chars, breakable
+        self.assertEqual(len(line), 80)
         self.assert_ok(":bug: Fix crash\n\n" + line + "\n")
 
     def test_line_one_over_limit_fails(self):
-        line = "x " * 38 + "x"  # 77 chars, breakable
-        self.assertEqual(len(line), 77)
+        line = "x " * 40 + "x"  # 81 chars, breakable
+        self.assertEqual(len(line), 81)
         error = self.assert_fail(":bug: Fix crash\n\n" + line + "\n")
-        self.assertIn("76", error)
+        self.assertIn("80", error)
 
     def test_long_body_line_fails(self):
         long_line = "word " * 20  # 100 chars, breakable
         error = self.assert_fail(":bug: Fix crash\n\n" + long_line + "\n")
-        self.assertIn("76", error)
+        self.assertIn("80", error)
         self.assertIn("line 3", error)
 
     def test_subject_is_not_checked(self):
@@ -85,6 +87,14 @@ class BodyLineLengthTests(unittest.TestCase):
 
     def test_trailer_passes(self):
         line = "Signed-off-by: Someone With A Long Name <someone@example.com>"
+        self.assert_ok(":bug: Fix crash\n\nBody.\n\n" + line + "\n")
+
+    def test_human_co_author_trailer_passes(self):
+        line = (
+            "Co-authored-by: Someone With A Very Long Name "
+            "<someone.with.a.long.address@example.com>"
+        )
+        self.assertGreater(len(line), 80)
         self.assert_ok(":bug: Fix crash\n\nBody.\n\n" + line + "\n")
 
     def test_unbreakable_token_passes(self):
@@ -106,14 +116,16 @@ class BodyLineLengthTests(unittest.TestCase):
         self.assertIn("line 4", error)
 
 
-class ForbiddenTrailerTests(unittest.TestCase):
+class CoAuthorTrailerTests(unittest.TestCase):
+    """Co-authored-by is allowed for humans, forbidden for AI providers/bots."""
+
     def assert_ok(self, message):
-        ok, error = check_commit.check_no_co_authored_by(message)
+        ok, error = check_commit.check_co_authored_by(message)
         self.assertTrue(ok, error)
         self.assertIsNone(error)
 
     def assert_fail(self, message):
-        ok, error = check_commit.check_no_co_authored_by(message)
+        ok, error = check_commit.check_co_authored_by(message)
         self.assertFalse(ok)
         self.assertIsNotNone(error)
         return error
@@ -121,15 +133,57 @@ class ForbiddenTrailerTests(unittest.TestCase):
     def test_body_without_trailer_passes(self):
         self.assert_ok(":bug: Fix crash\n\nBody.\n\nSigned-off-by: Someone <someone@example.com>\n")
 
-    def test_co_authored_by_fails(self):
-        error = self.assert_fail(":bug: Fix crash\n\nBody.\n\nCo-authored-by: Someone <someone@example.com>\n")
-        self.assertIn("Co-authored-by", error)
+    def test_human_co_author_passes(self):
+        self.assert_ok(":bug: Fix crash\n\nBody.\n\nCo-authored-by: Jane Doe <jane@example.com>\n")
 
-    def test_co_authored_by_case_insensitive_fails(self):
-        self.assert_fail(":bug: Fix crash\n\nBody.\n\nco-authored-by: Someone <someone@example.com>\n")
+    def test_human_with_github_noreply_email_passes(self):
+        self.assert_ok(
+            ":bug: Fix crash\n\nBody.\n\n"
+            "Co-authored-by: Jane Doe <1234+jane@users.noreply.github.com>\n"
+        )
+
+    def test_human_whose_email_ends_with_bot_passes(self):
+        # "abbot@" must not count as a "bot@" identity.
+        self.assert_ok(
+            ":bug: Fix crash\n\nBody.\n\n"
+            "Co-authored-by: Jane Abbot <abbot@example.com>\n"
+        )
+
+    def test_claude_fails(self):
+        error = self.assert_fail(
+            ":bug: Fix crash\n\nBody.\n\n"
+            "Co-authored-by: Claude <noreply@anthropic.com>\n"
+        )
+        self.assertIn("Co-authored-by", error)
+        self.assertIn("AI-assisted-by", error)
+
+    def test_cursor_fails(self):
+        self.assert_fail(
+            ":bug: Fix crash\n\nBody.\n\n"
+            "Co-authored-by: Cursor Agent <cursoragent@cursor.com>\n"
+        )
+
+    def test_copilot_fails(self):
+        self.assert_fail(
+            ":bug: Fix crash\n\nBody.\n\n"
+            "Co-authored-by: Copilot <175728472+Copilot@users.noreply.github.com>\n"
+        )
+
+    def test_case_insensitive_fails(self):
+        self.assert_fail(
+            ":bug: Fix crash\n\nBody.\n\nco-authored-by: CHATGPT <x@example.com>\n"
+        )
+
+    def test_bot_identity_fails(self):
+        self.assert_fail(
+            ":bug: Fix crash\n\nBody.\n\n"
+            "Co-authored-by: dependabot[bot] <support@github.com>\n"
+        )
 
     def test_co_authored_by_in_body_fails(self):
-        self.assert_fail(":bug: Fix crash\n\nCo-authored-by: Someone <someone@example.com>\nBody.\n")
+        self.assert_fail(
+            ":bug: Fix crash\n\nCo-authored-by: Gemini <gemini@example.com>\nBody.\n"
+        )
 
     def test_similar_trailer_passes(self):
         self.assert_ok(":bug: Fix crash\n\nBody.\n\nCo-developed-by: Someone <someone@example.com>\n")
@@ -150,15 +204,34 @@ class SubjectRulesRegressionTests(unittest.TestCase):
         ok, _ = check_commit.check_subject_no_trailing_dot(":bug: Fix crash.")
         self.assertFalse(ok)
 
-    def test_subject_at_70_chars_passes(self):
-        # ":bug: " is 6 chars, so 64 chars of text reach exactly 70.
-        ok, error = check_commit.check_subject_length(":bug: " + "S" * 64)
+    def test_subject_at_80_chars_passes(self):
+        # ":bug: " is 6 chars, so 74 chars of text reach exactly 80.
+        ok, error = check_commit.check_subject_length(":bug: " + "S" * 74)
         self.assertTrue(ok, error)
 
-    def test_subject_over_70_chars_fails(self):
-        ok, error = check_commit.check_subject_length(":bug: " + "S" * 65)
+    def test_subject_over_80_chars_fails(self):
+        ok, error = check_commit.check_subject_length(":bug: " + "S" * 75)
         self.assertFalse(ok)
-        self.assertIn("70", error)
+        self.assertIn("80", error)
+
+    def test_merge_subject_skips_length_check(self):
+        # Git generates Merge subjects from branch names; the limit is skipped.
+        subject = "Merge branch 'some-very-long-branch-name-that-keeps-going' into develop with extra text here"
+        self.assertGreater(len(subject), 80)
+        ok, error = check_commit.check_subject_length(subject)
+        self.assertTrue(ok, error)
+
+    def test_revert_subject_skips_length_check(self):
+        subject = 'Revert ":bug: Fix some earlier commit with a fairly long subject line already here" extra'
+        self.assertGreater(len(subject), 80)
+        ok, error = check_commit.check_subject_length(subject)
+        self.assertTrue(ok, error)
+
+    def test_reapply_subject_skips_length_check(self):
+        subject = 'Reapply ":bug: Fix some earlier commit with a fairly long subject line already here" extra'
+        self.assertGreater(len(subject), 80)
+        ok, error = check_commit.check_subject_length(subject)
+        self.assertTrue(ok, error)
 
 
 if __name__ == "__main__":

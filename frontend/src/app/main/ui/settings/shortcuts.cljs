@@ -41,7 +41,7 @@
    [:> search-bar* {:on-change on-search-term-change
                     :on-clear on-search-clear-click
                     :value filter-term
-                    :placeholder (tr "shortcuts.title")
+                    :placeholder (tr "shortcuts.search")
                     :icon-id i/search
                     :auto-focus true}]
    (when (and show-restore-all has-custom-shortcuts)
@@ -50,7 +50,7 @@
        :on-click on-restore-all
        :class (stl/css :restore-all-button)
        :icon i/reload}
-      (tr "dashboard.restore-all-deleted-button")])])
+      (tr "shortcuts.reset-all")])])
 
 (defn- filter-shortcuts-tree
   [tree shortcut-filter search-term]
@@ -93,10 +93,18 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (def ^:private known-shortcut-keys
-  "Known shortcut keys per context, derived from the default shortcuts maps."
-  {:workspace (set (keys wsc/shortcuts))
-   :dashboard (set (keys dsc/shortcuts))
-   :viewer    (set (keys vsc/shortcuts))})
+  "Known shortcut keys per context, derived from the default shortcuts maps.
+   Shortcuts marked :customizable false are excluded."
+  (letfn [(collect-keys [shortcuts]
+            (reduce-kv (fn [s k v]
+                         (if (false? (:customizable v))
+                           s
+                           (conj s k)))
+                       #{}
+                       shortcuts))]
+    {:workspace (into (collect-keys psc/shortcuts) (collect-keys wsc/shortcuts))
+     :dashboard (collect-keys dsc/shortcuts)
+     :viewer    (collect-keys vsc/shortcuts)}))
 
 (def ^:private schema:imported-shortcuts
   "Malli schema for an imported custom-shortcuts payload.
@@ -111,6 +119,53 @@
      [:workspace {:optional true} (context-schema :workspace)]
      [:dashboard {:optional true} (context-schema :dashboard)]
      [:viewer {:optional true} (context-schema :viewer)]]))
+
+(defn- entry-path
+  [& segments]
+  (str/join "/" (map d/name segments)))
+
+(defn- sanitize-context
+  "Keeps the entries of one imported context that map to a known shortcut key
+   with a valid command; every other entry goes to :skipped."
+  [result ctx entries known-keys]
+  (let [viable (reduce-kv
+                (fn [viable k command]
+                  (if (and (contains? known-keys k)
+                           (ss/valid-command? command)
+                           (not (ss/reserved-command? command)))
+                    (assoc viable k command)
+                    viable))
+                {}
+                entries)
+        skipped (->> (keys entries)
+                     (remove #(contains? viable %))
+                     (map #(entry-path ctx %)))]
+    (cond-> (update result :skipped into skipped)
+      ;; A context left empty by skipped entries is dropped: an empty context
+      ;; clears the user's shortcuts on import, an explicit {} still does.
+      (or (seq viable) (empty? entries))
+      (assoc-in [:shortcuts ctx] viable))))
+
+(defn sanitize-imported-shortcuts
+  "Splits an imported custom-shortcuts payload into the entries Penpot can
+   apply and the ones it must skip: unknown contexts, unknown or
+   non-customizable shortcut keys, commands that are not a key combination
+   (see `app.main.ui.shortcuts/valid-command?`) and reserved combinations
+   (see `app.main.ui.shortcuts/reserved-command?`).
+
+   Returns {:shortcuts <viable payload> :skipped [\"context/key\" ...]}, or
+   nil when the payload is not a map."
+  [data]
+  (when (map? data)
+    (-> (reduce-kv
+         (fn [result ctx entries]
+           (let [known-keys (get known-shortcut-keys ctx)]
+             (if (and (some? known-keys) (map? entries))
+               (sanitize-context result ctx entries known-keys)
+               (update result :skipped conj (entry-path ctx)))))
+         {:shortcuts {} :skipped []}
+         data)
+        (update :skipped (comp vec sort)))))
 
 (defn- flatten-humanize
   "Turns Malli's humanized explain output into a flat list of {:path :message} maps."
@@ -373,7 +428,8 @@
         (mf/with-memo []
           (fn [_ shortcut search-term]
             (or (str/blank? search-term)
-                (matches-search (:translation shortcut) search-term))))
+                (matches-search (:translation shortcut) search-term)
+                (matches-search (ss/shortcut->command-string shortcut) search-term))))
 
         filter-personalized
         (mf/use-fn
@@ -385,8 +441,10 @@
                  customized? (and (contains? group-map shortcut-key)
                                   (not (str/blank? (get group-map shortcut-key))))]
              (and customized?
+                  (not (false? (:customizable shortcut)))
                   (or (str/blank? search-term)
-                      (matches-search (:translation shortcut) search-term))))))
+                      (matches-search (:translation shortcut) search-term)
+                      (matches-search (ss/shortcut->command-string shortcut) search-term))))))
 
         filter-disabled
         (mf/use-fn
@@ -398,8 +456,10 @@
                  in-group? (contains? group-map shortcut-key)
                  blank? (str/blank? (get group-map shortcut-key))]
              (and in-group? blank?
+                  (not (false? (:customizable shortcut)))
                   (or (str/blank? search-term)
-                      (matches-search (:translation shortcut) search-term))))))
+                      (matches-search (:translation shortcut) search-term)
+                      (matches-search (ss/shortcut->command-string shortcut) search-term))))))
 
         on-import-file
         (mf/use-fn
@@ -414,11 +474,16 @@
 
         on-export
         (mf/use-fn
-         (mf/deps shortcuts-json has-custom-shortcuts)
+         (mf/deps shortcuts-json has-custom-shortcuts (:fullname profile))
          (fn []
            (when has-custom-shortcuts
-             (->> (wapi/create-blob shortcuts-json "application/json")
-                  (dom/trigger-download "penpot-shortcuts.json")))))
+             (let [fullname (-> (or (:fullname profile) "user")
+                                (str/replace #"[^a-zA-Z0-9\-_ ]" "")
+                                (str/replace #"\s+" "_"))
+                   date     (.slice (.toISOString (js/Date.)) 0 10)
+                   filename (str "penpot-shortcuts-" fullname "-" date ".json")]
+               (->> (wapi/create-blob shortcuts-json "application/json")
+                    (dom/trigger-download filename))))))
 
         on-file-selected
         (mf/use-fn
@@ -431,17 +496,21 @@
                   (rx/subs!
                    (fn [content]
                      (try
-                       (let [shortcuts (js->clj (.parse js/JSON content)
-                                                :keywordize-keys true)
-                             validation (validate-imported-shortcuts shortcuts)]
-                         (if (:valid? validation)
+                       (let [data                        (js->clj (.parse js/JSON content)
+                                                                  :keywordize-keys true)
+                             {:keys [shortcuts skipped]} (sanitize-imported-shortcuts data)]
+                         ;; Rejects the file only when nothing in it can be applied.
+                         (if (and (some? shortcuts)
+                                  (or (seq shortcuts) (empty? skipped))
+                                  (:valid? (validate-imported-shortcuts shortcuts)))
                            (st/emit! (modal/show {:type :import-shortcuts-diff-modal
                                                   :imported-shortcuts shortcuts
+                                                  :skipped-entries skipped
                                                   :custom-shortcuts custom-shortcuts
                                                   :all-shortcuts-raw all-shortcuts-raw}))
-                           (st/emit! (ntf/error (tr "errors.invalid-data")))))
+                           (st/emit! (ntf/error (tr "import-shortcuts.invalid-file")))))
                        (catch :default _
-                         (st/emit! (ntf/error (tr "errors.invalid-data"))))))))
+                         (st/emit! (ntf/error (tr "import-shortcuts.invalid-file"))))))))
 
              (-> (mf/ref-val input-ref)
                  (dom/set-value! "")))))]

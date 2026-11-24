@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 
 (ns app.main.data.workspace
   (:require
@@ -20,6 +20,7 @@
    [app.common.logging :as log]
    [app.common.math :as mth]
    [app.common.path-names :as cpn]
+   [app.common.render-wasm.wasm :as wasm-state]
    [app.common.transit :as t]
    [app.common.types.component :as ctc]
    [app.common.types.components-list :as ctkl]
@@ -80,7 +81,6 @@
    [app.plugins.register :as preg]
    [app.render-wasm :as wasm]
    [app.render-wasm.api :as wasm.api]
-   [app.render-wasm.wasm :as wasm-state]
    [app.util.dom :as dom]
    [app.util.globals :as ug]
    [app.util.http :as http]
@@ -245,7 +245,8 @@
                    {:redo-changes changes :undo-changes []
                     :save-undo? false
                     :origin it
-                    :tags #{:position-data}}))
+                    :tags #{:position-data}
+                    :skip-component-sync? true}))
            (rx/empty)))))))
 
 (defn- workspace-initialized
@@ -420,7 +421,8 @@
           (assoc :recent-fonts (:recent-fonts storage/user))
           (assoc :current-file-id file-id)
           (assoc :workspace-presence {})
-          (update :workspace-global dissoc :default-font)))
+          (update :workspace-global dissoc :default-font)
+          (update :comments-local dcmt/merge-persisted-filters)))
 
     ptk/WatchEvent
     (watch [_ state stream]
@@ -529,7 +531,7 @@
                     (rx/filter (ptk/type? :app.render-wasm.api/stale-text-selrects))
                     (rx/map deref)
                     (rx/map (fn [{:keys [ids]}]
-                              (dwwt/resize-wasm-text-all ids))))
+                              (dwwt/resize-wasm-text-all ids {:skip-component-sync? true}))))
 
                (let [local-commits-s
                      (->> stream
@@ -583,7 +585,8 @@
                              (dch/commit-changes
                               {:redo-changes changes :undo-changes []
                                :save-undo? false
-                               :tags #{:position-data}})))))
+                               :tags #{:position-data}
+                               :skip-component-sync? true})))))
                       (rx/take-until stoper-s)))
 
                (->> stream
@@ -743,6 +746,37 @@
     (update [_ state]
       (assoc-in state [:workspace-local :shape-for-rename] id))))
 
+(defn- rename-variant-main
+  "Apply a layers-panel formula to one variant main.
+
+   A valid formula updates the property names and values. Any other
+   text keeps the current malformed path: values are cleared and the
+   text is stored as the variant error."
+  [file-id shape name]
+  (ptk/reify ::rename-variant-main
+    ptk/WatchEvent
+    (watch [_ state _]
+      (let [file-data          (dsh/lookup-file-data state file-id)
+            component-id       (:component-id shape)
+            component          (ctkl/get-component file-data component-id)
+            variant-id         (:variant-id shape)
+            variant-properties (:variant-properties component)]
+        (if (ctv/valid-properties-formula? name)
+          (rx/of (dwva/update-properties-names-and-values
+                  component-id
+                  variant-id
+                  variant-properties
+                  (ctv/properties-formula->map name))
+                 (dwva/remove-empty-properties variant-id)
+                 (dwva/update-error component-id))
+          (rx/of (dwva/update-properties-names-and-values
+                  component-id
+                  variant-id
+                  variant-properties
+                  {})
+                 (dwva/remove-empty-properties variant-id)
+                 (dwva/update-error component-id name)))))))
+
 (defn end-rename-shape
   "End the ongoing shape rename process"
   ([] (end-rename-shape nil nil))
@@ -757,14 +791,17 @@
        (when-let [shape-id (d/nilv shape-id (dm/get-in state [:workspace-local :shape-for-rename]))]
          (let [shape        (dsh/lookup-shape state shape-id)
                name         (str/trim name)
-               clean-name   (cpn/clean-path name)
-               valid?       (and (not (str/ends-with? name "/"))
-                                 (string? clean-name)
-                                 (not (str/blank? clean-name)))
+               clean-name   (cpn/normalize-path-name name)
                component-id (:component-id shape)
-               undo-id (js/Symbol)]
+               undo-id      (js/Symbol)]
 
-           (when valid?
+           (cond
+             ;; Variant formula edits go through rename-shape-or-variant.
+             ;; A variant main must not fall through to a plain rename.
+             (ctc/is-variant-main? shape)
+             (rx/empty)
+
+             (some? clean-name)
              (if (ctc/is-variant-container? shape)
                ;; Rename the full variant when it is a variant container
                (rx/of (dwva/rename-variant shape-id clean-name))
@@ -788,32 +825,12 @@
      (watch [_ state _]
        (let [file-id (d/nilv file-id (:current-file-id state))
              page-id (d/nilv page-id (:current-page-id state))
-
-             file-data (dsh/lookup-file-data state file-id)
-             shape
-             (-> (dsh/lookup-page-objects state file-id page-id)
-                 (get id))
-
-             is-variant? (ctc/is-variant? shape)
-             variant-id (when is-variant? (:variant-id shape))
-             variant-name (when is-variant? (:variant-name shape))
-             component-id (:component-id shape)
-             component (ctkl/get-component file-data (:component-id shape))
-             variant-properties (:variant-properties component)]
-         (cond
-           (and variant-name (ctv/valid-properties-formula? name))
-           (rx/of (dwva/update-properties-names-and-values
-                   component-id variant-id variant-properties (ctv/properties-formula->map name))
-                  (dwva/remove-empty-properties variant-id)
-                  (dwva/update-error component-id))
-
-           variant-name
-           (rx/of (dwva/update-properties-names-and-values
-                   component-id variant-id variant-properties {})
-                  (dwva/remove-empty-properties variant-id)
-                  (dwva/update-error component-id name))
-
-           :else
+             shape   (-> (dsh/lookup-page-objects state file-id page-id)
+                         (get id))
+             name    (str/trim name)]
+         (if (ctc/variant-formula-rename? shape name)
+           ;; update-properties-names-and-values clears :shape-for-rename.
+           (rx/of (rename-variant-main file-id shape name))
            (rx/of (end-rename-shape id name))))))))
 
 ;; --- Update Selected Shapes attrs
@@ -1271,10 +1288,18 @@
 
             no-bool-shapes? (->> all-selected (some (comp #{:frame :text} :type)))]
 
-        (if (and (some? shape) (not (contains? selected (:id shape))))
+        (cond
+          ;; A shape missing from the current page can never become
+          ;; selected, so selecting it and retrying would recurse forever
+          (and (some? shape) (not (contains? objects (:id shape))))
+          (rx/empty)
+
+          (and (some? shape) (not (contains? selected (:id shape))))
           (rx/concat
            (rx/of (dws/select-shape (:id shape)))
            (rx/of (show-shape-context-menu params)))
+
+          :else
           (rx/of (show-context-menu
                   (-> params
                       (assoc
@@ -1337,6 +1362,16 @@
               (-> params (assoc :kind :guide
                                 :guide guide)))))))
 
+(defn show-text-context-menu
+  "Context menu for the text being edited. Unlike the shape menu it leaves the
+   shape selection alone; `has-selection?` is captured at right-click time."
+  [{:keys [position] :as params}]
+  (dm/assert! (gpt/point? position))
+  (ptk/reify ::show-text-context-menu
+    ptk/WatchEvent
+    (watch [_ _ _]
+      (rx/of (show-context-menu (assoc params :kind :text))))))
+
 (def hide-context-menu
   (ptk/reify ::hide-context-menu
     ptk/UpdateEvent
@@ -1377,7 +1412,41 @@
              page    (dsh/lookup-page state page-id)
              changes (-> (pcb/empty-changes it)
                          (pcb/with-page page)
-                         (pcb/mod-page {:background (:color color)}))]
+                         (pcb/mod-page {:background (:color color)
+                                        :background-token nil}))]
+         (rx/of (dch/commit-changes changes)))))))
+
+(defn apply-canvas-color-token
+  "Sets the canvas background to the resolved value of `token` and
+  remembers it as the applied token, so the background badge shows it."
+  ([color token-name]
+   (apply-canvas-color-token nil color token-name))
+  ([page-id color token-name]
+   (ptk/reify ::apply-canvas-color-token
+     ptk/WatchEvent
+     (watch [it state _]
+       (let [page-id (or page-id (:current-page-id state))
+             page    (dsh/lookup-page state page-id)
+             changes (-> (pcb/empty-changes it)
+                         (pcb/with-page page)
+                         (pcb/mod-page {:background color
+                                        :background-token token-name}))]
+         (rx/of (dch/commit-changes changes)))))))
+
+(defn detach-canvas-color-token
+  "Removes the applied-token link from the canvas background, keeping
+  the current background color as a plain value."
+  ([]
+   (detach-canvas-color-token nil))
+  ([page-id]
+   (ptk/reify ::detach-canvas-color-token
+     ptk/WatchEvent
+     (watch [it state _]
+       (let [page-id (or page-id (:current-page-id state))
+             page    (dsh/lookup-page state page-id)
+             changes (-> (pcb/empty-changes it)
+                         (pcb/with-page page)
+                         (pcb/mod-page {:background-token nil}))]
          (rx/of (dch/commit-changes changes)))))))
 
 (defn change-pixel-grid-color
@@ -1633,6 +1702,7 @@
 (dm/export dwt/update-dimensions-coalesced)
 (dm/export dwt/change-orientation)
 (dm/export dwt/start-rotate)
+(dm/export dwt/start-move-line-point)
 (dm/export dwt/increase-rotation)
 (dm/export dwt/increase-rotation-coalesced)
 (dm/export dwt/start-move-selected)

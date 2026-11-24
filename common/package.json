@@ -13,15 +13,15 @@
   "devDependencies": {
     "concurrently": "^10.0.5",
     "nodemon": "^3.1.14",
-    "prettier": "3.9.6",
+    "prettier": "3.9.9",
     "source-map-support": "^0.5.21",
-    "ws": "^8.21.3"
+    "ws": "^8.22.0"
   },
   "dependencies": {
     "date-fns": "^4.4.0"
   },
   "scripts": {
-    "lint:clj": "clj-kondo --config-dir ../.clj-kondo --lint src/",
+    "lint:clj": "clj-kondo --fail-level error --config-dir ../.clj-kondo --lint src/",
     "lint:js": "exit 0",
     "check-fmt:clj": "cljfmt check --parallel=true src/ test/",
     "check-fmt:js": "prettier -c src/**/*.js",

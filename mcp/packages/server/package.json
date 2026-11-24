@@ -5,8 +5,8 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "build:server": "esbuild src/index.ts --bundle --platform=node --target=node18 --format=esm --outfile=dist/index.js --external:@modelcontextprotocol/* --external:ws --external:express --external:class-transformer --external:class-validator --external:reflect-metadata --external:pino --external:pino-pretty --external:pino-loki --external:js-yaml --external:sharp --external:nrepl-client --external:ioredis --external:jose",
-    "build": "pnpm run build:server && node scripts/copy-resources.js",
+    "build:server": "pnpm exec esbuild ./src/index.ts --bundle --platform=node --target=node20 --format=esm --outfile=dist/index.js --external:@modelcontextprotocol/* --external:ws --external:express --external:class-transformer --external:class-validator --external:reflect-metadata --external:pino --external:pino-pretty --external:pino-loki --external:js-yaml --external:sharp --external:nrepl-client --external:ioredis --external:jose",
+    "build": "pnpm run build:server && node ./scripts/copy-resources.js",
     "build:types": "tsc --emitDeclarationOnly --outDir dist",
     "start": "node dist/index.js",
     "start:multi-user": "node dist/index.js --multi-user",
@@ -24,9 +24,14 @@
   ],
   "author": "",
   "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
   "packageManager": "pnpm@12.16.1+sha512.091d1dee7927575661b25dab3c2ae31cafc1c54d6b71ed6a6600cf0c1cb10434a447eae14015f1b23e2e6bedeed79df94a932e2164d2832280dce3fb32f656d1",
   "dependencies": {
+    "@modelcontextprotocol/node": "^2.1.1",
     "@modelcontextprotocol/sdk": "^1.32.2",
+    "@modelcontextprotocol/server": "^2.3.1",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
     "express": "^5.3.0",
@@ -43,6 +48,7 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@modelcontextprotocol/client": "^2.3.1",
     "@penpot/mcp-common": "workspace:../common",
     "@types/express": "^5.0.6",
     "@types/js-yaml": "^4.0.9",

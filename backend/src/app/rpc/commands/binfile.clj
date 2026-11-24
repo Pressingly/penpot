@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 
 (ns app.rpc.commands.binfile
   (:refer-clojure :exclude [assert])
@@ -17,7 +17,7 @@
    [app.config :as cf]
    [app.db :as db]
    [app.http.sse :as sse]
-   [app.loggers.audit :as-alias audit]
+   [app.loggers.audit :as audit]
    [app.loggers.webhooks :as-alias webhooks]
    [app.media.validation :as media.v]
    [app.rpc :as-alias rpc]
@@ -42,17 +42,24 @@
   schema:export-binfile
   [:map {:title "export-binfile"}
    [:file-id ::sm/uuid]
-   [:include-libraries ::sm/boolean]
-   [:embed-assets ::sm/boolean]])
+   [:type {:optional true} [::sm/one-of #{:include-libraries :merge-libraries :detach-libraries :link-later}]]
+   [:include-libraries {:optional true} ::sm/boolean]
+   [:embed-assets {:optional true} ::sm/boolean]])
 
 (defn- export-binfile
-  [{:keys [::sto/storage] :as cfg} {:keys [file-id include-libraries embed-assets]}]
-  (let [output  (tmp/tempfile*)]
+  [{:keys [::sto/storage] :as cfg} {:keys [type file-id include-libraries embed-assets]}]
+  (let [output (tmp/tempfile*)
+        ;; Convert legacy boolean flags to unified export-type
+        export-type (cond
+                      (some? type) type
+                      (true? include-libraries) :include-libraries
+                      (true? embed-assets) :merge-libraries
+                      :else :detach-libraries)]
+
     (try
       (-> cfg
           (assoc ::bfc/ids #{file-id})
-          (assoc ::bfc/embed-assets embed-assets)
-          (assoc ::bfc/include-libraries include-libraries)
+          (assoc ::bfc/export-type export-type)
           (bf.v3/export-files! output))
 
       (let [data   (sto/content output)
@@ -63,7 +70,8 @@
                                      :bucket sto/tempfile-bucket})]
 
         (-> (cf/get :public-uri)
-            (u/join "/assets/by-id/")
+            (u/ensure-path-slash)
+            (u/join "assets/by-id/")
             (u/join (str (:id object)))))
 
       (finally
@@ -72,7 +80,8 @@
 (sv/defmethod ::export-binfile
   "Export a penpot file in a binary format."
   {::doc/added "1.15"
-   ::doc/changes [["2.12" "Remove version parameter, only one version is supported"]]
+   ::doc/changes [["2.12" "Remove version parameter, only one version is supported"]
+                  ["2.19" "Deprecated `include-libraries` and `embed-assets` params"]]
    ::webhooks/event? true
    ::sm/params schema:export-binfile}
   [cfg {:keys [::rpc/profile-id file-id] :as params}]
@@ -82,7 +91,7 @@
 ;; --- Command: import-binfile
 
 (defn- import-binfile
-  [{:keys [::db/pool] :as cfg} {:keys [profile-id project-id version name file upload-id]}]
+  [{:keys [::db/pool] :as cfg} {:keys [profile-id project-id version name file upload-id] :as params}]
   (let [team
         (teams/get-team pool
                         :profile-id profile-id
@@ -93,8 +102,11 @@
             (assoc ::bfc/features (cfeat/get-team-enabled-features cf/flags team))
             (assoc ::bfc/project-id project-id)
             (assoc ::bfc/profile-id profile-id)
+            (assoc ::bfc/team-id (:id team))
             (assoc ::bfc/name name)
-            (assoc ::bfc/import-max-object-size (cf/get :binfile-import-max-object-size))
+            (assoc ::bfc/import-max-binary-entry-size (cf/get :binfile-import-max-binary-entry-size))
+            (assoc ::bfc/import-max-text-entry-size (cf/get :binfile-import-max-text-entry-size))
+            (assoc ::bfc/import-max-text-total-size (cf/get :binfile-import-max-text-total-size))
             (assoc ::bfc/import-max-zip-entries (cf/get :binfile-import-max-zip-entries)))
 
         input-path (:path file)
@@ -121,11 +133,48 @@
                 {:id project-id}
                 {::db/return-keys false})
 
+    ;; The imported files get no event from their own command, so emit one per
+    ;; file inside a single transaction.
+    (db/tx-run! cfg
+                (fn [cfg]
+                  (doseq [file-id (:file-ids result)]
+                    (audit/submit-file-created-event cfg params file-id
+                                                     {:team-id (:id team)}))))
+
     result))
+
+(defn- prepare-import-event
+  "Build the audit event of an import. The RPC layer cannot emit it
+  because the import runs later, inside the SSE response, and the
+  event must carry the ids of the files it creates."
+  [params manifest]
+  (-> (audit/event-from-rpc-params params)
+      (assoc :type "command")
+      (assoc :name "import-binfile")
+      (assoc :props (-> params
+                        (dissoc :file)
+                        (assoc :generated-by (:generated-by manifest))
+                        (assoc :referer (:referer manifest))
+                        (audit/clean-props)))
+      (assoc ::webhooks/event? true)))
+
+(defn- import-binfile-and-audit
+  [cfg params event]
+  (try
+    (let [result   (import-binfile cfg params)
+          file-ids (:file-ids result)]
+      (audit/submit cfg (update event :props assoc
+                                :file-ids (vec file-ids)
+                                :file-count (count file-ids)
+                                :status "completed"))
+      result)
+    (catch Throwable cause
+      (audit/submit cfg (assoc-in event [:props :status] "failed"))
+      (throw cause))))
 
 (def ^:private schema:import-binfile
   [:and
-   [:map {:title "import-binfile"}
+   [:map {:title "import-binfile" :closed true}
     [:name [:or [:string {:max 250}]
             [:map-of ::sm/uuid [:string {:max 250}]]]]
     [:project-id ::sm/uuid]
@@ -148,8 +197,10 @@
                   ["2.15" "Add upload-id param for chunked upload support"]]
 
    ::webhooks/event? true
+   ::audit/skip true
    ::sse/stream? true
    ::sm/params schema:import-binfile
+   ::rpc/multipart-only-params [:file]
    ::climit/id [[:import-binfile/by-profile ::rpc/profile-id]
                 [:import-binfile/global]]}
   [{:keys [::db/pool] :as cfg} {:keys [::rpc/profile-id project-id version upload-id] :as params}]
@@ -166,21 +217,17 @@
                       :binfile-v1 1
                       :binfile-v3 3))
 
-        params  (-> params
-                    (assoc :profile-id profile-id)
-                    (assoc :version version))
-
         manifest
         (case (int version)
           1 nil
-          3 (bf.v3/get-manifest (-> params :file :path))
+          3 (bf.v3/get-manifest cfg (-> params :file :path))
           (throw (ex-info (str "Unsupported binfile version: " version)
                           {:type :validation
                            :code :unsupported-version
-                           :version version})))]
+                           :version version})))
 
-    (with-meta
-      (sse/response (partial import-binfile cfg params))
-      {::audit/props {:file nil
-                      :generated-by (:generated-by manifest)
-                      :referer (:referer manifest)}})))
+        params  (assoc params :version version)
+        event   (prepare-import-event params manifest)
+        params  (assoc params :profile-id profile-id)]
+
+    (sse/response (partial import-binfile-and-audit cfg params event))))

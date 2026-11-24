@@ -4,15 +4,17 @@ Backend: JVM Clojure; Integrant; PostgreSQL; Redis/Valkey; RPC; HTTP; storage; m
 
 ## Focused memories
 
-- RPC, DB helpers, workers, cron, CLIMIT, config and HTTP/session middleware, http self-metrics, media processing, and file data persistence: `mem:backend/subtleties`
+- Cross-cutting backend subtleties (RPC, DB helpers, workers, cron, CLIMIT, config and HTTP/session middleware, http self-metrics, media processing, and file data persistence): `mem:backend/subtleties`
 - Storage abstraction, logical buckets, object lifecycle, deduplication, access, and garbage collection: `mem:backend/storage`.
+- Embedded Ladybug graph experiment, projection, incremental sync, console, and risks: `mem:backend/graph-experiment`
+- Session lifetime config, token `:exp`, and idle/absolute GC: `mem:backend/session-expiration`.
 - Auth flows, permission model, teams, projects, invitations, comments, webhooks, audit: `mem:backend/auth-permissions-product-domains`
-- Audit-log event collection (RPC wrapper, frontend ingestion), telemetry duality, webhook fan-out, error reporters, Nexus archival and retention: `mem:backend/audit-log`
+- Audit-log event collection (RPC wrapper, frontend ingestion), telemetry duality, webhook fan-out, error reporters, Nexus archival and retention: `mem:audit-log` (guía completa, también para perfiles junior; el stub `mem:backend/audit-log` solo redirige aquí)
 - Services, task-queue/Pub-Sub topology constraints -> `mem:prod-infra/core`.
 
 ## Stable namespace map
 
-- `app.rpc.commands.*`: RPC command implementations exposed under `/api/rpc/command/<cmd-name>`.
+- `app.rpc.commands.*`: RPC command implementations exposed under `/api/main/methods/<method-name>`; `/api/rpc/command/<method-name>` remains as a backward-compatible route.
 - `app.rpc.permissions`: permission predicate/check helper factories.
 - `app.http.*`: HTTP routes and middleware.
 - `app.auth.*`: provider-specific authentication helpers such as LDAP/OIDC.

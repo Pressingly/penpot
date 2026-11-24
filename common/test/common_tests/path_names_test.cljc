@@ -2,12 +2,20 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 
 (ns common-tests.path-names-test
   (:require
    [app.common.path-names :as cpn]
    [clojure.test :as t]))
+
+(t/deftest remove-extension
+  (t/is (= "photo" (cpn/remove-extension "photo.svg")))
+  (t/is (= "icon" (cpn/remove-extension "icon.SVG")))
+  (t/is (= "my.svg.icon" (cpn/remove-extension "my.svg.icon.svg")))
+  (t/is (= "archive.tar" (cpn/remove-extension "archive.tar.gz")))
+  (t/is (= "design" (cpn/remove-extension "design")))
+  (t/is (= "" (cpn/remove-extension ".svg"))))
 
 (t/deftest split-group-name
   (t/is (= ["foo" "bar"] (cpn/split-group-name "foo/bar")))
@@ -31,3 +39,12 @@
     (t/is (= (first path) "group"))
     (t/is (= (second path) "subgroup"))
     (t/is (= (nth path 2) "name"))))
+
+(t/deftest normalize-path-name
+  (t/is (= "Button" (cpn/normalize-path-name "  Button  ")))
+  (t/is (= "Group / Button" (cpn/normalize-path-name "Group / Button")))
+  (t/is (nil? (cpn/normalize-path-name nil)))
+  (t/is (nil? (cpn/normalize-path-name "")))
+  (t/is (nil? (cpn/normalize-path-name "   ")))
+  (t/is (nil? (cpn/normalize-path-name "Button/")))
+  (t/is (nil? (cpn/normalize-path-name "Group / "))))

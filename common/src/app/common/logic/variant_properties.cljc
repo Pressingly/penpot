@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 (ns app.common.logic.variant-properties
   (:require
    [app.common.data :as d]
@@ -16,22 +16,24 @@
 
 (defn generate-update-property-name
   [changes variant-id pos new-name]
-  (let [data               (pcb/get-library-data changes)
-        objects            (pcb/get-objects changes)
-        related-components (cfv/find-variant-components data objects variant-id)
+  (if-let [new-name (ctv/prepare-property-name new-name)]
+    (let [data               (pcb/get-library-data changes)
+          objects            (pcb/get-objects changes)
+          related-components (cfv/find-variant-components data objects variant-id)
 
-        props              (-> related-components last :variant-properties)
-        prop-names         (mapv :name props)
-        prop-names         (concat (subvec prop-names 0 pos) (subvec prop-names (inc pos)))
-        new-name           (ctv/update-number-in-repeated-item prop-names new-name)]
-    (reduce (fn [changes component]
-              (pcb/update-component
-               changes (:id component)
-               (fn [component]
-                 (d/update-in-when component [:variant-properties pos] #(assoc % :name new-name)))
-               {:apply-changes-local-library? true}))
-            changes
-            related-components)))
+          props              (-> related-components last :variant-properties)
+          prop-names         (mapv :name props)
+          prop-names         (concat (subvec prop-names 0 pos) (subvec prop-names (inc pos)))
+          new-name           (ctv/update-number-in-repeated-item prop-names new-name)]
+      (reduce (fn [changes component]
+                (pcb/update-component
+                 changes (:id component)
+                 (fn [component]
+                   (d/update-in-when component [:variant-properties pos] #(assoc % :name new-name)))
+                 {:apply-changes-local-library? true}))
+              changes
+              related-components))
+    changes))
 
 
 (defn generate-remove-property
@@ -57,16 +59,21 @@
 
 (defn generate-update-property-value
   [changes component-id pos value]
-  (let [data      (pcb/get-library-data changes)
-        component (ctcl/get-component data component-id true)
-        main-id   (:main-instance-id component)
-        name      (-> (:variant-properties component)
-                      (update pos assoc :value value)
-                      ctv/properties-to-name)]
-    (-> changes
-        (pcb/update-component component-id #(assoc-in % [:variant-properties pos :value] value)
-                              {:apply-changes-local-library? true})
-        (pcb/update-shapes [main-id] #(assoc % :variant-name name)))))
+  (if-let [value (ctv/prepare-property-value value)]
+    (let [data      (pcb/get-library-data changes)
+          objects   (pcb/get-objects changes)
+          component (ctcl/get-component data component-id true)
+          main-id   (:main-instance-id component)]
+      (if (contains? objects main-id)
+        (let [name (-> (:variant-properties component)
+                       (update pos assoc :value value)
+                       ctv/properties-to-name)]
+          (-> changes
+              (pcb/update-component component-id #(assoc-in % [:variant-properties pos :value] value)
+                                    {:apply-changes-local-library? true})
+              (pcb/update-shapes [main-id] #(assoc % :variant-name name))))
+        changes))
+    changes))
 
 
 (defn generate-set-variant-error
@@ -108,40 +115,45 @@
 
         props              (-> related-components last :variant-properties)
         next-prop-num      (ctv/next-property-number props)
-        property-name      (or property-name (str ctv/property-prefix next-prop-num))
+        property-name      (if (some? property-name)
+                             (ctv/prepare-property-name property-name)
+                             (str ctv/property-prefix next-prop-num))]
+    (if (nil? property-name)
+      changes
+      (let [prop-names     (mapv :name props)
+            property-name  (ctv/update-number-in-repeated-item prop-names property-name)
+            property-value (not-empty
+                            (when property-value
+                              (ctv/prepare-property-value property-value)))
+            mdata          (if editing? {:editing? true} nil)
 
-        prop-names         (mapv :name props)
-        property-name      (ctv/update-number-in-repeated-item prop-names property-name)
+            [_ changes]
+            (reduce (fn [[num changes] component]
+                      (let [main-id      (:main-instance-id component)
 
-        mdata              (if editing? {:editing? true} nil)
+                            update-props #(-> (d/nilv % [])
+                                              (conj (with-meta {:name property-name
+                                                                :value (cond fill-values?   (str ctv/value-prefix num)
+                                                                             property-value property-value
+                                                                             :else          "")}
+                                                      mdata)))
 
-        [_ changes]
-        (reduce (fn [[num changes] component]
-                  (let [main-id      (:main-instance-id component)
-
-                        update-props #(-> (d/nilv % [])
-                                          (conj (with-meta {:name property-name
-                                                            :value (cond fill-values?   (str ctv/value-prefix num)
-                                                                         property-value property-value
-                                                                         :else          "")}
-                                                  mdata)))
-
-                        update-name #(cond fill-values?   (if (str/empty? %)
-                                                            (str ctv/value-prefix num)
-                                                            (str % ", " ctv/value-prefix num))
-                                           property-value (if (str/empty? %)
-                                                            property-value
-                                                            (str % ", " property-value))
-                                           :else %)]
-                    [(inc num)
-                     (-> changes
-                         (pcb/update-component (:id component)
-                                               #(update % :variant-properties update-props)
-                                               {:apply-changes-local-library? true})
-                         (pcb/update-shapes [main-id] #(update % :variant-name update-name)))]))
-                [1 changes]
-                related-components)]
-    changes))
+                            update-name #(cond fill-values?   (if (str/empty? %)
+                                                                (str ctv/value-prefix num)
+                                                                (str % ", " ctv/value-prefix num))
+                                               property-value (if (str/empty? %)
+                                                                property-value
+                                                                (str % ", " property-value))
+                                               :else %)]
+                        [(inc num)
+                         (-> changes
+                             (pcb/update-component (:id component)
+                                                   #(update % :variant-properties update-props)
+                                                   {:apply-changes-local-library? true})
+                             (pcb/update-shapes [main-id] #(update % :variant-name update-name)))]))
+                    [1 changes]
+                    related-components)]
+        changes))))
 
 (defn- generate-make-shape-no-variant
   [changes shape]
@@ -175,7 +187,7 @@
         props     (ctv/add-new-props props (repeat new-props ""))]
 
     (if add-name?
-      (ctv/add-new-prop props (:name component))
+      (ctv/add-new-prop props (or (ctv/sanitize-property-text (:name component)) ""))
       props)))
 
 (defn- create-new-properties-from-non-variant
@@ -235,10 +247,20 @@
                                                   :name (:name variant-container)))]
     (reduce
      (fn [changes shape]
-       (let [component (ctcl/get-component data (:component-id shape) true)]
-         (if (or (zero? num-shapes)                      ;; do nothing if there are no shapes
-                 (and (= variant-id (:variant-id shape)) ;; or we are only moving the shape inside its parent (it is
-                      (not (:deleted component))))       ;; the same parent and the component isn't deleted)
+       (let [component     (ctcl/get-component data (:component-id shape) true)
+             already-here? (= variant-id (:variant-id shape))
+             prop-names    (cfv/extract-properties-names shape data)
+             base-names    (map :name base-props)
+             props-ok?     (= prop-names base-names)
+             names-ok?     (= (cpn/merge-path-item (:path component) (:name component))
+                              container-name)
+             variant-ok?   (= (:variant-name shape)
+                              (ctv/properties-to-name (:variant-properties component)))
+             aligned?      (and props-ok? names-ok? variant-ok?)]
+         (if (or (zero? num-shapes) ;; do nothing if there are no shapes
+                 (and already-here? ;; or already a fully aligned child of this container
+                      aligned?
+                      (not (:deleted component))))
            changes
            (let [props               (create-new-properties shape total-props)
                  variant-name        (ctv/properties-to-name props)]

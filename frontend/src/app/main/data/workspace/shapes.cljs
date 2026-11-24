@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 
 (ns app.main.data.workspace.shapes
   (:require
@@ -109,8 +109,8 @@
    (update-shapes-buffer ids update-fn nil))
   ([ids update-fn
     {:keys [reg-objects? save-undo? stack-undo? attrs ignore-tree page-id
-            ignore-touched undo-group with-objects? changed-sub-attr
-            translation?]
+            ignore-touched undo-group with-objects? changed-sub-attr changed-item-index
+            translation? skip-grid-reassignment? skip-component-sync?]
      :or {reg-objects? false
           save-undo? true
           stack-undo? false
@@ -148,11 +148,14 @@
                          nil
                          {:attrs attrs
                           :changed-sub-attr changed-sub-attr
+                          :changed-item-index changed-item-index
                           :ignore-tree ignore-tree
                           :ignore-touched ignore-touched
-                          :with-objects? with-objects?})
+                          :with-objects? with-objects?
+                          :skip-grid-reassignment? skip-grid-reassignment?})
                         (cond-> reg-objects? (pcb/resize-parents ids))
-                        (pcb/set-translation? translation?))))]
+                        (pcb/set-translation? translation?)
+                        (pcb/set-skip-component-sync? skip-component-sync?))))]
              ;; Check buffered text candidates when the buffer is committed.
              (if (or (empty? text-ids)
                      (not (wrfs/text-reflow-candidate? state props)))
@@ -187,7 +190,8 @@
   ([ids update-fn
     {:as props
      :keys [reg-objects? save-undo? stack-undo? attrs ignore-tree page-id
-            ignore-touched undo-group with-objects? changed-sub-attr translation?]
+            ignore-touched undo-group with-objects? changed-sub-attr changed-item-index translation?
+            skip-grid-reassignment? skip-component-sync?]
      :or {reg-objects? false
           save-undo? true
           stack-undo? false
@@ -217,13 +221,16 @@
                                                objects
                                                {:attrs attrs
                                                 :changed-sub-attr changed-sub-attr
+                                                :changed-item-index changed-item-index
                                                 :ignore-tree ignore-tree
                                                 :ignore-touched ignore-touched
                                                 :with-objects? with-objects?
-                                                :translation? translation?})
+                                                :translation? translation?
+                                                :skip-grid-reassignment? skip-grid-reassignment?})
                    (cond-> undo-group
                      (pcb/set-undo-group undo-group))
-                   (pcb/set-translation? translation?))
+                   (pcb/set-translation? translation?)
+                   (pcb/set-skip-component-sync? skip-component-sync?))
 
                changed-objects
                (pcb/lookup-objects changes)
@@ -329,10 +336,11 @@
                          (remove #(dm/get-in objects [% :blocked]))
                          (cfh/order-by-indexed-shapes objects))
 
+            data    (dsh/lookup-file-data state)
             changes (-> (pcb/empty-changes it page-id)
-                        (pcb/with-objects objects))
-
-            changes (cfsh/prepare-move-shapes-into-frame changes frame-id shapes objects true)]
+                        (pcb/with-objects objects)
+                        (pcb/with-library-data data)
+                        (cls/generate-move-shapes-into-frame frame-id shapes objects true))]
 
         (if (some? changes)
           (rx/of (dch/commit-changes changes))
@@ -390,7 +398,8 @@
              selected  (dsh/lookup-selected state)
              base      (cfh/get-base-shape objects selected)
 
-             parent-id (if (or (and (= 1 (count selected))
+             parent-id (if (or (nil? base)
+                               (and (= 1 (count selected))
                                     (cfh/frame-shape? (get objects (first selected))))
                                (empty? selected))
                          frame-id
@@ -467,16 +476,14 @@
    (ptk/reify ::create-artboard-from-selection
      ptk/WatchEvent
      (watch [_ state _]
-       (let [page-id      (:current-page-id state)
-             objects      (dsh/lookup-page-objects state page-id)
-             selected     (->> (dsh/lookup-selected state)
-                               (cfh/clean-loops objects)
-                               (remove #(ctn/has-any-copy-parent? objects (get objects %)))
-                               (remove #(->> %
-                                             (get objects)
-                                             (ctc/is-variant?))))]
+       (let [page-id  (:current-page-id state)
+             objects  (dsh/lookup-page-objects state page-id)
+             selected (vec (ctn/ids-for-structure-op
+                            objects
+                            (dsh/get-selected-ids state)))]
 
-         (rx/of (create-artboard-from-shapes selected id parent-id index name delta)))))))
+         (when (seq selected)
+           (rx/of (create-artboard-from-shapes selected id parent-id index name delta))))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Shape Flags

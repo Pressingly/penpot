@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 
 (ns backend-tests.helpers
   (:require
@@ -51,7 +51,7 @@
    [promesa.core :as p]
    [promesa.exec :as px]
    [ring.core.protocols :as rcp]
-   [yetti.request :as yrq]
+   [yetti.request :as yreq]
    [yetti.response :as yres])
   (:import
    java.io.PipedInputStream
@@ -62,6 +62,13 @@
 (def ^:dynamic *system* nil)
 (def ^:dynamic *pool* nil)
 
+;; Fallback values used when no PENPOT_TEST_* env vars are set (e.g. CI sets
+;; them explicitly, see .github/workflows/tests-backend.yml). Inside the
+;; devenv each wsN container receives per-instance values via
+;; manage.sh (PENPOT_TEST_DATABASE_URI=postgresql://postgres/penpot_test_wsN,
+;; PENPOT_TEST_REDIS_URI=redis://valkey/<6+N>), so parallel test runs on
+;; different workspaces never share a database. cf/read-config picks the env
+;; vars up through the "penpot-test" prefix.
 (def default
   {:database-uri "postgresql://postgres/penpot_test"
    :redis-uri "redis://valkey/1"
@@ -80,7 +87,8 @@
    :enable-quotes
    :enable-rpc-climit
    :enable-auto-file-snapshot
-   :disable-file-validation])
+   :disable-file-validation
+   :disable-admin-console])
 
 (defn init-config
   ([next]
@@ -381,6 +389,99 @@
        {:error (handle-error e#)
         :result nil})))
 
+(defrecord DummyRequest [headers cookies method body-stream
+                         remote-addr server-name server-port
+                         scheme protocol path query ssl-client-cert]
+  yreq/IRequestCookies
+  (get-cookie [_ name]
+    {:value (get cookies name)})
+
+  yreq/IRequest
+  (get-header [_ name]
+    (get headers name))
+  (method [_] method)
+  (body [_] body-stream)
+  (path [_] path)
+  (query [_] query)
+  (server-port [_] server-port)
+  (server-name [_] server-name)
+  (remote-addr [_] remote-addr)
+  (ssl-client-cert [_] ssl-client-cert)
+  (scheme [_] scheme)
+  (protocol [_] protocol))
+
+(defn make-dummy-request
+  "Constructs a DummyRequest from options. Called with keyword
+  arguments, a single options map, or no arguments; every key is
+  optional and missing values fall back to sensible defaults. New
+  fields added to DummyRequest won't break existing call sites
+  as long as this constructor keeps its `:or` defaults in sync.
+
+  Recognized keys:
+    :headers         — map of header name → value
+    :cookies         — map of cookie name → value
+    :method          — HTTP method keyword (default :get)
+    :body-stream     — InputStream for the body (used directly)
+    :body-bytes      — bytes or string for the body; wrapped in a
+                       ByteArrayInputStream if :body-stream is not
+                       given
+    :remote-addr     — string (default \"127.0.0.1\")
+    :server-name     — string (default \"test\")
+    :server-port     — long   (default 0)
+    :scheme          — keyword (default :http)
+    :protocol        — string (default \"HTTP/1.1\")
+    :path            — string (default \"/test\")
+    :query           — string or nil (default nil)
+    :ssl-client-cert — X509Certificate or nil (default nil)"
+  [& {:keys [headers cookies method body-stream body-bytes
+             remote-addr server-name server-port scheme protocol
+             path query ssl-client-cert]
+      :or   {headers {} cookies {} method :get
+             body-stream nil
+             remote-addr "127.0.0.1" server-name "test" server-port 0
+             scheme :http protocol "HTTP/1.1" path "/test" query nil
+             ssl-client-cert nil}}]
+  (let [body-stream (or body-stream
+                        (when body-bytes
+                          (java.io.ByteArrayInputStream.
+                           (if (string? body-bytes)
+                             (.getBytes ^String body-bytes "UTF-8")
+                             body-bytes))))]
+    (->DummyRequest headers cookies method body-stream
+                    remote-addr server-name server-port
+                    scheme protocol path query ssl-client-cert)))
+
+(defn- prepare-rpc-params
+  [data]
+  (let [params   (reduce-kv (fn [params k v]
+                              (if (qualified-keyword? k)
+                                (assoc params k v)
+                                params))
+                            {}
+                            (dissoc data ::type))
+        ;; Honor a caller-supplied request map from the data metadata so
+        ;; tests can inject headers, remote address and auth context (e.g.
+        ;; :app.http/auth-key-id). Non-map requests (reify IRequest stubs)
+        ;; fall back to the dummy request, which carries the body params
+        ;; the validation wrapper reads.
+        supplied (-> data meta :app.http/request)
+        request  (if (map? supplied)
+                   (assoc supplied :params (merge (:params supplied)
+                                                  (d/without-qualified data)))
+                   (assoc (make-dummy-request)
+                          :params (d/without-qualified data)))]
+
+    (-> params
+        (assoc :app.rpc/request-at (ct/now))
+        ;; Mirror of the production flag in `app.rpc/make-rpc-handler`:
+        ;; upload maps are only trusted over multipart. Tests declare it
+        ;; with a content-type header on the supplied request map.
+        (assoc ::rpc/is-multipart
+               (str/starts-with?
+                (str (yreq/get-header request "content-type"))
+                "multipart/"))
+        (with-meta {:app.http/request request}))))
+
 (defn command!
   [{:keys [::type] :as data}]
   (let [[mdata method-fn] (get-in *system* [:app.rpc/methods type])]
@@ -389,10 +490,22 @@
                 :code :rpc-method-not-found
                 :hint (str/ffmt "rpc method '%' not found" (name type))))
 
-    ;; (app.common.pprint/pprint (:app.rpc/methods *system*))
-    (try-on! (method-fn (-> data
-                            (dissoc ::type)
-                            (assoc :app.rpc/request-at (ct/now)))))))
+    (let [params (prepare-rpc-params data)]
+      (try-on! (method-fn params)))))
+
+(defn command-raw!
+  "Like `command!`, but returns the raw result without unwrapping it, so a test
+  can read the result metadata (for example the audit props a command sets on a
+  nil result). The HTTP layer unwraps it the same way in production."
+  [{:keys [::type] :as data}]
+  (let [[_ method-fn] (get-in *system* [:app.rpc/methods type])]
+    (when-not method-fn
+      (ex/raise :type :assertion
+                :code :rpc-method-not-found
+                :hint (str/ffmt "rpc method '%' not found" (name type))))
+
+    (let [params (prepare-rpc-params data)]
+      (method-fn params))))
 
 (defn management-command!
   [{:keys [::type] :as data}]
@@ -401,9 +514,35 @@
       (ex/raise :type :assertion
                 :code :rpc-method-not-found
                 :hint (str/ffmt "management rpc method '%' not found" (name type))))
-    (try-on! (method-fn (-> data
-                            (dissoc ::type)
-                            (assoc :app.rpc/request-at (ct/now)))))))
+    (let [params (prepare-rpc-params data)]
+      (try-on! (method-fn params)))))
+
+(def multipart-headers
+  {"content-type" "multipart/form-data; boundary=test"})
+
+(defn with-multipart
+  "Attach a multipart content-type to RPC test params, declaring that the
+  upload maps they carry arrived over multipart (as the production
+  multipart parser would deliver them). Preserves any request metadata
+  already present on the data."
+  [data]
+  (let [request (-> data meta :app.http/request)]
+    (vary-meta data assoc :app.http/request
+               (assoc (if (map? request) request {})
+                      :headers (merge multipart-headers
+                                      (when (map? request)
+                                        (:headers request)))))))
+
+(defn multipart-command!
+  "Like `command!` but declares the request as multipart, for calls that
+  carry upload maps (`:file`, `:content`, `:media`)."
+  [data]
+  (command! (with-multipart data)))
+
+(defn multipart-management-command!
+  "Like `management-command!` but declares the request as multipart."
+  [data]
+  (management-command! (with-multipart data)))
 
 (defn run-task!
   ([name]
@@ -440,13 +579,19 @@
 (defn init-climit
   "Build a concurrency limiter component from an inline config map. The
   optional second argument is the metrics instance to publish to (a
-  `metrics-stub` by default, where every `run!` is a no-op)."
+  `metrics-stub` by default, where every `run!` is a no-op).
+
+  The root limiters are added with permits that no test reaches: every
+  request goes through them, and a test that does not list them would log a
+  warning per request."
   ([config]
    (init-climit config (metrics-stub)))
   ([config metrics]
    (let [file (doto (java.io.File/createTempFile "climit" ".edn")
                 (.deleteOnExit))]
-     (spit file (pr-str config))
+     (spit file (pr-str (merge {:root/global {:permits 1000 :timeout 3000}
+                                :root/by-profile {:permits 1000 :timeout 3000}}
+                               config)))
      (ig/init-key ::rpc/climit
                   {::climit/enabled true
                    ::climit/config (.getAbsolutePath file)
@@ -541,6 +686,21 @@
     (io/copy (io/file rsc)
              (io/file tmp))
     tmp))
+
+(defmacro with-temp-file
+  "Evaluate `body` with `sym` bound to the path of a temporary file that
+   holds `content`. The file is created under /tmp/penpot, one of the two
+   places the upload validation accepts (/tmp/undertow is the other one),
+   and it is deleted when the body ends, also when it throws."
+  [[sym content] & body]
+  `(let [path# (fs/create-tempfile :dir "/tmp/penpot" :prefix "penpot-test-")]
+     (try
+       (spit (str path#) ~content :encoding "UTF-8")
+       (let [~sym path#]
+         ~@body)
+       (finally
+         (when (fs/exists? path#)
+           (fs/delete path#))))))
 
 (defn pause
   []
@@ -663,66 +823,3 @@
             (parse-sse (slurp' input)))
       (finally
         (.close input)))))
-
-;; ---- Dummy Request Helpers
-
-(defrecord DummyRequest [headers cookies method body-stream
-                         remote-addr server-name server-port
-                         scheme protocol path query ssl-client-cert]
-  yrq/IRequestCookies
-  (get-cookie [_ name]
-    {:value (get cookies name)})
-
-  yrq/IRequest
-  (get-header [_ name]
-    (get headers name))
-  (method [_] method)
-  (body [_] body-stream)
-  (path [_] path)
-  (query [_] query)
-  (server-port [_] server-port)
-  (server-name [_] server-name)
-  (remote-addr [_] remote-addr)
-  (ssl-client-cert [_] ssl-client-cert)
-  (scheme [_] scheme)
-  (protocol [_] protocol))
-
-(defn make-dummy-request
-  "Constructs a DummyRequest from an options map. Every key is
-  optional; missing values fall back to sensible defaults. New
-  fields added to DummyRequest won't break existing call sites
-  as long as this constructor keeps its `:or` defaults in sync.
-
-  Recognized keys:
-    :headers         — map of header name → value
-    :cookies         — map of cookie name → value
-    :method          — HTTP method keyword (default :get)
-    :body-stream     — InputStream for the body (used directly)
-    :body-bytes      — bytes or string for the body; wrapped in a
-                       ByteArrayInputStream if :body-stream is not
-                       given
-    :remote-addr     — string (default \"127.0.0.1\")
-    :server-name     — string (default \"test\")
-    :server-port     — long   (default 0)
-    :scheme          — keyword (default :http)
-    :protocol        — string (default \"HTTP/1.1\")
-    :path            — string (default \"/test\")
-    :query           — string or nil (default nil)
-    :ssl-client-cert — X509Certificate or nil (default nil)"
-  [{:keys [headers cookies method body-stream body-bytes
-           remote-addr server-name server-port scheme protocol
-           path query ssl-client-cert]
-    :or   {headers {} cookies {} method :get
-           body-stream nil
-           remote-addr "127.0.0.1" server-name "test" server-port 0
-           scheme :http protocol "HTTP/1.1" path "/test" query nil
-           ssl-client-cert nil}}]
-  (let [body-stream (or body-stream
-                        (when body-bytes
-                          (java.io.ByteArrayInputStream.
-                           (if (string? body-bytes)
-                             (.getBytes ^String body-bytes "UTF-8")
-                             body-bytes))))]
-    (->DummyRequest headers cookies method body-stream
-                    remote-addr server-name server-port
-                    scheme protocol path query ssl-client-cert)))

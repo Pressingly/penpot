@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 
 (ns app.main.data.workspace.modifiers
   "Events related with shapes transformations"
@@ -99,7 +99,9 @@
     :layout-item-margin-type
     :layout-grid-cells
     :layout-grid-columns
-    :layout-grid-rows})
+    :layout-grid-rows
+    :fills
+    :fill-image})
 
 ;; -- temporary modifiers -------------------------------------------
 
@@ -703,9 +705,10 @@
 
 #_:clj-kondo/ignore
 (defn set-wasm-modifiers
-  [modif-tree & {:keys [ignore-constraints ignore-snap-pixel
-                        subtree-ids-by-id selection-rect-cache]
-                 :or {ignore-constraints false ignore-snap-pixel false}
+  [modif-tree & {:keys [ignore-constraints ignore-snap-pixel snap-ignore-axis
+                        subtree-ids-by-id selection-rect-cache interactive?]
+                 :or {ignore-constraints false ignore-snap-pixel false snap-ignore-axis nil
+                      interactive? true}
                  :as params}]
   (let [modif-tree (without-nil-ids modif-tree)]
     (ptk/reify ::set-wasm-modifiers
@@ -724,8 +727,10 @@
         ;; the renderer into fast + atlas-backdrop mode so the live
         ;; preview is cheap, tiles never appear sequentially and the main
         ;; thread is not blocked. The pair is closed in
-        ;; `clear-local-transform`.
-        (ensure-interactive-transform-start!)
+        ;; `clear-local-transform`. Previews outside a gesture pass
+        ;; `:interactive? false` to keep full quality rendering.
+        (when interactive?
+          (ensure-interactive-transform-start!))
         (let [snap-pixel?  (and (not ignore-snap-pixel) (contains? (:workspace-layout state) :snap-pixel-grid))
               translation? (every? #(ctm/only-move? (:modifiers %)) (vals modif-tree))]
 
@@ -756,7 +761,7 @@
                   root-modifiers
 
                   :else
-                  (let [propagated (wasm.api/propagate-modifiers geometry-entries snap-pixel?)]
+                  (let [propagated (wasm.api/propagate-modifiers geometry-entries snap-pixel? snap-ignore-axis)]
                     (if (seq propagated) propagated root-modifiers)))]
             (when wasm-ready?
               (wasm.api/set-modifiers modifiers))
@@ -831,10 +836,8 @@
                   ;; primaries and descendants would snap back to their
                   ;; pre-drag positions on drop.
                   ;;
-                  ;; Skipped when `snap-pixel?` is on: WASM applies
-                  ;; per-shape pixel correction (different scale/translate
-                  ;; per descendant) which we can't replicate cheaply on
-                  ;; the CLJS side.
+                  ;; Only without `snap-pixel?`: the delta that lands
+                  ;; the shape on the pixel grid is known to WASM alone.
                   (reduce
                    (fn [acc [id data]]
                      (let [t (:transform data)
@@ -864,7 +867,7 @@
                           geometry-entries))
 
                   :else
-                  (into {} (wasm.api/propagate-modifiers geometry-entries snap-pixel?)))
+                  (into {} (wasm.api/propagate-modifiers geometry-entries snap-pixel? snap-ignore-axis)))
 
                 ignore-tree
                 (calculate-ignore-tree-wasm transforms objects)

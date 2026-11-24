@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 
 (ns app.worker.impl
   "Dispatcher for messages received from the main thread."
@@ -35,6 +35,9 @@
 
   (when-let [version (get config :version)]
     (set! cf/version version))
+
+  (when-let [version-tag (get config :version-tag)]
+    (set! cf/version-tag version-tag))
 
   (when-let [build-date (get config :build-data)]
     (set! cf/build-date build-date))

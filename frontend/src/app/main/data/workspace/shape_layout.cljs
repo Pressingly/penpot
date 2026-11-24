@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 
 (ns app.main.data.workspace.shape-layout
   (:require
@@ -17,6 +17,7 @@
    [app.common.logic.libraries :as cll]
    [app.common.types.color :as clr]
    [app.common.types.component :as ctc]
+   [app.common.types.container :as ctn]
    [app.common.types.modifiers :as ctm]
    [app.common.types.shape.layout :as ctl]
    [app.common.uuid :as uuid]
@@ -216,13 +217,15 @@
             has-component?  (some true? (map ctc/instance-root? selected-shapes))
             is-component?   (and single? has-component?)
             has-variant?    (some ctc/is-variant? selected-shapes)
+            has-container?  (some ctc/is-variant-container? selected-shapes)
+            crosses-set?    (ctn/crosses-variant-set-boundary? objects selected-shapes)
 
             has-layout?     (and single? (ctl/any-layout? (first selected-shapes)))
 
             new-shape-id (uuid/next)
             undo-id      (js/Symbol)]
 
-        (if has-variant?
+        (if (or has-variant? has-container? crosses-set?)
           (rx/empty)
           (rx/concat
            (rx/of (dwu/start-undo-transaction undo-id))
@@ -294,12 +297,16 @@
 
             undo-id          (js/Symbol)]
 
-        (rx/of
-         (dwu/start-undo-transaction undo-id)
-         (if (and single? is-frame? (not has-layout?))
-           (create-layout-from-id (first selected) type :from-frame? true)
-           (create-layout-from-selection type))
-         (dwu/commit-undo-transaction undo-id))))))
+        ;; Refuse before undo: container or cross-boundary. Leave single
+        ;; mains on the from-id branch (selection refuses has-variant?).
+        (if (ctn/crosses-variant-set-boundary? objects selected-shapes)
+          (rx/empty)
+          (rx/of
+           (dwu/start-undo-transaction undo-id)
+           (if (and single? is-frame? (not has-layout?))
+             (create-layout-from-id (first selected) type :from-frame? true)
+             (create-layout-from-selection type))
+           (dwu/commit-undo-transaction undo-id)))))))
 
 (defn toggle-layout
   [type]
@@ -318,6 +325,36 @@
                         (remove-layout selected)
                         (create-layout type))]
             (rx/of (with-meta event (meta it)))))))))
+
+(defn change-grid-direction
+  "Set grid direction and reflow single-span auto items in one undo step."
+  [ids dir]
+  (ptk/reify ::change-grid-direction
+    ptk/WatchEvent
+    (watch [_ _ _]
+      (let [undo-id (js/Symbol)]
+        (rx/of (dwu/start-undo-transaction undo-id)
+               (dwsh/update-shapes
+                ids
+                (fn [shape]
+                  (let [from-dir (d/nilv (:layout-grid-dir shape) :row)]
+                    (cond
+                      (not= :grid (:layout shape))
+                      shape
+
+                      (not (contains? #{:row :column} dir))
+                      shape
+
+                      (= from-dir dir)
+                      (assoc shape :layout-grid-dir dir)
+
+                      :else
+                      (ctl/reflow-grid-auto-items-for-direction shape from-dir dir))))
+                ;; Auto cells are already reflowed, so skip generic reassignment
+                ;; and child reordering.
+                {:skip-grid-reassignment? true})
+               (ptk/data-event :layout/update {:ids ids})
+               (dwu/commit-undo-transaction undo-id))))))
 
 (defn update-layout
   ([ids changes] (update-layout ids changes nil))

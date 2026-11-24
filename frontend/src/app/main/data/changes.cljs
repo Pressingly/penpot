@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 
 (ns app.main.data.changes
   (:require
@@ -75,7 +75,9 @@
        (not-empty)))
 
 (def ^:private xf:map-page-id
-  (map :page-id))
+  ;; Component-only changes have no :page-id; keep drops those nils so
+  ;; update-object-indices does not create a nil key in :pages-index.
+  (keep :page-id))
 
 (def ^:private wasm-structural-change-types
   #{:add-obj :mov-objects})
@@ -160,7 +162,7 @@
   "Create a commit event instance"
   [{:keys [commit-id redo-changes undo-changes origin save-undo? features
            file-id file-revn file-vern undo-group tags stack-undo? source ignore-wasm?
-           selected-before translation?]}]
+           selected-before translation? skip-component-sync?]}]
 
   (assert (cpc/check-changes redo-changes)
           "expect valid vector of changes for redo-changes")
@@ -188,7 +190,8 @@
                    :stack-undo? stack-undo?
                    :ignore-wasm? ignore-wasm?
                    :selected-before selected-before
-                   :translation? translation?}]
+                   :translation? translation?
+                   :skip-component-sync? skip-component-sync?}]
 
     (ptk/reify ::commit
       cljs.core/IDeref
@@ -227,7 +230,7 @@
                  undo-group, they will be undone or redone in a single step
    "
   [{:keys [redo-changes undo-changes save-undo? undo-group tags stack-undo? file-id
-           translation?]
+           translation? skip-component-sync?]
     :or {save-undo? true
          stack-undo? false
          undo-group (uuid/next)
@@ -266,5 +269,6 @@
                          (assoc :redo-changes rchg)
                          (assoc :selected-before selected)
                          (assoc :translation? translation?)
+                         (assoc :skip-component-sync? skip-component-sync?)
                          (commit)))))
           (rx/empty))))))

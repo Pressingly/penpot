@@ -64,6 +64,7 @@
      FROM storage_object AS s
     WHERE s.deleted_at IS NOT NULL
       AND s.deleted_at <= ?
+      AND s.status = 'valid'
       AND (s.deleted_at, s.id) > (?, ?)
     ORDER BY s.deleted_at ASC, s.id ASC
     LIMIT ?
@@ -74,6 +75,7 @@
      FROM storage_object AS s
     WHERE s.deleted_at IS NOT NULL
       AND s.deleted_at <= ?
+      AND s.status = 'valid'
     ORDER BY s.deleted_at ASC, s.id ASC
     LIMIT ?
       FOR UPDATE SKIP LOCKED")
@@ -118,7 +120,9 @@
   "Processes the pending objects chunk by chunk with keyset pagination: each
   chunk is one short transaction that reads and locks the next `chunk-size`
   objects after the `(deleted_at, id)` cursor and deletes them (database rows
-  and backend content).
+  and backend content). Only `valid` objects are read: pending ones (still
+  being written, see the status lifecycle) stay untouched even when already
+  marked as deleted.
 
   A chunk that fails aborts its transaction: nothing of the chunk is deleted,
   its locks are released, and it is logged and skipped. The cursor advances

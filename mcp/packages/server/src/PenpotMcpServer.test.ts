@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
+import { Client } from "@modelcontextprotocol/client";
+import { InMemoryTransport, type ToolAnnotations } from "@modelcontextprotocol/server";
 import { PenpotMcpServer, shouldRegisterDeveloperTools, shouldStartReplServer } from "./PenpotMcpServer";
 
 test("registers developer tools in local devenv mode", () => {

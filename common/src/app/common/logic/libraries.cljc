@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 
 (ns app.common.logic.libraries
   #?(:cljs (:require-macros [app.common.logic.libraries :refer [shape-log container-log]]))
@@ -13,6 +13,7 @@
    [app.common.files.helpers :as cfh]
    [app.common.files.variant :as cfv]
    [app.common.geom.matrix :as gmt]
+   [app.common.geom.modifiers :as gm]
    [app.common.geom.point :as gpt]
    [app.common.geom.rect :as grc]
    [app.common.geom.shapes :as gsh]
@@ -27,6 +28,7 @@
    [app.common.types.container :as ctn]
    [app.common.types.file :as ctf]
    [app.common.types.library :as ctl]
+   [app.common.types.modifiers :as ctm]
    [app.common.types.page :as ctp]
    [app.common.types.pages-list :as ctpl]
    [app.common.types.path.segment :as segment]
@@ -55,6 +57,10 @@
        (remove ctk/swap-keep-attrs)
        ;; We don't do automatic update of the `layout-grid-cells` property.
        (remove #(= :layout-grid-cells %))))
+
+;; Flex-child layout attrs synced between main and copy (interactions are only kept on swap)
+(def ^:private flex-child-attrs
+  (disj ctk/swap-keep-attrs :interactions))
 
 (defn enabled-shape?
   [id container]
@@ -573,15 +579,19 @@
     (container-log :debug (:id container) :msg "Sync page in local file" :page-id (:id container))
     (container-log :debug (:id container) :msg "Sync component in local library" :component-id (:id container)))
 
-  (let [linked-shapes (->> (vals (:objects container))
-                           (filter #(uses-assets? asset-type asset-id % library-id)))]
+  (let [objects       (:objects container)
+        ;; Deepest first, so a copy places its swapped children after their own sync
+        linked-shapes (->> (vals objects)
+                           (filter #(uses-assets? asset-type asset-id % library-id))
+                           (sort-by #(- (count (cfh/get-parent-ids objects (:id %))))))]
     (loop [shapes (seq linked-shapes)
            changes (-> changes
                        (pcb/with-container container)
-                       (pcb/with-objects (:objects container)))]
+                       (pcb/with-objects objects))]
       (if-let [shape (first shapes)]
         (recur (next shapes)
-               (let [objects' (pcb/get-objects changes)
+               (let [changes  (pcb/apply-changes-local changes)
+                     objects' (pcb/get-objects changes)
                      shape'   (get objects' (:id shape))]
                  ;; The shape could have been deleted in previous changes, if this nested component
                  ;; comes from components-v1 era or if there has been some error with the swap slot.
@@ -590,7 +600,7 @@
                    (generate-sync-shape asset-type
                                         changes
                                         library-id
-                                        container
+                                        (assoc container :objects objects')
                                         shape'
                                         libraries
                                         current-file-id)
@@ -828,7 +838,8 @@
                                                 root-inst
                                                 root-main
                                                 reset?
-                                                initial-root?)
+                                                initial-root?
+                                                nil)
 
           ;; If the component is not found, because the master component has been
           ;; deleted or the library unlinked, do nothing.
@@ -862,8 +873,88 @@
             (recur shape-inst' next-data component')
             nil))))))
 
+(defn- geometry-sync-delta
+  "Offset the sync applies to the top-left of `dest-shape` when it copies the
+  geometry of `origin-shape`."
+  [dest-shape origin-shape dest-root origin-root]
+  (gpt/subtract (grc/rect->point (:selrect (reposition-shape origin-shape origin-root dest-root)))
+                (grc/rect->point (:selrect dest-shape))))
+
+(defn- follow-parent-modifiers
+  "Modifiers that make `child` follow the change of its parent from
+  `parent-before` to `parent-after`, through the child constraints."
+  [child parent-before parent-after]
+  (let [sr-before (:selrect parent-before)
+        sr-after  (:selrect parent-after)
+        modifiers (-> (ctm/empty)
+                      (ctm/resize (gpt/point (/ (:width sr-after) (max 0.01 (:width sr-before)))
+                                             (/ (:height sr-after) (max 0.01 (:height sr-before))))
+                                  (first (:points parent-before))
+                                  (:transform parent-before)
+                                  (:transform-inverse parent-before))
+                      (ctm/move (gpt/subtract (first (:points parent-after))
+                                              (first (:points parent-before)))))]
+    ;; A move doesn't need the constraints
+    (if (or (ctm/empty? modifiers) (ctm/only-move? modifiers))
+      modifiers
+      (gsh/calc-child-modifiers parent-before child modifiers false
+                                (:points child)
+                                (:points parent-before)
+                                (delay (:points parent-after))))))
+
+(defn- follow-parent-modif-tree
+  "Modifiers that make `child` and its children follow the change of the
+  parent of `child` from `parent-before` to `parent-after`, each one through
+  its own constraints."
+  [objects child parent-before parent-after]
+  (let [modifiers (follow-parent-modifiers child parent-before parent-after)]
+    (if (ctm/empty? modifiers)
+      {}
+      (gm/set-objects-modifiers {(:id child) {:modifiers modifiers}}
+                                (select-keys objects (cfh/get-children-ids-with-self objects (:id child)))))))
+
+(defn- resize-with-parent
+  "Resizes `shape` the way its constraints do when its parent changes from
+  `parent-before` to `parent-after`, keeping its top-left."
+  [shape parent-before parent-after]
+  (let [modifiers (follow-parent-modifiers shape parent-before parent-after)]
+    (if (ctm/empty? modifiers)
+      shape
+      (let [shape' (gsh/transform-shape shape modifiers)]
+        (gsh/move shape' (gpt/subtract (grc/rect->point (:selrect shape))
+                                       (grc/rect->point (:selrect shape'))))))))
+
+(defn- update-geometry-untouched
+  "Applies `update-fn` to the shapes without marking them touched."
+  [changes ids update-fn container]
+  (pcb/concat-changes
+   changes
+   (-> (pcb/empty-changes)
+       (pcb/with-container container)
+       (pcb/with-objects (:objects container))
+       (pcb/update-shapes ids update-fn {:ignore-touched true}))))
+
+(defn generate-follow-parent
+  "Makes `child` and its children follow the change of the parent of `child`
+  from `parent-before` to `parent-after`, each one through its own
+  constraints, without marking them touched. `delta-fn`, if given, receives
+  `child` after that and returns the offset to move the subtree by."
+  [changes container child parent-before parent-after delta-fn]
+  (let [objects    (:objects container)
+        modif-tree (follow-parent-modif-tree objects child parent-before parent-after)
+        follow     #(gsh/transform-shape % (dm/get-in modif-tree [(:id %) :modifiers]))
+        delta      (if delta-fn (delta-fn (follow child)) (gpt/point 0 0))]
+    (cond-> changes
+      (or (seq modif-tree) (not (gpt/almost-zero? delta)))
+      (update-geometry-untouched (cfh/get-children-ids-with-self objects (:id child))
+                                 #(gsh/move (follow %) delta)
+                                 container))))
+
 (defn- generate-sync-shape-direct-recursive
-  [changes container shape-inst component library file libraries shape-main root-inst root-main reset? initial-root?]
+  "Syncs `shape-inst` and its children from `shape-main`. `parent-change` is
+  the geometry of the parent of `shape-inst` before and after the sync, or
+  nil."
+  [changes container shape-inst component library file libraries shape-main root-inst root-main reset? initial-root? parent-change]
   (shape-log :debug (:id shape-inst) container
              :msg "Sync shape direct recursive"
              :shape-inst (str (:name shape-inst) " " (pretty-uuid (:id shape-inst)))
@@ -875,6 +966,19 @@
     (let [omit-touched?        (not reset?)
           clear-remote-synced? (and initial-root? reset?)
           set-remote-synced?   (and (not initial-root?) reset?)
+          geometry-kept?       (and omit-touched?
+                                    (ctk/touched-group? shape-inst :geometry-group))
+          main-geometry        (reposition-shape shape-main root-main root-inst)
+          follow-modifiers     (when (and geometry-kept? (some? parent-change))
+                                 (let [[parent-before parent-after] parent-change]
+                                   (follow-parent-modifiers shape-inst parent-before parent-after)))
+          shape-after          (cond
+                                 (not geometry-kept?)   main-geometry
+                                 (some? follow-modifiers) (gsh/transform-shape shape-inst follow-modifiers)
+                                 :else                  shape-inst)
+          ;; Offset between where the sync leaves shape-inst and where the main puts it
+          main-gap             (gpt/subtract (grc/rect->point (:selrect shape-after))
+                                             (grc/rect->point (:selrect main-geometry)))
           changes
           (cond-> changes
             :always
@@ -884,6 +988,11 @@
                           root-main
                           container
                           omit-touched?)
+
+            (and (some? follow-modifiers) (not (ctm/empty? follow-modifiers)))
+            (update-geometry-untouched [(:id shape-inst)]
+                                       #(gsh/transform-shape % follow-modifiers)
+                                       container)
 
             (ctsl/flex-layout? shape-main)
             (update-flex-child-copy-attrs shape-main
@@ -958,15 +1067,20 @@
                                                        root-inst
                                                        root-main
                                                        reset?
-                                                       initial-root?))
+                                                       initial-root?
+                                                       [shape-inst shape-after]))
 
           swapped (fn [changes child-inst child-main]
                     (shape-log :trace (:id child-inst) container
                                :msg "Match slot"
                                :child-inst (str (:name child-inst) " " (pretty-uuid (:id child-inst)))
                                :child-main (str (:name child-main) " " (pretty-uuid (:id child-main))))
-                    ;; For now we don't make any sync here.
-                    changes)
+                    ;; A swapped child follows its parent and, if the user didn't move it,
+                    ;; goes to the place of the slot's occupant in the main
+                    (generate-follow-parent changes container child-inst shape-inst shape-after
+                                            (when-not (ctk/touched-group? child-inst :geometry-group)
+                                              #(gpt/add (geometry-sync-delta % child-main root-inst root-main)
+                                                        main-gap))))
 
           moved (fn [changes child-inst child-main]
                   (shape-log :trace (:id child-inst) container
@@ -1032,26 +1146,69 @@
 
         initial-root?  (:component-root shape-inst)
 
+        ;; The component name is normalized (path separators with one space at
+        ;; each side), so the name synced to the main instance root must be
+        ;; normalized too. Otherwise the root would not match the component's
+        ;; path+name and the file would fail :invalid-main-instance-name.
+        rename?        (and (some? component)
+                            (contains? (:touched shape-inst) :name-group))
+        original-name  (:name shape-inst)
+        clean-name     (when rename?
+                         (cpn/clean-path original-name))
+        shape-inst     (cond-> shape-inst
+                         (some? clean-name)
+                         (assoc :name clean-name))
+
         root-inst      shape-inst
         root-main      (ctf/get-component-root library component)
 
-        changes        (cond-> changes
-                         (and component (contains? (:touched shape-inst) :name-group))
-                         (generate-rename-component (:component-id shape-inst) (:name shape-inst) library))]
+        ;; When the synced shape is itself the component's main instance root,
+        ;; `find-remote-shape` returns nil and the recursive sync never reaches
+        ;; it, so it must be renamed explicitly to keep it matching the
+        ;; component's path+name.
+        main-root?     (and (some? component)
+                            (= (:id shape-inst) (:main-instance-id component)))
 
-    (if component
-      (generate-sync-shape-inverse-recursive changes
-                                             container
-                                             shape-inst
-                                             component
-                                             library
-                                             file
-                                             libraries
-                                             shape-main
-                                             root-inst
-                                             root-main
-                                             initial-root?)
-      changes)))
+        changes        (cond-> changes
+                         (some? clean-name)
+                         (generate-rename-component (:component-id shape-inst) clean-name library))
+
+        changes        (if component
+                         (generate-sync-shape-inverse-recursive changes
+                                                                container
+                                                                shape-inst
+                                                                component
+                                                                library
+                                                                file
+                                                                libraries
+                                                                shape-main
+                                                                root-inst
+                                                                root-main
+                                                                initial-root?)
+                         changes)
+
+        changes        (cond-> changes
+                         (and (some? clean-name)
+                              main-root?
+                              (not= clean-name original-name))
+                         (-> (update :redo-changes conj
+                                     (make-change container
+                                                  {:type :mod-obj
+                                                   :id (:id shape-inst)
+                                                   :local-change? true
+                                                   :operations [{:type :set
+                                                                 :attr :name
+                                                                 :val clean-name}]}))
+                             (update :undo-changes conj
+                                     (make-change container
+                                                  {:type :mod-obj
+                                                   :id (:id shape-inst)
+                                                   :local-change? true
+                                                   :operations [{:type :set
+                                                                 :attr :name
+                                                                 :val original-name}]}))))]
+
+    changes))
 
 (defn- generate-sync-shape-inverse-recursive
   [changes container shape-inst component library file libraries shape-main root-inst root-main initial-root?]
@@ -2188,7 +2345,10 @@
   [changes current-shape previous-shape current-root prev-root origin-ref-shape container]
   (let [;; We need to sync only the position relative to the origin of the component.
         ;; (see update-attrs for a full explanation)
-        previous-shape (reposition-shape previous-shape prev-root current-root)
+        previous-shape (-> previous-shape
+                           (resize-with-parent (get (:objects container) (:parent-id previous-shape))
+                                               (get (pcb/get-objects changes) (:parent-id current-shape)))
+                           (reposition-shape prev-root current-root))
         touched        (get previous-shape :touched #{})
         text-auto?     (and (cfh/text-shape? current-shape)
                             (contains? #{:auto-height :auto-width} (:grow-type current-shape)))]
@@ -2375,6 +2535,15 @@
                 (assoc attr (get origin attr)))))
           dest))))
 
+(defn- get-flex-child-main
+  "The near-main child that owns this copy child's flex-item attrs.
+  Non-swapped copies match by shape-ref; swapped copies match by swap slot
+  (the original occupant of the parent layout slot)."
+  [main-container main-component child-copy]
+  (or (ctf/get-ref-shape main-container main-component child-copy)
+      (some->> (ctk/get-swap-slot child-copy)
+               (ctf/get-component-shape main-container main-component))))
+
 (defn- update-flex-child-copy-attrs
   "Synchronizes the attributes inside the flex-child items (main->copy)"
   [changes shape-main shape-copy main-container main-component copy-container omit-touched?]
@@ -2400,9 +2569,9 @@
             (pcb/update-shapes
              (:shapes shape-copy)
              (fn [child-copy]
-               (let [child-main (ctf/get-ref-shape main-container main-component child-copy)]
-                 (-> child-copy
-                     (propagate-attrs child-main ctk/swap-keep-attrs omit-touched?))))
+               (if-let [child-main (get-flex-child-main main-container main-component child-copy)]
+                 (propagate-attrs child-copy child-main flex-child-attrs omit-touched?)
+                 child-copy))
              {:ignore-touched true}))]
     (pcb/concat-changes changes new-changes)))
 
@@ -2432,7 +2601,7 @@
              (fn [child-main]
                (let [child-copy (ctf/get-shape-in-copy copy-container child-main shape-copy)]
                  (-> child-main
-                     (propagate-attrs child-copy ctk/swap-keep-attrs omit-touched?))))
+                     (propagate-attrs child-copy flex-child-attrs omit-touched?))))
              {:ignore-touched true}))]
     (pcb/concat-changes changes new-changes)))
 
@@ -2568,10 +2737,20 @@
 
         [path name] (cpn/split-group-name name)
 
+        ;; The name of the main instance root must match the path+name of the
+        ;; component. The component name is normalized here (via split-group-name),
+        ;; so the root shape name must be normalized too. Otherwise creating a
+        ;; component from a shape with an unnormalized name (e.g. "Group/Subgroup")
+        ;; would leave a main instance failing :invalid-main-instance-name.
+        normalized-name (cpn/merge-path-item path name)
+
         [root-shape updated-shapes]
-        (ctn/convert-shape-in-component root objects file-id)
+        (ctn/convert-shape-in-component (assoc root :name normalized-name) objects file-id)
 
         changes     (-> changes
+                        (cond-> (not= normalized-name (:name root))
+                          (pcb/update-shapes [(:id root)] #(assoc % :name normalized-name)
+                                             {:ignore-touched true}))
                         (pcb/add-component (:id root-shape)
                                            path
                                            name
@@ -2580,7 +2759,8 @@
                                            page-id
                                            nil
                                            variant-id
-                                           props))]
+                                           props
+                                           {:apply-changes-local-library? true}))]
     [root-shape changes]))
 
 (defn generate-add-component
@@ -2716,11 +2896,24 @@
                                                            page
                                                            {:id (:id file)
                                                             :data file}
-                                                           libraries)))]
+                                                           libraries)))
+
+        ;; The attributes of `keep-props-values` get their value restored in the
+        ;; new shape. Keep too the touched groups they belong to, so the override
+        ;; stays marked as such (otherwise a later sync would overwrite it).
+        kept-touched-groups
+        (->> (keys keep-props-values)
+             (keep #(ctk/resolve-sync-group (:type new-shape) %))
+             (filter #(contains? (:touched shape) %))
+             (into #{}))
+
+        new-shape (update new-shape :touched (fnil into #{}) kept-touched-groups)]
 
     [new-shape (-> changes
                    ;; Restore the properties
-                   (pcb/update-shapes [(:id new-shape)] #(d/patch-object % keep-props-values))
+                   (pcb/update-shapes [(:id new-shape)]
+                                      #(d/patch-object % keep-props-values)
+                                      {:ignore-touched true})  ;; Touched attribute has already been set above
 
                    ;; We need to set the same index as the original shape
                    (pcb/change-parent (:parent-id shape) [new-shape] index {:allow-altering-copies true
@@ -3056,7 +3249,8 @@
                (cond-> (ctsl/grid-layout? obj)
                  (ctsl/remap-grid-cells ids-map))
 
-               (cond-> (ctk/is-variant-container? parent)
+               (cond-> (and (ctk/is-variant-container? parent)
+                            (ctk/main-instance? obj))
                  (assoc :variant-id parent-id))
 
                (cond-> (and (ctk/is-variant? obj) (not (ctk/is-variant-container? parent)))
@@ -3077,6 +3271,25 @@
            changes (cond-> changes
                      (and is-component-root? is-component-main?)
                      (regenerate-component new-obj))
+
+           ;; Unknown-component paste into a variant set: align props/names
+           ;; after regenerate. Reload the shape so we use the new component-id.
+           ;; Prefit the component name/path to the container so
+           ;; create-new-properties-from-variant does not treat the component
+           ;; full name as a former set name and inflate properties (add-name?).
+           changes (cond-> changes
+                     (and is-component-root?
+                          is-component-main?
+                          (ctk/is-variant-container? parent))
+                     (as-> $
+                           (let [shape         (get (pcb/get-objects $) (:id new-obj))
+                                 [cpath cname] (cpn/split-group-name (:name parent))
+                                 changes       (pcb/update-component
+                                                $
+                                                (:component-id shape)
+                                                #(assoc % :name cname :path cpath)
+                                                {:apply-changes-local-library? true})]
+                             (clvp/generate-make-shapes-variant changes [shape] parent))))
 
            ;; This is needed for the recursive call to find the new object as parent
            page' (ctst/add-shape (:id new-obj)

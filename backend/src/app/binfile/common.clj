@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 
 (ns app.binfile.common
   "A binfile related file processing common code, used for different
@@ -13,6 +13,7 @@
    [app.common.features :as cfeat]
    [app.common.files.helpers :as cfh]
    [app.common.files.migrations :as fmg]
+   [app.common.files.tokens :as cfo]
    [app.common.files.validate :as fval]
    [app.common.logging :as l]
    [app.common.media :as cm]
@@ -53,9 +54,37 @@
 (def temp-file-threshold
   (* 1024 1024 2))
 
-;; A maximum (storage) object size allowed: 100MiB
-(def ^:const max-object-size
+;; Maximum size allowed for a single binary entry during binfile
+;; import: 100MiB. Covers the storage blobs (`objects/` entries in v3,
+;; streams in v1), whose declared size and hash are verified against the
+;; imported bytes. Legitimate media objects fit comfortably below this;
+;; anything larger is rejected instead of being buffered into memory.
+(def ^:const default-max-binary-entry-size
   (* 1024 1024 100))
+
+;; Maximum decompressed size allowed for a single JSON/text zip entry
+;; (manifest, files, pages, shapes, colors, components, typographies,
+;; tokens, plugin-data) during binfile import: 20MiB. Legitimate entries
+;; are KB-sized, so this is deliberately much lower than
+;; default-max-binary-entry-size and bounds the DEFLATE amplification of any
+;; single entry.
+(def ^:const default-max-text-entry-size
+  (* 1024 1024 20))
+
+;; Maximum total decompressed size allowed for all JSON/text zip entries
+;; combined within a single import job: 500MiB. Bounds the case where many
+;; entries, each individually under default-max-text-entry-size, still sum
+;; to an unreasonable total. Set well above the 200MiB it replaces because
+;; legitimate giant exports exist: hundreds of thousands of KB-sized
+;; entries (pages, shapes) that never trip the per-entry cap but sum past
+;; 400MiB. The per-entry cap still bounds single-entry DEFLATE
+;; amplification, so this only moves the cumulative ceiling.
+(def ^:const default-max-text-total-size
+  (* 1024 1024 500))
+
+;; Maximum number of entries allowed in the import zip: 500,000.
+(def ^:const default-max-zip-entries
+  (* 500 1000))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -443,6 +472,18 @@
             {:team-id team-id
              :deleted-at nil}))
 
+(def ^:private sql:get-files-rels
+  "SELECT flr.*,
+	      fls.synced_at
+    FROM file_library_rel AS flr
+    JOIN file AS l
+      ON flr.library_file_id = l.id
+    LEFT JOIN file_library_sync AS fls
+      ON fls.file_id = flr.file_id
+     AND fls.library_file_id = flr.library_file_id
+   WHERE flr.file_id = ANY(?)
+     AND l.deleted_at IS NULL;")
+
 (defn get-files-rels
   "Given a set of file-id's, return all matching relations with the libraries"
   [cfg ids]
@@ -451,18 +492,8 @@
   (assert (every? uuid? ids) "expected a set of uuids")
 
   (db/run! cfg (fn [{:keys [::db/conn]}]
-                 (let [ids (db/create-array conn "uuid" ids)
-                       sql (str "SELECT flr.*,"
-                                "	   fls.synced_at"
-                                "  FROM file_library_rel AS flr"
-                                "  JOIN file AS l"
-                                "    ON flr.library_file_id = l.id"
-                                "  LEFT JOIN file_library_sync AS fls"
-                                "    ON fls.file_id = flr.file_id"
-                                "   AND fls.library_file_id = flr.library_file_id"
-                                " WHERE flr.file_id = ANY(?)"
-                                "   AND l.deleted_at IS NULL;")]
-                   (db/exec! conn [sql ids])))))
+                 (let [ids (db/create-array conn "uuid" ids)]
+                   (db/exec! conn [sql:get-files-rels ids])))))
 
 (def ^:private sql:upsert-file-library-sync
   "INSERT INTO file_library_sync (file_id, library_file_id, synced_at)
@@ -650,15 +681,35 @@
              colors
              colors))
 
+(defn absorb-unlinked-tokens-source
+  "Make the file its own tokens source when its tokens source is not one
+  of the given library-ids, as happens when the library was deleted. The
+  tokens lib of the source is copied while the library still exists, even
+  if deleted; otherwise the tokens source is removed and the file gets back
+  the tokens status kept aside for its own tokens lib, if any."
+  [cfg data library-ids]
+  (let [source-id (cfo/get-tokens-source data)]
+    (if (and (some? source-id)
+             (not (contains? library-ids source-id)))
+      (if-let [library (get-file cfg source-id
+                                 :include-deleted? true
+                                 :throw-if-not-exists? false)]
+        (cfo/absorb-tokens-lib data (:data library))
+        (cfo/detach-tokens-source data))
+      data)))
+
 (defn embed-assets
   [cfg data file-id]
-  (let [library-ids (get-libraries cfg [file-id])]
-    (reduce (fn [data library-id]
-              (if-let [library (get-file cfg library-id :include-deleted? true)]
-                (ctf/absorb-assets data (:data library))
-                data))
-            data
-            library-ids)))
+  (let [library-ids (get-libraries cfg [file-id])
+        data        (reduce (fn [data library-id]
+                              (if-let [library (get-file cfg library-id :include-deleted? true)]
+                                (cond-> (ctf/absorb-assets data (:data library))
+                                  (= library-id (cfo/get-tokens-source data))
+                                  (cfo/absorb-tokens-lib (:data library)))
+                                data))
+                            data
+                            library-ids)]
+    (absorb-unlinked-tokens-source cfg data library-ids)))
 
 (def transaction-idle-timeout-ms
   "Idle-in-transaction guard for the long binfile transactions: 30
@@ -683,27 +734,6 @@
   (set-transaction-idle-timeout cfg)
   (let [conn (db/get-connection cfg)]
     (db/exec-one! conn ["SET CONSTRAINTS ALL DEFERRED"])))
-
-(defn invalidate-thumbnails
-  [cfg file-id]
-  (let [storage (sto/resolve cfg)
-
-        sql-1
-        (str "update file_tagged_object_thumbnail "
-             "   set deleted_at = now() "
-             " where file_id=? returning media_id")
-
-        sql-2
-        (str "update file_thumbnail "
-             "   set deleted_at = now() "
-             " where file_id=? returning media_id")]
-
-    (run! #(sto/touch-object! storage %)
-          (sequence
-           (keep :media-id)
-           (concat
-            (db/exec! cfg [sql-1 file-id])
-            (db/exec! cfg [sql-2 file-id]))))))
 
 (defn process-file
   [cfg {:keys [id] :as file}]
@@ -905,8 +935,8 @@
 (defn get-resolved-file-libraries
   "Get all file libraries including itself. Returns an instance of
   LoadableWeakValueMap that allows do not have strong references to
-  the loaded libraries and reduce possible memory pressure on having
-  all this libraries loaded at same time on processing file validation
+  the loaded libraries and reduce memory pressure on having
+  all this libraries at the same time on processing file validation
   or file migration.
 
   This still requires at least one library at time to be loaded while
@@ -918,6 +948,51 @@
                          (cons (:id file)))
         load-fn     #(get-file cfg % :migrate? false)]
     (weak/loadable-weak-value-map library-ids load-fn {id file})))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; EXTERNAL LIBRARY RESOLUTION HELPERS
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn slugify-name
+  "Slugify a library name for cross-environment matching.
+  Lowercases, replaces non-alphanumeric runs with '-', strips
+  leading/trailing '-'."
+  [name]
+  (str/slug name))
+
+(def ^:private sql:get-files-names
+  "SELECT id, name FROM file WHERE id = ANY(?)")
+
+(defn get-files-names
+  "Return [{:id uuid :name string}] for the given file ids."
+  [cfg ids]
+  (db/run! cfg
+           (fn [{:keys [::db/conn]}]
+             (let [ids-arr (db/create-array conn "uuid" ids)]
+               (db/exec! conn [sql:get-files-names ids-arr])))))
+
+(def ^:private sql:get-shared-files-for-team
+  "SELECT f.id, f.name, f.project_id
+     FROM file AS f
+     JOIN project AS p ON (p.id = f.project_id)
+    WHERE p.team_id = ?
+      AND f.is_shared = true
+      AND f.deleted_at IS NULL
+      AND p.deleted_at IS NULL")
+
+(defn get-shared-files-for-team
+  "Return [{:id uuid :name string}] for all shared files in a team."
+  [cfg team-id]
+  (db/run! cfg
+           (fn [{:keys [::db/conn]}]
+             (db/exec! conn [sql:get-shared-files-for-team team-id]))))
+
+(defn find-shared-files-by-slug
+  "Return all shared files in `team-id` whose slugified name equals `slug`."
+  [cfg team-id slug]
+  (->> (get-shared-files-for-team cfg team-id)
+       (filter #(= slug (slugify-name (:name %))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; SVG IMPORT SANITIZATION

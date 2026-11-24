@@ -21,6 +21,7 @@
 - Full referential/semantic validation currently runs only when file features contain `"components/v2"`.
 - Validation starts at root plus orphan shapes, then validates component records. `validate-file!` raises `:validation :referential-integrity` with collected details.
 - `repair-file` does not mutate data directly; it reduces validation errors into redo changes using `changes-builder`. Callers must apply or persist those changes.
+- `repair-file-until-valid` stops on: no errors; unchanged `:data` after apply (backend page/`PointerMap` `=` is pointer identity); stable error fingerprint `(frequencies (map #(dissoc % :shape) errors))` vs previous pass (check fingerprint before `repair-file`/`process-changes`); or `max-iterations`. Each `repair-error` builds from the original `file-data`, so N `:set`-based errors on one shape take N passes.
 - `:missing-slot` fires only for a REAL swap: a copy sub-head whose `shape-ref` is no longer a child of the near main parent. A pure positional mismatch (ref still a sibling elsewhere) is a reorder — valid, realigned by the async component sync; do not "repair" it by assigning swap slots (a slot freezes the child out of normal sync). `fix-missing-swap-slots` (migration 0019) follows the same membership rule.
 
 ## Migrations
@@ -29,3 +30,5 @@
 - Migrations are an ordered set mixing legacy version-derived ids and newer named ids. Keep append order stable; `migrate` applies the set difference between available migrations and file migrations.
 - `migrate-file` synthesizes legacy migration ids from old numeric versions when `:migrations` is absent, migrates legacy features, and records feature flags created through `cfeat/*new*`.
 - When a file had no previous `:migrations`, `migrate-file` marks all migrations as migrated in metadata so callers persist the complete migration set, not only transformations that changed data.
+- Closed schemas (`schema:stroke-attrs` and others) reject a key that was dropped from the declaration, so removing a declared attr needs a migration in the same change, for data already written with it.
+- Withdrawing a migration id: remove both the `defmethod` and the id from `available-migrations`; the replacement migration subsumes it and files that recorded the old id re-migrate through the replacement (persisted `:migrations` keep the old id via union — do not rewrite them, including playwright fixture JSONs). Idempotent/pure-cleanup migrations only; never withdraw one whose transform must not run again unless the replacement is safe for those files. Precedent: "legacy-36" -> "0036-clear-nil-keys-in-objects".

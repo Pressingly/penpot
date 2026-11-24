@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 
 (ns backend-tests.rpc-audit-test
   (:require
@@ -17,6 +17,7 @@
    [app.util.services :as sv]
    [backend-tests.helpers :as th]
    [clojure.test :as t]
+   [mockery.core :refer [with-mocks]]
    [yetti.request]))
 
 (t/use-fixtures :once th/state-init)
@@ -329,6 +330,58 @@
           (t/is (= day-now (:created-at row2)))
           (t/is (= day-now (:tracked-at row2))))))))
 
+(t/deftest backend-process-event-forwards-id-to-webhook-task
+  ;; The `webhook/trigger` row links back to its origin event through
+  ;; props `:event-id`, so `process-event` must forward the stored row
+  ;; id to the `:process-webhook-event` worker task. Regression test:
+  ;; the id used to be generated inside `append-audit-entry` without
+  ;; ever reaching the worker params, so `:event-id` always landed nil.
+  (with-mocks [submit-mock {:target 'app.worker/submit! :return nil}]
+    (with-redefs [cf/flags #{:audit-log :webhooks}]
+      (let [prof  (th/create-profile* 1 {:is-active true})
+            event {:type "action"
+                   :name "delete-project"
+                   :profile-id (:id prof)
+                   :props {:team-id (:default-team-id prof)}
+                   :context {:version "2.0.0" :initiator "app"}
+                   :tracked-at (ct/now)
+                   :created-at (ct/now)
+                   :source "backend"
+                   :app.loggers.webhooks/event? true}]
+        (audit/submit* th/*system* event)
+        (let [[row :as rows] (->> (th/db-exec! ["select * from audit_log"])
+                                  (mapv decode-row))]
+          (t/is (= 1 (count rows)))
+          (t/is (= 1 (:call-count @submit-mock)))
+          (let [params (-> @submit-mock :call-args-list ffirst :app.worker/params)]
+            (t/is (some? (:id params)))
+            (t/is (= (:id row) (:id params)))))))))
+
+(t/deftest backend-process-event-telemetry-row-gets-own-id
+  ;; When both `:audit-log` and `:telemetry` are active, the shadow
+  ;; telemetry row must not reuse the full row id (shared PK), while
+  ;; the webhook task still carries the full row id.
+  (with-mocks [submit-mock {:target 'app.worker/submit! :return nil}]
+    (with-redefs [cf/flags #{:audit-log :telemetry :webhooks}]
+      (let [prof  (th/create-profile* 1 {:is-active true})
+            event {:type "action"
+                   :name "delete-project"
+                   :profile-id (:id prof)
+                   :props {:team-id (:default-team-id prof)}
+                   :context {:version "2.0.0" :initiator "app"}
+                   :tracked-at (ct/now)
+                   :created-at (ct/now)
+                   :source "backend"
+                   :app.loggers.webhooks/event? true}]
+        (audit/submit* th/*system* event)
+        (let [[row1 row2 :as rows] (->> (th/db-exec! ["select * from audit_log order by source"])
+                                        (mapv decode-row))]
+          (t/is (= 2 (count rows)))
+          (t/is (not= (:id row1) (:id row2)))
+          (let [params (-> @submit-mock :call-args-list ffirst :app.worker/params)]
+            (t/is (= (:id (first (filter #(= "backend" (:source %)) rows)))
+                     (:id params)))))))))
+
 (t/deftest push-events-disabled-when-no-flags-and-no-telemetry
   ;; When neither audit-log nor telemetry is enabled, no rows should
   ;; be stored.
@@ -346,6 +399,41 @@
 
       (t/is (nil? (:error out)))
       (t/is (= 0 (count (th/db-exec! ["select * from audit_log"])))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; GET-ENVIRONMENT-DATA
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(t/deftest get-environment-data-returns-selfhost-by-default
+  (with-redefs [cf/flags #{:audit-log}]
+    (let [out (th/command! {::th/type :get-environment-data})]
+      (t/is (th/success? out))
+      (t/is (= "selfhost" (-> out :result :deployment))))))
+
+(t/deftest get-environment-data-returns-saas-when-configured
+  (with-redefs [cf/flags #{:telemetry}]
+    (binding [cf/config (assoc cf/config :is-saas true)]
+      (let [out (th/command! {::th/type :get-environment-data})]
+        (t/is (th/success? out))
+        (t/is (= "saas" (-> out :result :deployment)))))))
+
+(t/deftest get-environment-data-only-exposes-event-flags
+  (with-redefs [cf/flags #{:audit-log :telemetry :graph :nrepl-server}]
+    (let [out (th/command! {::th/type :get-environment-data})]
+      (t/is (th/success? out))
+      (t/is (= #{:audit-log :telemetry} (-> out :result :flags))))))
+
+(t/deftest get-environment-data-returns-empty-flags-when-none-enabled
+  (with-redefs [cf/flags #{:graph}]
+    (let [out (th/command! {::th/type :get-environment-data})]
+      (t/is (th/success? out))
+      (t/is (= #{} (-> out :result :flags))))))
+
+(t/deftest get-enabled-flags-still-returns-flat-set
+  (with-redefs [cf/flags #{:audit-log :telemetry :graph}]
+    (let [out (th/command! {::th/type :get-enabled-flags})]
+      (t/is (th/success? out))
+      (t/is (= #{:audit-log :telemetry} (:result out))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; PURE HELPER UNIT TESTS
@@ -532,6 +620,58 @@
                     (case name "x-frontend-version" "  ")))]
     (t/is (nil? (get-client-version request)))))
 
+(t/deftest get-client-initiator-from-x-client
+  (let [request (fn [client]
+                  (reify yetti.request/IRequest
+                    (get-header [_ name]
+                      (case name "x-client" client))))]
+    (t/is (= "app" (audit/get-client-initiator (request nil))))
+    (t/is (= "app" (audit/get-client-initiator (request "penpot-frontend/2.19.0"))))
+    (t/is (= "admin-console" (audit/get-client-initiator (request "penpot-admin-console/2.19.0"))))
+    (t/is (= "admin-console" (audit/get-client-initiator (request "penpot-nitrate/2.19.0"))))
+    (t/is (= "admin-console" (audit/get-client-initiator (request "Penpot-Admin-Console/2.19.0"))))
+    (t/is (= "app" (audit/get-client-initiator (request "something-else/1.0"))))))
+
+(t/deftest push-events-assigns-initiator-from-x-client
+  (with-redefs [app.config/flags #{:audit-log}]
+    (let [prof   (th/create-profile* 1 {:is-active true})
+          params {::th/type :push-audit-events
+                  ::rpc/profile-id (:id prof)
+                  :events [{:name "navigate"
+                            :props {:route "dashboard"}
+                            :context {:engine "blink"
+                                      :initiator "fake-client-value"}
+                            :type "action"
+                            :timestamp (ct/now)}]}
+          params (with-meta params
+                   {:app.http/request
+                    (th/make-dummy-request
+                     :headers {"x-client" "penpot-admin-console/2.19.0"})})
+          out    (th/command! params)]
+      (t/is (nil? (:error out)))
+      (let [[row] (->> (th/db-exec! ["select * from audit_log"])
+                       (mapv decode-row))]
+        ;; The server overwrites whatever initiator the client sends.
+        (t/is (= "admin-console" (-> row :context :initiator)))))))
+
+(t/deftest push-events-initiator-defaults-to-app
+  (with-redefs [app.config/flags #{:audit-log}]
+    (let [prof   (th/create-profile* 1 {:is-active true})
+          params {::th/type :push-audit-events
+                  ::rpc/profile-id (:id prof)
+                  :events [{:name "navigate"
+                            :props {:route "dashboard"}
+                            :context {:engine "blink"}
+                            :type "action"
+                            :timestamp (ct/now)}]}
+          params (with-meta params
+                   {:app.http/request (th/make-dummy-request)})
+          out    (th/command! params)]
+      (t/is (nil? (:error out)))
+      (let [[row] (->> (th/db-exec! ["select * from audit_log"])
+                       (mapv decode-row))]
+        (t/is (= "app" (-> row :context :initiator)))))))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; INSERT DEFAULTS
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -564,17 +704,22 @@
 
 (defn- prepare-event
   "Call prepare-rpc-event with a bare request, returning the built event."
-  [caller result]
-  (let [mdata    {::sv/name "test-cmd"}
-        params   {::rpc/profile-id caller
-                  ::rpc/request-id (uuid/next)
-                  ::rpc/request-at (ct/now)}
-        mock-req (reify
-                   yetti.request/IRequest
-                   (get-header [_ _] nil)
-                   (remote-addr [_] "127.0.0.1"))
-        params   (with-meta params {:app.http/request mock-req})]
-    (audit/prepare-rpc-event th/*system* mdata params result)))
+  ([caller result]
+   (prepare-event caller "test-cmd" result))
+  ([caller cmd-name result]
+   (let [mdata    {::sv/name cmd-name}
+         params   {::rpc/profile-id caller
+                   ::rpc/request-id (uuid/next)
+                   ::rpc/request-at (ct/now)}
+         mock-req (reify
+                    yetti.request/IRequest
+                    (get-header [_ _] nil)
+                    (remote-addr [_] "127.0.0.1"))
+         params   (with-meta params {:app.http/request mock-req})]
+     ;; Production always resolves commands with `::module` set ("main" or
+     ;; "management"): the event name (and the read exclusion) depends on it.
+     (audit/prepare-rpc-event (assoc th/*system* ::rpc/module "main")
+                              mdata params result))))
 
 (t/deftest prepare-rpc-event-ignores-profile-id-from-result
   ;; An audit event belongs to the caller, never to whatever `:profile-id`
@@ -608,6 +753,76 @@
   ;; attribute the event to, so it lands on the zero uuid.
   (t/is (= uuid/zero
            (:profile-id (prepare-event nil {:some-data "value"})))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; PREPARE-RPC-EVENT TEAM-ID ENRICHMENT
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(t/deftest prepare-rpc-event-enriches-team-id-from-project-id
+  ;; An event that carries a project id resolves its team locally, so the
+  ;; downstream consumers do not need to join production tables.
+  (let [profile (th/create-profile* 1 {:is-active true})
+        team    (th/create-team* 10 {:profile-id (:id profile)})
+        project (th/create-project* 10 {:profile-id (:id profile)
+                                        :team-id (:id team)})
+        result  (with-meta {} {::audit/props {:project-id (:id project)}})
+        event   (prepare-event (:id profile) result)]
+    (t/is (= (:id team) (get-in event [:props :team-id])))))
+
+(t/deftest prepare-rpc-event-enriches-team-id-from-file-id
+  (let [profile (th/create-profile* 1 {:is-active true})
+        team    (th/create-team* 11 {:profile-id (:id profile)})
+        project (th/create-project* 11 {:profile-id (:id profile)
+                                        :team-id (:id team)})
+        file    (th/create-file* 11 {:profile-id (:id profile)
+                                     :project-id (:id project)})
+        result  (with-meta {} {::audit/props {:file-id (:id file)}})
+        event   (prepare-event (:id profile) result)]
+    (t/is (= (:id team) (get-in event [:props :team-id])))))
+
+(t/deftest prepare-rpc-event-keeps-existing-team-id
+  ;; The resolver never overwrites a team id the command already set.
+  (let [profile (th/create-profile* 1 {:is-active true})
+        team    (th/create-team* 12 {:profile-id (:id profile)})
+        project (th/create-project* 12 {:profile-id (:id profile)
+                                        :team-id (:id team)})
+        result  (with-meta {} {::audit/props {:team-id (:id team)
+                                              :project-id (:id project)}})
+        event   (prepare-event (:id profile) result)]
+    (t/is (= (:id team) (get-in event [:props :team-id])))))
+
+(t/deftest prepare-rpc-event-does-not-resolve-without-project-or-file
+  ;; Read commands put the entity id under `:id`; enriching those would add a
+  ;; query to every read event, so the resolver must leave them untouched.
+  (let [profile (th/create-profile* 1 {:is-active true})
+        result  (with-meta {} {::audit/props {:id (uuid/next)}})
+        event   (prepare-event (:id profile) result)]
+    (t/is (not (contains? (:props event) :team-id)))))
+
+(t/deftest prepare-rpc-event-resolves-default-team-id
+  ;; The resolver adds the team id whenever it can resolve it, including the
+  ;; personal (default) team.
+  (let [profile (th/create-profile* 1 {:is-active true})
+        result  (with-meta {} {::audit/props {:project-id (:default-project-id profile)}})
+        event   (prepare-event (:id profile) result)]
+    (t/is (= (:default-team-id profile) (get-in event [:props :team-id])))))
+
+(t/deftest prepare-rpc-event-skips-team-id-resolution-for-reads
+  ;; Read events carry no consumer state: resolving their team would add a
+  ;; query to every read, so `get-*` names (plus the known non-get reads)
+  ;; are left untouched even when they carry a project or file id.
+  (let [profile (th/create-profile* 1 {:is-active true})
+        team    (th/create-team* 13 {:profile-id (:id profile)})
+        project (th/create-project* 13 {:profile-id (:id profile)
+                                        :team-id (:id team)})
+        file    (th/create-file* 13 {:profile-id (:id profile)
+                                     :project-id (:id project)})]
+    (doseq [cmd-name ["get-file-fragment" "get-comments" "has-file-libraries"]
+            props    [{:file-id (:id file)} {:project-id (:id project)}]]
+      (let [result (with-meta {} {::audit/props props})
+            event  (prepare-event (:id profile) cmd-name result)]
+        (t/is (not (contains? (:props event) :team-id))
+              (str cmd-name " with " (keys props) " must not resolve team-id"))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; PREPARE-RPC-EVENT PROFILE-ID COERCION

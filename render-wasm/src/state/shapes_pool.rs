@@ -144,6 +144,10 @@ impl ShapesPoolImpl {
 
     pub fn get_mut(&mut self, id: &Uuid) -> Option<&mut Shape> {
         let idx = *self.uuid_to_idx.get(id)?;
+        // The caller may change the shape, so its modified copy goes stale.
+        if let Some(cell) = self.modified_shape_cache.get_mut(&idx) {
+            *cell = OnceCell::new();
+        }
         Some(&mut self.shapes[idx])
     }
 
@@ -151,6 +155,15 @@ impl ShapesPoolImpl {
     pub fn get_modifier(&self, id: &Uuid) -> Option<&skia::Matrix> {
         let idx = *self.uuid_to_idx.get(id)?;
         self.modifiers.get(&idx)
+    }
+
+    /// Modifier applied to `id`, including one inherited from an ancestor.
+    pub fn get_layout_modifier(&self, id: &Uuid) -> Option<skia::Matrix> {
+        if let Some(matrix) = self.get_modifier(id) {
+            return Some(*matrix);
+        }
+        let idx = *self.uuid_to_idx.get(id)?;
+        self.find_nearest_ancestor_modifier(idx)
     }
 
     /// Get a shape by UUID without applying modifiers/structure/scale-content.
@@ -239,6 +252,51 @@ impl ShapesPoolImpl {
         self.modified_shape_cache.clear()
     }
 
+    pub fn dependent_ancestor_ids<'a>(&'a self, id: &Uuid) -> impl Iterator<Item = Uuid> + 'a {
+        let mut current = self
+            .uuid_to_idx
+            .get(id)
+            .and_then(|idx| self.shapes[*idx].parent_id);
+
+        std::iter::from_fn(move || {
+            let parent_id = current.filter(|parent_id| !parent_id.is_nil())?;
+            let parent_idx = self.uuid_to_idx.get(&parent_id).copied()?;
+            let parent = &self.shapes[parent_idx];
+            if !parent.extrect_depends_on_children() {
+                return None;
+            }
+            current = parent.parent_id;
+            Some(parent_id)
+        })
+    }
+
+    /// Drops the extrect cache of every ancestor whose extrect is affected by this shape
+    /// stopping at the first ancestor that clips.
+    pub fn invalidate_ancestors_extrect(&mut self, id: &Uuid) {
+        let mut current = self
+            .uuid_to_idx
+            .get(id)
+            .and_then(|idx| self.shapes[*idx].parent_id);
+
+        while let Some(parent_id) = current.filter(|parent_id| !parent_id.is_nil()) {
+            let Some(parent_idx) = self.uuid_to_idx.get(&parent_id).copied() else {
+                break;
+            };
+            if !self.shapes[parent_idx].extrect_depends_on_children() {
+                break;
+            }
+
+            self.shapes[parent_idx].invalidate_extrect();
+            // `get` returns a snapshot clone, we need to get mut
+            // and replace the OnceCell to reset it.
+            if let Some(cell) = self.modified_shape_cache.get_mut(&parent_idx) {
+                *cell = OnceCell::new();
+            }
+
+            current = self.shapes[parent_idx].parent_id;
+        }
+    }
+
     pub fn set_modifiers(&mut self, modifiers: HashMap<Uuid, skia::Matrix>) {
         let mut ids = Vec::<Uuid>::new();
         let mut modifiers_with_idx = HashMap::with_capacity(modifiers.len());
@@ -254,10 +312,8 @@ impl ShapesPoolImpl {
         // When CLJS sends only root shapes (translation on drag), descendants
         // need the same matrix.
         // For resize/rotate, propagate-modifiers already includes all descendants.
-        // Descendants are NOT pushed into `ids` / `modifier_uuids`: tile invalidation
-        // via rebuild_modifier_tiles only runs for roots, which is sufficient because
-        // descendants always lie inside the parent's bounding box and are therefore
-        // covered by the parent's old/new tile ranges.
+        // Descendants are NOT pushed into `ids` / `modifier_uuids`: rebuild_modifier_tiles
+        // runs for roots, and drops the non-clipping ancestors' extrects separately.
         let root_pairs: Vec<(usize, skia::Matrix)> = ids
             .iter()
             .filter_map(|uuid| {
@@ -289,13 +345,15 @@ impl ShapesPoolImpl {
         // Compute ancestors before consuming `ids` so we can move it into
         // `modifier_uuids` without a clone.
         let all_ids = shapes::all_with_ancestors(&ids, self, true);
-        // rebuild_modifier_tiles doesn't process every descendant individually.
-        self.modifier_uuids = ids;
+
         for uuid in all_ids {
             if let Some(idx) = self.uuid_to_idx.get(&uuid).copied() {
                 self.modified_shape_cache.insert(idx, OnceCell::new());
             }
         }
+
+        // rebuild_modifier_tiles doesn't process every descendant individually.
+        self.modifier_uuids = ids;
     }
 
     pub fn set_structure(&mut self, structure: HashMap<Uuid, Vec<StructureEntry>>) {
@@ -349,6 +407,20 @@ impl ShapesPoolImpl {
     /// gone, but if we don't touch their tiles they keep pointing at the
     /// previous modified position and the tile texture cache may serve stale
     /// pixels.
+    /// Drops the transform modifiers, keeping structure and scale-content
+    /// entries, so the pool serves committed geometry again. Called before
+    /// propagating a new set of transforms, which are relative to that
+    /// geometry.
+    pub fn clear_transform_modifiers(&mut self) {
+        if self.modifiers.is_empty() {
+            return;
+        }
+
+        self.clean_shape_cache();
+        self.modifiers = HashMap::default();
+        self.modifier_uuids.clear();
+    }
+
     pub fn clean_all(&mut self) -> Vec<Uuid> {
         self.clean_shape_cache();
 
@@ -485,5 +557,24 @@ impl Clone for ShapesPoolImpl {
             structure: self.structure.clone(),
             scale_content: self.scale_content.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn get_mut_refreshes_the_modified_shape() {
+        let mut pool = ShapesPool::new();
+        pool.initialize(1);
+        let id = Uuid::new_v4();
+        pool.add_shape(id).set_opacity(1.0);
+
+        pool.set_modifiers(HashMap::from([(id, skia::Matrix::translate((10.0, 0.0)))]));
+        assert_eq!(pool.get(&id).expect("shape").opacity, 1.0);
+
+        pool.get_mut(&id).expect("shape").set_opacity(0.5);
+        assert_eq!(pool.get(&id).expect("shape").opacity, 0.5);
     }
 }

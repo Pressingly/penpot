@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 
 (ns app.main.data.comments
   (:require
@@ -19,7 +19,9 @@
    [app.main.data.team :as dtm]
    [app.main.repo :as rp]
    [app.util.i18n :as i18n :refer [tr]]
+   [app.util.storage :as storage]
    [beicon.v2.core :as rx]
+   [cuerdas.core :as str]
    [potok.v2.core :as ptk]))
 
 (def ^:private schema:comment-thread
@@ -65,6 +67,13 @@
 (declare refresh-comment-thread)
 
 (def r-mentions #"@\[([^\]]*)\]\(([^\)]*)\)")
+
+(defn valid-comment-content?
+  [content]
+  (when (string? content)
+    (let [content (str/trim content)]
+      (and (not (str/blank? content))
+           (not= content "\u200b")))))
 
 (defn extract-mentions
   "Retrieves the mentions in the content as an array of uuids"
@@ -453,6 +462,18 @@
              (rx/map #(partial fetched-comments %))
              (rx/catch #(rx/throw {:type :comment-error})))))))
 
+;; Has to fit in the limit of the backend rpc
+;; (backend/src/app/rpc/commands/comments.clj).
+(def ^:private mark-all-threads-batch-size 500)
+
+(defn mark-all-threads-batches
+  "Splits the thread ids into the batches that the backend accepts on a
+  single call."
+  [thread-ids]
+  (->> thread-ids
+       (partition-all mark-all-threads-batch-size)
+       (mapv vec)))
+
 (defn mark-all-threads-as-read
   "Mark all threads as read"
   [team-id]
@@ -461,11 +482,23 @@
     (-data [_] {})
     ptk/WatchEvent
     (watch [_ state _]
-      (let [threads (-> state :comment-threads vals)]
+      (let [threads       (-> state :comment-threads vals)
+            batches       (mark-all-threads-batches (mapv :id threads))
+            refresh-event (retrieve-unread-comment-threads team-id)]
         (rx/concat
-         (->> (rp/cmd! :mark-all-threads-as-read {:threads (mapv :id threads)})
-              (rx/map #(retrieve-unread-comment-threads team-id))
-              (rx/catch #(rx/throw {:type :comment-error})))
+         (->> (rx/from batches)
+              (rx/mapcat (fn [batch]
+                           (rp/cmd! :mark-all-threads-as-read {:threads batch})))
+              (rx/reduce (fn [_ _] nil) nil)
+              (rx/map (fn [_] refresh-event))
+              ;; Each batch commits on the server on its own, so a failure in
+              ;; a later batch leaves the previous ones already marked as
+              ;; read. The unread list is re-read anyway and the error is
+              ;; propagated afterwards, so the success toast below stays
+              ;; limited to a full success.
+              (rx/catch (fn [_]
+                          (rx/concat (rx/of refresh-event)
+                                     (rx/throw {:type :comment-error})))))
          (rx/of (ntf/show {:level :info
                            :type :toast
                            :content (tr "dashboard.mark-all-as-read.success")
@@ -521,6 +554,35 @@
     (update [_ state]
       (update state :comments-local dissoc :expanded))))
 
+(def ^:private hide-resolved-comments-storage-key
+  :app.main.data.comments/hide-resolved-comments?)
+
+(defn- load-hide-resolved-comments?
+  []
+  (= true (get @storage/user hide-resolved-comments-storage-key)))
+
+(defn- persist-hide-resolved-comments!
+  [hide?]
+  (swap! storage/user assoc hide-resolved-comments-storage-key hide?))
+
+(defn merge-persisted-filters
+  "Merge persisted hide-resolved preference into comments local state."
+  [local]
+  (let [local (or local {})]
+    (if (contains? local :show)
+      local
+      (assoc local :show (if (load-hide-resolved-comments?)
+                           :pending
+                           :all)))))
+
+(defn initialize-comments-filters
+  "Load persisted comment filter preferences into `:comments-local`."
+  []
+  (ptk/reify ::initialize-comments-filters
+    ptk/UpdateEvent
+    (update [_ state]
+      (update state :comments-local merge-persisted-filters))))
+
 (defn update-filters
   [{:keys [mode show list] :as params}]
   (ptk/reify ::update-filters
@@ -536,7 +598,12 @@
                   (assoc :show show)
 
                   (some? list)
-                  (assoc :list list)))))))
+                  (assoc :list list)))))
+
+    ptk/EffectEvent
+    (effect [_ _ _]
+      (when (some? show)
+        (persist-hide-resolved-comments! (= :pending show))))))
 
 (defn update-options
   [params]
@@ -693,5 +760,4 @@
         (->> (rp/cmd! :get-profiles-for-file-comments {:file-id file-id :share-id share-id})
              (rx/map (fn [profiles]
                        #(update % :profiles merge (d/index-by :id profiles)))))))))
-
 

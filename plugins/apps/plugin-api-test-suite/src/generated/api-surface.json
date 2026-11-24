@@ -273,6 +273,7 @@
       "createColor",
       "createComponent",
       "createTypography",
+      "deletedComponents",
       "id",
       "name",
       "tokens",
@@ -287,16 +288,21 @@
       "opacity"
     ],
     "LibraryComponent": [
+      "annotation",
+      "duplicate",
       "instance",
       "isVariant",
       "mainInstance",
+      "remove",
+      "restore",
       "transformInVariant"
     ],
     "LibraryContext": [
       "availableLibraries",
       "connectLibrary",
       "connected",
-      "local"
+      "local",
+      "tokensSource"
     ],
     "LibraryElement": ["id", "libraryId", "name", "path"],
     "LibrarySummary": [
@@ -454,6 +460,7 @@
       "swapComponent",
       "switchVariant",
       "tokens",
+      "updateMain",
       "visible",
       "waitForLayoutUpdate",
       "width",
@@ -472,7 +479,12 @@
       "strokeImage",
       "strokeOpacity",
       "strokeStyle",
-      "strokeWidth"
+      "strokeWidth",
+      "strokeWidthBottom",
+      "strokeWidthLeft",
+      "strokeWidthRight",
+      "strokeWidthTop",
+      "strokeWidthType"
     ],
     "SvgRaw": ["type"],
     "Text": [
@@ -533,6 +545,7 @@
       "addTheme",
       "getSetById",
       "getThemeById",
+      "isEditableTokens",
       "sets",
       "themes"
     ],
@@ -1119,6 +1132,12 @@
         "type": null,
         "array": false
       },
+      "updateMain": {
+        "decl": "ShapeBase",
+        "kind": "method",
+        "type": null,
+        "array": false
+      },
       "switchVariant": {
         "decl": "ShapeBase",
         "kind": "method",
@@ -1620,6 +1639,12 @@
         "array": false
       },
       "resetOverrides": {
+        "decl": "ShapeBase",
+        "kind": "method",
+        "type": null,
+        "array": false
+      },
+      "updateMain": {
         "decl": "ShapeBase",
         "kind": "method",
         "type": null,
@@ -2764,6 +2789,12 @@
         "array": false
       },
       "resetOverrides": {
+        "decl": "ShapeBase",
+        "kind": "method",
+        "type": null,
+        "array": false
+      },
+      "updateMain": {
         "decl": "ShapeBase",
         "kind": "method",
         "type": null,
@@ -4017,6 +4048,12 @@
         "type": null,
         "array": false
       },
+      "updateMain": {
+        "decl": "ShapeBase",
+        "kind": "method",
+        "type": null,
+        "array": false
+      },
       "switchVariant": {
         "decl": "ShapeBase",
         "kind": "method",
@@ -4607,6 +4644,12 @@
         "type": null,
         "array": false
       },
+      "updateMain": {
+        "decl": "ShapeBase",
+        "kind": "method",
+        "type": null,
+        "array": false
+      },
       "switchVariant": {
         "decl": "ShapeBase",
         "kind": "method",
@@ -4989,6 +5032,12 @@
         "type": "LibraryComponent",
         "array": true
       },
+      "deletedComponents": {
+        "decl": "Library",
+        "kind": "get",
+        "type": "LibraryComponent",
+        "array": true
+      },
       "tokens": {
         "decl": "Library",
         "kind": "get",
@@ -5149,6 +5198,30 @@
       }
     },
     "LibraryComponent": {
+      "annotation": {
+        "decl": "LibraryComponent",
+        "kind": "getset",
+        "type": null,
+        "array": false
+      },
+      "duplicate": {
+        "decl": "LibraryComponent",
+        "kind": "method",
+        "type": "LibraryComponent",
+        "array": false
+      },
+      "remove": {
+        "decl": "LibraryComponent",
+        "kind": "method",
+        "type": null,
+        "array": false
+      },
+      "restore": {
+        "decl": "LibraryComponent",
+        "kind": "method",
+        "type": null,
+        "array": false
+      },
       "instance": {
         "decl": "LibraryComponent",
         "kind": "method",
@@ -5246,6 +5319,12 @@
         "kind": "get",
         "type": "Library",
         "array": true
+      },
+      "tokensSource": {
+        "decl": "LibraryContext",
+        "kind": "getset",
+        "type": "Library",
+        "array": false
       },
       "availableLibraries": {
         "decl": "LibraryContext",
@@ -5515,6 +5594,30 @@
       },
       "setVariantProperty": {
         "decl": "LibraryVariantComponent",
+        "kind": "method",
+        "type": null,
+        "array": false
+      },
+      "annotation": {
+        "decl": "LibraryComponent",
+        "kind": "getset",
+        "type": null,
+        "array": false
+      },
+      "duplicate": {
+        "decl": "LibraryComponent",
+        "kind": "method",
+        "type": "LibraryComponent",
+        "array": false
+      },
+      "remove": {
+        "decl": "LibraryComponent",
+        "kind": "method",
+        "type": null,
+        "array": false
+      },
+      "restore": {
+        "decl": "LibraryComponent",
         "kind": "method",
         "type": null,
         "array": false
@@ -6236,6 +6339,12 @@
         "array": false
       },
       "resetOverrides": {
+        "decl": "ShapeBase",
+        "kind": "method",
+        "type": null,
+        "array": false
+      },
+      "updateMain": {
         "decl": "ShapeBase",
         "kind": "method",
         "type": null,
@@ -7083,6 +7192,12 @@
         "type": null,
         "array": false
       },
+      "updateMain": {
+        "decl": "ShapeBase",
+        "kind": "method",
+        "type": null,
+        "array": false
+      },
       "switchVariant": {
         "decl": "ShapeBase",
         "kind": "method",
@@ -7617,6 +7732,12 @@
         "type": null,
         "array": false
       },
+      "updateMain": {
+        "decl": "ShapeBase",
+        "kind": "method",
+        "type": null,
+        "array": false
+      },
       "switchVariant": {
         "decl": "ShapeBase",
         "kind": "method",
@@ -7826,6 +7947,36 @@
         "array": false
       },
       "strokeWidth": {
+        "decl": "Stroke",
+        "kind": "getset",
+        "type": null,
+        "array": false
+      },
+      "strokeWidthType": {
+        "decl": "Stroke",
+        "kind": "get",
+        "type": null,
+        "array": false
+      },
+      "strokeWidthTop": {
+        "decl": "Stroke",
+        "kind": "getset",
+        "type": null,
+        "array": false
+      },
+      "strokeWidthRight": {
+        "decl": "Stroke",
+        "kind": "getset",
+        "type": null,
+        "array": false
+      },
+      "strokeWidthBottom": {
+        "decl": "Stroke",
+        "kind": "getset",
+        "type": null,
+        "array": false
+      },
+      "strokeWidthLeft": {
         "decl": "Stroke",
         "kind": "getset",
         "type": null,
@@ -8182,6 +8333,12 @@
         "array": false
       },
       "resetOverrides": {
+        "decl": "ShapeBase",
+        "kind": "method",
+        "type": null,
+        "array": false
+      },
+      "updateMain": {
         "decl": "ShapeBase",
         "kind": "method",
         "type": null,
@@ -8759,6 +8916,12 @@
         "type": null,
         "array": false
       },
+      "updateMain": {
+        "decl": "ShapeBase",
+        "kind": "method",
+        "type": null,
+        "array": false
+      },
       "switchVariant": {
         "decl": "ShapeBase",
         "kind": "method",
@@ -9239,6 +9402,12 @@
       }
     },
     "TokenCatalog": {
+      "isEditableTokens": {
+        "decl": "TokenCatalog",
+        "kind": "get",
+        "type": null,
+        "array": false
+      },
       "themes": {
         "decl": "TokenCatalog",
         "kind": "get",
@@ -11058,6 +11227,12 @@
         "array": false
       },
       "resetOverrides": {
+        "decl": "ShapeBase",
+        "kind": "method",
+        "type": null,
+        "array": false
+      },
+      "updateMain": {
         "decl": "ShapeBase",
         "kind": "method",
         "type": null,

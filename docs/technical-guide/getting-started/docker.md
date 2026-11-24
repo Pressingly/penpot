@@ -83,7 +83,10 @@ Penpot provides a script (`manage.py`) with some administrative tasks to perform
 flag set in the docker-compose.yaml file. For older versions of docker-compose.yaml file,
 this flag is set in the backend service.
 
-For instance, if  the registration is disabled, the only way to create a new user is with this script:
+For users who do not have a team invitation, if public registration is disabled, the
+way to create a new user is with this script. Users with a valid and active team
+invitation can register through the invitation link when password login is enabled.
+The invitation must still exist and must not have expired.
 
 ```bash
 docker exec -ti penpot-penpot-backend-1 python3 manage.py create-profile
@@ -95,6 +98,10 @@ or
 docker exec -ti penpot-penpot-backend-1 python3 manage.py create-profile --skip-tutorial --skip-walkthrough
 ```
 
+**NOTE:** profiles created with this command have no verified email. If the
+`disable-email-verification` flag is set, inviting these users to a team adds them to it
+directly, without sending any invitation email, so SMTP is not required for this flow.
+Check the [Configuration][1] section for more detail.
 
 **NOTE:** the exact container name depends on your docker version and platform.
 For example it could be <code class="language-bash">penpot-penpot-backend-1</code> or <code class="language-bash">penpot_penpot-backend-1</code>.
@@ -115,6 +122,18 @@ This will fetch the latest images. When you do <code class="language-bash">docke
     It is strongly recommended to update the Penpot version in small increments, rather than updating between two distant versions.
 </p>
 
+#### Upgrade to 2.19
+
+The Admin Console is now enabled by default, so the `enable-admin-console` flag is no longer needed and can be removed from `PENPOT_FLAGS`.
+
+The `penpot-admin-console` service and the `PENPOT_ADMIN_CONSOLE_URI` variable are part of the standard setup and are included in the official `docker-compose.yaml`. If you [upgraded to 2.18](#upgrade-to-2.18) following the guide, there is nothing else to do.
+
+If you don't want to run the Admin Console, you can disable it. Penpot keeps working as usual.
+
+1. Add `disable-admin-console` to `PENPOT_FLAGS`.
+2. Remove the `penpot-admin-console` service from your `docker-compose.yaml`, and from the `depends_on` list of `penpot-frontend`.
+3. Leave the `PENPOT_ADMIN_CONSOLE_URI` variable empty.
+
 #### Upgrade to 2.18
 
 This version deploys a new service, **`penpot-admin-console`**, in the official `docker-compose.yaml`
@@ -125,10 +144,9 @@ example. If you maintain your own compose file, you need to replicate the follow
 **NOTE:** Enabling the Admin Console is not required in this version, but it will be in a future release.
 We recommend setting it up now to avoid a more complex upgrade later.
 
-This step (the `enable-admin-console` flag) only applies to this version 2.18. In a future release, the
-Admin Console will be enabled by default and this flag will be removed. If you're upgrading directly to a
-version where the flag has already been removed, skip step 1 and go straight to steps 2–4, which remain
-required.
+This step (the `enable-admin-console` flag) only applies to this version 2.18. Since 2.19 the Admin
+Console is enabled by default: if you're upgrading directly to 2.19 or later, skip step 1 and go straight
+to steps 2–4, which remain required.
 
 Wherever you set `PENPOT_FLAGS` (frontend and backend):
 

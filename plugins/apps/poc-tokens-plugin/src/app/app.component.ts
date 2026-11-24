@@ -44,7 +44,9 @@ export class AppComponent {
   );
 
   public initialTheme$ = of(
-    new URLSearchParams(window.location.search).get('theme'),
+    // The theme arrives in the query string or in the query part of the hash.
+    new URLSearchParams(window.location.search).get('theme') ??
+      new URLSearchParams(window.location.hash.split('?')[1]).get('theme'),
   ).pipe(filter((theme) => !!theme));
 
   public theme = toSignal(
@@ -59,6 +61,7 @@ export class AppComponent {
     ),
   );
 
+  public isEditableTokens: boolean = false;
   public themes: TokenTheme[] = [];
   public sets: TokenSet[] = [];
   public tokenGroups: TokensGroup[] = [];
@@ -72,6 +75,8 @@ export class AppComponent {
         this.#setSets(event.data.setsData);
       } else if (event.data.type === 'set-tokens') {
         this.#setTokens(event.data.tokenGroupsData);
+      } else if (event.data.type === 'set-is-editable-tokens') {
+        this.#setIsEditableTokens(event.data.isEditableTokens);
       }
     });
   }
@@ -266,6 +271,10 @@ export class AppComponent {
 
   #sendMessage(message: PluginUIEvent) {
     parent.postMessage(message, '*');
+  }
+
+  #setIsEditableTokens(isEditableTokens: boolean) {
+    this.isEditableTokens = isEditableTokens;
   }
 
   #setThemes(themes: TokenTheme[]) {

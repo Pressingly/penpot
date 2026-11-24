@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 
 (ns app.main.ui.releases
   (:require
@@ -37,6 +37,7 @@
    [app.main.ui.releases.v2-16]
    [app.main.ui.releases.v2-17]
    [app.main.ui.releases.v2-18]
+   [app.main.ui.releases.v2-19]
    [app.main.ui.releases.v2-2]
    [app.main.ui.releases.v2-3]
    [app.main.ui.releases.v2-4]
@@ -108,4 +109,4 @@
 
 (defmethod rc/render-release-notes "0.0"
   [params]
-  (rc/render-release-notes (assoc params :version "2.18")))
+  (rc/render-release-notes (assoc params :version "2.19")))

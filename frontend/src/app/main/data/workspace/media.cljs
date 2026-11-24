@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 
 (ns app.main.data.workspace.media
   (:require
@@ -14,6 +14,7 @@
    [app.common.files.shapes-builder :as sb]
    [app.common.math :as mth]
    [app.common.media :as media]
+   [app.common.path-names :as cpn]
    [app.common.schema :as sm]
    [app.common.types.container :as ctn]
    [app.common.types.fills :as types.fills]
@@ -435,10 +436,12 @@
 
             fdata   (dsh/lookup-file-data state file-id)
             page    (dsh/get-page fdata page-id)
-            pos     (dsh/get-viewport-center state)]
+            pos     (dsh/get-viewport-center state)
+
+            name    (cpn/remove-extension (:name svg-data))]
 
         (->> (create-shapes-svg file-id (:objects page) pos svg-data)
-             (rx/map (partial add-shapes-and-component it fdata page (:name svg-data))))))))
+             (rx/map (partial add-shapes-and-component it fdata page name)))))))
 
 (defn upload-media-components
   [params]

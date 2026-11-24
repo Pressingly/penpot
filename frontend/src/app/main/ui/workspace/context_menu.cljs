@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 
 (ns app.main.ui.workspace.context-menu
   "A workspace specific context menu (mouse right click)."
@@ -28,6 +28,7 @@
    [app.main.data.workspace.shape-layout :as dwsl]
    [app.main.data.workspace.shapes :as dwsh]
    [app.main.data.workspace.shortcuts :as sc]
+   [app.main.data.workspace.texts :as dwt]
    [app.main.data.workspace.variants :as dwv]
    [app.main.features :as features]
    [app.main.refs :as refs]
@@ -397,6 +398,8 @@
         objects         (deref refs/workspace-page-objects)
         any-in-copy?    (some #(ctn/has-any-copy-parent? objects %) shapes)
         any-is-variant? (some ctk/is-variant? shapes)
+        any-is-container? (some ctk/is-variant-container? shapes)
+        crosses-set?    (ctn/crosses-variant-set-boundary? objects shapes)
 
         ;; components can't be ungrouped
         has-frame? (->> shapes (d/seek #(and (cfh/frame-shape? %) (not (ctk/instance-head? %)) (not (ctk/is-variant-container? %)))))
@@ -415,7 +418,7 @@
         #(st/emit! (dwsh/create-artboard-from-selection))]
 
     [:*
-     (when (not (or any-in-copy? any-is-variant?))
+     (when (not (or any-in-copy? any-is-variant? any-is-container? crosses-set?))
        [:*
         (when (or has-bool? has-group? has-mask? has-frame?)
           [:> menu-entry* {:title (tr "workspace.shape.menu.ungroup")
@@ -510,7 +513,10 @@
                         :shortcut-key :start-editing
                         :on-click do-start-editing}])
 
-     (when-not (or disable-flatten has-frame? has-path?)
+     ;; Flattening a single path bakes its transform.
+     (when (and (not disable-flatten)
+                (not has-frame?)
+                (or (not has-path?) (and single? has-path?)))
        [:> menu-entry* {:title (tr "workspace.shape.menu.flatten")
                         :on-click do-transform-to-path}])
 
@@ -617,6 +623,10 @@
         (and single? (every? ctl/grid-layout? shapes))
 
         any-is-variant? (some ctk/is-variant? shapes)
+        ;; shape-context-menu* already omits this menu for container-only;
+        ;; gate here too so a future caller cannot show Add flex/grid.
+        any-is-container? (some ctk/is-variant-container? shapes)
+        crosses-set?    (ctn/crosses-variant-set-boundary? objects shapes)
 
         on-add-layout
         (mf/use-fn
@@ -649,7 +659,9 @@
                              :shortcut-key :toggle-layout-grid
                              :on-click on-remove-layout}])]
 
-         (when (or single? (not any-is-variant?))
+         (when (and (not crosses-set?)
+                    (not any-is-container?)
+                    (or single? (not any-is-variant?)))
            [:div
             [:> menu-separator* {}]
             [:> menu-entry* {:title (tr "workspace.shape.menu.add-flex")
@@ -1037,6 +1049,41 @@
      [:> menu-entry* {:title (tr "workspace.context-menu.guides.remove")
                       :on-click do-remove-guide}]]))
 
+(mf/defc text-context-menu*
+  "Menu shown while a text shape is being edited: it acts on the text, never on the shape."
+  {::mf/private true}
+  [{:keys [mdata]}]
+  (let [custom-shortcuts (mf/deref refs/custom-shortcuts)
+        get-tt           #(sc/get-effective-tooltip % custom-shortcuts)
+
+        has-selection?   (get mdata :has-selection?)
+
+        do-cut           (mf/use-fn #(st/emit! (dwt/v3-cut-selection)))
+        do-copy          (mf/use-fn #(st/emit! (dwt/v3-copy-selection)))
+        do-paste         (mf/use-fn #(st/emit! (dwt/v3-paste-text)))
+        do-select-all    (mf/use-fn #(st/emit! (dwt/v3-select-all)))]
+
+    [:*
+     [:> menu-entry* {:title (tr "workspace.shape.menu.cut")
+                      :shortcut (get-tt :cut)
+                      :shortcut-key :cut
+                      :disabled (not has-selection?)
+                      :on-click do-cut}]
+     [:> menu-entry* {:title (tr "workspace.shape.menu.copy")
+                      :shortcut (get-tt :copy)
+                      :shortcut-key :copy
+                      :disabled (not has-selection?)
+                      :on-click do-copy}]
+     [:> menu-entry* {:title (tr "workspace.shape.menu.paste")
+                      :shortcut (get-tt :paste)
+                      :shortcut-key :paste
+                      :on-click do-paste}]
+     [:> menu-separator* {}]
+     [:> menu-entry* {:title (tr "workspace.header.menu.select-all")
+                      :shortcut (get-tt :select-all)
+                      :shortcut-key :select-all
+                      :on-click do-select-all}]]))
+
 ;; FIXME: optimize because it is rendered always
 
 (mf/defc context-menu*
@@ -1045,7 +1092,20 @@
         top          (- (get-in mdata [:position :y]) 20)
         left         (get-in mdata [:position :x])
         dropdown-ref (mf/use-ref)
-        read-only?   (mf/use-ctx ctx/workspace-read-only?)]
+        read-only?   (mf/use-ctx ctx/workspace-read-only?)
+
+        ;; The text menu floats over a live editing session, which ends as soon
+        ;; as the capture surface loses the focus.
+        text-menu?   (= :text (:kind mdata))
+
+        ;; `mousedown` is what moves the focus, so cancelling it keeps the editor
+        ;; alive; `click` still fires and the entries work.
+        on-mouse-down
+        (mf/use-fn
+         (mf/deps text-menu?)
+         (fn [event]
+           (when ^boolean text-menu?
+             (dom/prevent-default event))))]
 
     (mf/with-effect [mdata]
       (when-let [dropdown (mf/ref-val dropdown-ref)]
@@ -1064,6 +1124,8 @@
             :ref dropdown-ref
             :style {:top top :left left}
             :data-testid "context-menu"
+            :data-keep-editing-on-blur (when ^boolean text-menu? true)
+            :on-mouse-down on-mouse-down
             :on-context-menu prevent-default}
 
       [:ul {:class (stl/css :menu)}
@@ -1075,4 +1137,5 @@
            :grid-track [:> grid-track-context-menu* {:mdata mdata}]
            :grid-cells [:> grid-cells-context-menu* {:mdata mdata}]
            :guide      [:> guide-color-context-menu* {:mdata mdata}]
+           :text       [:> text-context-menu* {:mdata mdata}]
            [:> viewport-context-menu* {:mdata mdata}]))]]]))

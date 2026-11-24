@@ -1,6 +1,7 @@
 ---
 name: implement-plan
-description: Implementation flow — execute a ready plan from the session context: read the plan, detect the flow, then present the full picture (issue and branch to create or the branch to continue on, execution style, task checklist) and wait for confirmation. Default is every task with one final commit; on request ("step by step"), one task and one commit at a time with a pause after each; on request ("direct"), no issue and no branch — the commit lands on the current branch. Use it when the user asks to implement or execute a plan, in any phrasing.
+description: Implementation flow — execute a ready plan from the session context
+slash: true
 ---
 
 # Implement Plan
@@ -13,15 +14,28 @@ By default it ends with exactly one commit. When the user asks for it
 ("step by step"), it commits once per task instead and waits for the
 user's confirmation after each one (see *Execution modes*).
 
+## Plan file handling
+
+Plan files are local workflow artifacts. They must never be staged or
+committed, even when `.gitignore` already excludes them. Never use
+`git add -f`, change ignore rules, or otherwise force a plan file into a
+commit. Close and update the plan when this flow requires it, but leave it
+in the local working tree.
+
 ## When to use
 
 - The user asks to implement or execute a plan, in any phrasing:
   "implement the plan", "execute it", "go build it" — or runs
-  `/implement-plan`.
+  `@implement-plan`.
 - A ready, reviewed plan is in the session context or a plan file path
-  was given (typically after `/make-a-plan` or `/review-plan`).
+  was given (typically after `@make-a-plan` or `@review-plan`).
 
 Do not use it to produce plans — that is the `make-a-plan` flow.
+
+For a plan derived from a code review, retain its review target, reviewer
+session ID, original findings and decisions. Record the starting revision and
+the exact commits or diff produced by this implementation, plus test evidence,
+in session context for follow-up. Do not put commit hashes in the plan file.
 
 ## 1. Read the plan first
 
@@ -102,20 +116,19 @@ Implement every task in one go. Work methodically, keeping changes
 focused on what the issue requires. Respect the plan's proposed
 parallelization when it applies.
 
-When the implementation is complete, close the plan file first: flip its
-`Status` to `done` and append one UTC ISO 8601 line to its `Review Log`
-with the issue URL when one exists (standalone mode, e.g.
-`https://github.com/penpot/penpot/issues/NNNN`); in continue/direct
-mode with no issue, just `done` with no invented identifier. Never
-record commit hashes.
+When the implementation is complete, load the **`create-commit`** skill and
+follow its workflow to commit
+only the implementation, tests, memory, and documentation changes. Before
+committing, verify that the staged file list does not contain the plan
+file. Provide a brief summary of what was implemented and why, the issue
+reference (`issue-NNNN`) when there is one, and the model name you are
+running as so the `AI-assisted-by` trailer is set correctly.
 
-**The plan file is never staged or committed.** It is session
-bookkeeping, not part of the change: the commit carries the code and
-the tests. Then load the **`create-commit`** skill and follow its
-workflow to commit them. Provide a brief summary of what was
-implemented and why, the issue reference (`issue-NNNN`) when there is
-one, and the model name you are running as so the `AI-assisted-by`
-trailer is set correctly.
+Only after the commit exists and passes its checks, close the plan: flip
+`Status` to `done` and append one UTC ISO 8601 line to `Review Log` with the
+issue URL when one exists; otherwise record `done` without inventing an
+identifier. Never record commit hashes. Leave the plan local and uncommitted.
+If the commit or its checks fail, do not close the plan.
 
 ### Step-by-step mode (on request)
 
@@ -126,9 +139,9 @@ per task" — loop one task at a time:
 - Commit it now: load the **`create-commit`** skill and follow it —
   one commit per task, never two tasks in one commit. Same inputs as
   always: what and why, the issue reference, your model name.
-- After the final task, close the plan file (`Status: done`, one
-  `Review Log` line with the issue URL when one exists). It is never
-  staged: session bookkeeping does not go into the commit.
+- After the final task commit, close the plan file (`Status: done`, one
+  `Review Log` line with the issue URL when one exists). Leave it local
+  and uncommitted; never amend the task commit to include it.
 - Show the user the result (what changed, files touched, how it was
   verified).
 - WAIT for the user's confirmation before starting the next task.
@@ -139,18 +152,24 @@ stop and ask the user before splitting it.
 
 ## When you are done
 
+After the entire plan is implemented and verified, including the final task in
+step-by-step mode, if it addresses code review findings, ask whether the user
+wants the original reviewer to verify the corrections. Use the `question` tool
+if available; otherwise ask in chat. Wait for the answer. Do not start the
+follow-up without consent, and do not ask after each intermediate task.
+
+If the user accepts, follow `@review-code`'s follow-up procedure with the
+review context, decisions, exact correction range or diff and test evidence.
+If the original reviewer cannot be resumed, say so and use a new reviewer with
+the same context. If the user declines, stop without starting a review. The
+follow-up is read-only; further fixes require the user's direction.
+
 End by suggesting the next steps (suggestions, not a required pipeline — any
 instruction from me overrides them):
 
-- `/review-code` — to review the changes just committed; it routes to
-  `/make-a-plan` by itself if the findings need one.
-- `/create-pr` — when the task is done and the branch is ready to merge.
+- `@review-code` — for a new independent review of the changes.
+- `@create-pr` — when the task is done and the branch is ready to merge.
 
-## User context
+## User input, overrides and additional context
 
-Extra context in the user's invocation (the message that triggered this
-skill) plays the role command arguments play elsewhere: `standalone`,
-`continue`, `direct` (`no branch` / `direct commit`), `no issue` /
-`without issue`, an explicit base such as `from origin/develop`, or
-`step by step` / `one commit per task` for the step-by-step execution
-mode. Modes combine freely, for example "standalone step by step".
+$ARGUMENTS

@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 
 (ns app.common.files.shapes-builder
   "A SVG to Shapes builder."
@@ -18,6 +18,7 @@
    [app.common.geom.shapes.common :as gsc]
    [app.common.geom.shapes.transforms :as gst]
    [app.common.math :as mth]
+   [app.common.path-names :as cpn]
    [app.common.schema :as sm :refer [max-safe-int min-safe-int]]
    [app.common.svg :as csvg]
    [app.common.types.color :as clr]
@@ -196,7 +197,7 @@
    (let [[vb-x vb-y vb-width vb-height] (svg-dimensions svg-data)
 
          unames   (cfh/get-used-names objects)
-         svg-name (str/replace (:name svg-data) ".svg" "")
+         svg-name (cpn/remove-extension (:name svg-data))
 
          svg-data (-> svg-data
                       (assoc :x (mth/round

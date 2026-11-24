@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 
 (ns app.rpc.commands.verify-token
   (:require
@@ -20,6 +20,7 @@
    [app.rpc :as-alias rpc]
    [app.rpc.commands.profile :as profile]
    [app.rpc.commands.teams :as teams]
+   [app.rpc.commands.teams-invitations :as teams-invitations]
    [app.rpc.doc :as-alias doc]
    [app.rpc.helpers :as rph]
    [app.rpc.quotes :as quotes]
@@ -100,12 +101,6 @@
 
 ;; --- Team Invitation
 
-(def ^:private sql:get-organization-invitation
-  "SELECT *
-     FROM team_invitation
-    WHERE email_to = ?
-      AND org_id = ?")
-
 (def ^:private sql:delete-organization-invitation
   "DELETE FROM team_invitation
     WHERE email_to = ?
@@ -173,6 +168,7 @@
    [:map {:title "TeamInvitationClaims"}
     [:iss :keyword]
     [:exp ::ct/inst]
+    ;; The inviter: always the `created-by` of the invitation row.
     [:profile-id ::sm/uuid]
     [:role types.team/schema:role]
     [:team-id {:optional true} ::sm/uuid]
@@ -195,17 +191,16 @@
               :code :invalid-invitation-token
               :hint "invitation token contains unexpected data"))
 
-  (let [invitation             (if organization-id
-                                 (db/exec-one! conn [sql:get-organization-invitation member-email organization-id])
-                                 (db/get* conn :team-invitation
-                                          {:email-to member-email
-                                           :team-id team-id}))
+  (let [member-email           (profile/clean-email member-email)
+        claims                 (assoc claims :member-email member-email)
+        invitation             (teams-invitations/active-invitation
+                                cfg
+                                claims
+                                {::db/for-update true})
         profile                (db/get* conn :profile
                                         {:id profile-id}
                                         {:columns [:id :email :default-team-id]})
-        registration-disabled? (not (contains? cf/flags :registration))
-
-        organization-invitation?        (and (contains? cf/flags :admin-console) organization-id)]
+        organization-invitation? (and (contains? cf/flags :admin-console) organization-id)]
 
     (if profile
       (do
@@ -318,7 +313,21 @@
                                                         organization-member-count-before)
                                                  (audit/clean-props))))))
 
-              (cond-> (assoc claims :state :created)
+              (cond-> (assoc claims
+                             :state :created
+                             ;; The invitation row is authoritative for the
+                             ;; inviter: backfill :profile-id so the response
+                             ;; stays consistent even with tokens minted
+                             ;; before :profile-id was aligned with
+                             ;; :created-by (or re-requested by someone else).
+                             :profile-id (or (:created-by invitation)
+                                             (:profile-id claims))
+                             ;; Likewise, the accepting profile is
+                             ;; authoritative for the invitee: backfill
+                             ;; :member-id (nil for invitations sent to an
+                             ;; unregistered email, possibly stale
+                             ;; otherwise).
+                             :member-id (:id profile))
                 ;; when the invitation is to an organization, instead of a team, add the
                 ;; accepted-team-id as :organization-team-id
                 (:organization-id claims)
@@ -343,11 +352,12 @@
                             "no invitation associated with the token")))
 
         ;; If we have not logged-in user, and invitation comes with member-id we
-        ;; redirect user to login, if no member-id is present and  in the invitation
-        ;; token and registration is enabled, we redirect user the the register page.
+        ;; redirect user to login. If no member-id is present this is an invitation
+        ;; for a new user — send them to the register page. Invitations bypass
+        ;; the disable-registration flag per documentation.
         {:invitation-token token
          :iss :team-invitation
-         :redirect-to (if (or member-id registration-disabled?) :auth-login :auth-register)
+         :redirect-to (if member-id :auth-login :auth-register)
          :state :pending}))))
 
 ;; --- Default

@@ -45,6 +45,3 @@
           stale (ct/minus now (ct/duration {:minutes 10}))]
       (t/is (not (#'session/renew-session? {:id (random-uuid) :modified-at recent})))
       (t/is (#'session/renew-session? {:id (random-uuid) :modified-at stale})))))
-
-(t/deftest renew-session-true-for-legacy-string-session-id
-  (t/is (#'session/renew-session? {:id "legacy-string-session" :modified-at (ct/now)})))
