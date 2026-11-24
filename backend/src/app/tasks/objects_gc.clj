@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 
 (ns app.tasks.objects-gc
   "A maintenance task that performs a general purpose garbage collection
@@ -10,8 +10,10 @@
   (:require
    [app.common.logging :as l]
    [app.common.time :as ct]
+   [app.config :as cf]
    [app.db :as db]
    [app.features.fdata :as fdata]
+   [app.loggers.audit :as audit]
    [app.storage :as sto]
    [app.tasks.delete-object :as dobj]
    [integrant.core :as ig]))
@@ -26,6 +28,100 @@
 ;; A plan row is a view over the open result set, valid only while the
 ;; reduction is running, so the key is read inside the reducing function:
 ;; buffering the row itself yields nil columns.
+
+(defn- submit-hard-delete-event
+  "Emits one hard-delete audit event for the batch of rows just purged
+  by this task, so a projection of the audit stream can drop its local
+  rows. Each GC section purges in its own chunk transactions, so each
+  chunk carries only its own entity key (`:team-ids`, `:project-ids`
+  or `:file-ids`); a single event spanning sections could never share
+  their transactions. Runs inside the caller transaction, next to the
+  deletes: if the purge aborts, the event aborts with it."
+  [cfg ids-key ids]
+  (when (contains? cf/flags :audit-log)
+    (audit/submit cfg
+                  {:name "hard-delete-objects"
+                   :type "command"
+                   :props {ids-key (vec ids)}
+                   :context {:triggered-by "objects-gc"}})))
+
+(def ^:private sql:get-upload-sessions
+  "SELECT us.id
+     FROM upload_session AS us
+    WHERE (us.deleted_at IS NOT NULL
+           AND us.deleted_at <= ?)
+       OR (us.deleted_at IS NULL
+           AND us.created_at <= ?)
+       OR EXISTS (SELECT 1
+                    FROM profile AS p
+                   WHERE p.id = us.profile_id
+                     AND p.deleted_at IS NOT NULL
+                     AND p.deleted_at <= ?)
+    ORDER BY us.created_at ASC")
+
+(def ^:private sql:lock-upload-sessions
+  "SELECT us.id
+     FROM upload_session AS us
+    WHERE us.id = ANY(?::uuid[])
+      AND ((us.deleted_at IS NOT NULL
+            AND us.deleted_at <= ?)
+        OR (us.deleted_at IS NULL
+            AND us.created_at <= ?)
+        OR EXISTS (SELECT 1
+                     FROM profile AS p
+                    WHERE p.id = us.profile_id
+                      AND p.deleted_at IS NOT NULL
+                      AND p.deleted_at <= ?))
+      FOR UPDATE OF us
+     SKIP LOCKED")
+
+(def ^:private sql:delete-session-chunks
+  "DELETE FROM upload_session_chunk
+    WHERE session_id = ?
+    RETURNING object_id")
+
+(defn- delete-upload-sessions-chunk
+  "Purges one chunk of consumed upload sessions (marked by assemble-chunks),
+  stalled sessions (never assembled within max-age) and sessions owned by
+  profiles pending purge. Referenced storage objects are touched so the
+  storage GC reclaims them with its usual delay; chunk mappings are removed
+  before the session row (NO ACTION foreign keys)."
+  [cfg ids]
+  (try
+    (db/tx-run! cfg
+                (fn [{:keys [::db/conn ::timestamp ::sto/storage]}]
+                  (let [stalled-threshold (ct/minus timestamp {:hours 1})
+                        ids (db/create-array conn "uuid" ids)]
+                    (->> (db/exec! conn [sql:lock-upload-sessions ids timestamp stalled-threshold timestamp])
+                         (reduce (fn [total {:keys [id]}]
+                                   (l/trc :obj "upload-session" :id (str id))
+
+                                   ;; Remove the chunk mappings, marking as touched all
+                                   ;; related storage objects in a single round-trip.
+                                   (doseq [{:keys [object-id]} (db/exec! conn [sql:delete-session-chunks id])]
+                                     (some->> object-id (sto/touch-object! storage)))
+
+                                   (let [affected (-> (db/delete! conn :upload-session {:id id})
+                                                      (db/get-update-count))]
+                                     (+ total affected)))
+                                 0)))))
+    (catch Throwable cause
+      (l/err :obj "upload-session"
+             :hint "error on chunk deletion, skipping it"
+             :chunk ids
+             :cause cause)
+      0)))
+
+(defn- delete-upload-sessions
+  [{:keys [::timestamp ::chunk-size] :as cfg}]
+  (let [stalled-threshold (ct/minus timestamp {:hours 1})
+        rf (fn ([total] total)
+             ([total chunk] (+ total (delete-upload-sessions-chunk cfg chunk))))]
+    (db/tx-run! (assoc cfg ::db/read-only true)
+                (fn [{:keys [::db/conn]}]
+                  (transduce (comp (map :id) (partition-all chunk-size)) rf 0
+                             (db/plan conn [sql:get-upload-sessions timestamp stalled-threshold timestamp]
+                                      {:fetch-size 5}))))))
 
 (def ^:private sql:get-profiles
   "SELECT id FROM profile
@@ -101,23 +197,28 @@
   [cfg ids]
   (try
     (db/tx-run! cfg
-                (fn [{:keys [::db/conn ::timestamp ::sto/storage]}]
+                (fn [{:keys [::db/conn ::timestamp ::sto/storage] :as cfg}]
                   (db/exec-one! conn ["SET LOCAL rules.deletion_protection TO off"])
-                  (let [ids (db/create-array conn "uuid" ids)]
-                    (->> (db/exec! conn [sql:lock-teams ids timestamp])
-                         (reduce (fn [total {:keys [id photo-id deleted-at]}]
-                                   (l/trc :obj "team"
-                                          :id (str id)
-                                          :deleted-at (ct/format-inst deleted-at))
+                  (let [ids (db/create-array conn "uuid" ids)
+                        [total deleted-ids]
+                        (->> (db/exec! conn [sql:lock-teams ids timestamp])
+                             (reduce (fn [[total deleted-ids] {:keys [id photo-id deleted-at]}]
+                                       (l/trc :obj "team"
+                                              :id (str id)
+                                              :deleted-at (ct/format-inst deleted-at))
 
-                                   ;; Mark as deleted the storage object
-                                   (some->> photo-id (sto/touch-object! storage))
+                                       ;; Mark as deleted the storage object
+                                       (some->> photo-id (sto/touch-object! storage))
 
-                                   ;; And finally, permanently delete the team.
-                                   (let [affected (-> (db/delete! conn :team {:id id})
-                                                      (db/get-update-count))]
-                                     (+ total affected)))
-                                 0)))))
+                                       ;; And finally, permanently delete the team.
+                                       (let [affected (-> (db/delete! conn :team {:id id})
+                                                          (db/get-update-count))]
+                                         [(+ total affected)
+                                          (cond-> deleted-ids (pos? affected) (conj id))]))
+                                     [0 []]))]
+                    (when (seq deleted-ids)
+                      (submit-hard-delete-event cfg :team-ids deleted-ids))
+                    total)))
     (catch Throwable cause
       (l/err :obj "team"
              :hint "error on chunk deletion, skipping it"
@@ -209,20 +310,25 @@
   [cfg ids]
   (try
     (db/tx-run! cfg
-                (fn [{:keys [::db/conn ::timestamp]}]
+                (fn [{:keys [::db/conn ::timestamp] :as cfg}]
                   (db/exec-one! conn ["SET LOCAL rules.deletion_protection TO off"])
-                  (let [ids (db/create-array conn "uuid" ids)]
-                    (->> (db/exec! conn [sql:lock-projects ids timestamp])
-                         (reduce (fn [total {:keys [id team-id deleted-at]}]
-                                   (l/trc :obj "project"
-                                          :id (str id)
-                                          :team-id (str team-id)
-                                          :deleted-at (ct/format-inst deleted-at))
+                  (let [ids (db/create-array conn "uuid" ids)
+                        [total deleted-ids]
+                        (->> (db/exec! conn [sql:lock-projects ids timestamp])
+                             (reduce (fn [[total deleted-ids] {:keys [id team-id deleted-at]}]
+                                       (l/trc :obj "project"
+                                              :id (str id)
+                                              :team-id (str team-id)
+                                              :deleted-at (ct/format-inst deleted-at))
 
-                                   (let [affected (-> (db/delete! conn :project {:id id})
-                                                      (db/get-update-count))]
-                                     (+ total affected)))
-                                 0)))))
+                                       (let [affected (-> (db/delete! conn :project {:id id})
+                                                          (db/get-update-count))]
+                                         [(+ total affected)
+                                          (cond-> deleted-ids (pos? affected) (conj id))]))
+                                     [0 []]))]
+                    (when (seq deleted-ids)
+                      (submit-hard-delete-event cfg :project-ids deleted-ids))
+                    total)))
     (catch Throwable cause
       (l/err :obj "project"
              :hint "error on chunk deletion, skipping it"
@@ -258,20 +364,25 @@
   [cfg ids]
   (try
     (db/tx-run! cfg
-                (fn [{:keys [::db/conn ::timestamp]}]
+                (fn [{:keys [::db/conn ::timestamp] :as cfg}]
                   (db/exec-one! conn ["SET LOCAL rules.deletion_protection TO off"])
-                  (let [ids (db/create-array conn "uuid" ids)]
-                    (->> (db/exec! conn [sql:lock-files ids timestamp])
-                         (reduce (fn [total {:keys [id deleted-at project-id]}]
-                                   (l/trc :obj "file"
-                                          :id (str id)
-                                          :project-id (str project-id)
-                                          :deleted-at (ct/format-inst deleted-at))
+                  (let [ids (db/create-array conn "uuid" ids)
+                        [total deleted-ids]
+                        (->> (db/exec! conn [sql:lock-files ids timestamp])
+                             (reduce (fn [[total deleted-ids] {:keys [id deleted-at project-id]}]
+                                       (l/trc :obj "file"
+                                              :id (str id)
+                                              :project-id (str project-id)
+                                              :deleted-at (ct/format-inst deleted-at))
 
-                                   (let [affected (-> (db/delete! conn :file {:id id})
-                                                      (db/get-update-count))]
-                                     (+ total affected)))
-                                 0)))))
+                                       (let [affected (-> (db/delete! conn :file {:id id})
+                                                          (db/get-update-count))]
+                                         [(+ total affected)
+                                          (cond-> deleted-ids (pos? affected) (conj id))]))
+                                     [0 []]))]
+                    (when (seq deleted-ids)
+                      (submit-hard-delete-event cfg :file-ids deleted-ids))
+                    total)))
     (catch Throwable cause
       (l/err :obj "file"
              :hint "error on chunk deletion, skipping it"
@@ -586,10 +697,18 @@
 (defmethod ig/init-key ::handler
   [_ cfg]
   (fn [{:keys [props]}]
-    (let [cfg   (assoc cfg ::timestamp (ct/now))
-          cfg   (assoc cfg ::chunk-size (or (:chunk-size props)
-                                            (::chunk-size cfg)))
-          total (+ (delete-profiles cfg)
+    (let [skip-delay (:skip-delay props)
+          chunk-size (or (:chunk-size props) (::chunk-size cfg))
+          cfg        (-> cfg
+                         (assoc ::chunk-size chunk-size)
+                         (assoc ::timestamp (if skip-delay
+                                              (ct/in-future {:days 3650})
+                                              (ct/now))))
+          ;; NOTE: upload sessions go first: deleting a profile cascades to its
+          ;; sessions, which would hit the upload_session_chunk NO ACTION foreign key
+          ;; while mappings still exist.
+          total (+ (delete-upload-sessions cfg)
+                   (delete-profiles cfg)
                    (delete-file-media-objects cfg)
                    (delete-file-object-thumbnails cfg)
                    (delete-file-thumbnails cfg)

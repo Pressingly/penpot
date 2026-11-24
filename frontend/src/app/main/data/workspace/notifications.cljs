@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 
 (ns app.main.data.workspace.notifications
   (:require
@@ -16,6 +16,7 @@
    [app.main.data.common :as dc]
    [app.main.data.helpers :as dsh]
    [app.main.data.modal :as modal]
+   [app.main.data.notifications :as ntf]
    [app.main.data.plugins :as dpl]
    [app.main.data.websocket :as dws]
    [app.main.data.workspace :as-alias dw]
@@ -26,6 +27,7 @@
    [app.main.data.workspace.texts :as dwt]
    [app.main.router :as rt]
    [app.util.globals :refer [global]]
+   [app.util.i18n :refer [tr]]
    [app.util.mouse :as mse]
    [app.util.object :as obj]
    [app.util.rxops :as rxs]
@@ -52,6 +54,7 @@
     (watch [_ state stream]
       (let [stopper     (rx/filter (ptk/type? ::finalize) stream)
             profile-id (:profile-id state)
+            organization-id (dm/get-in state [:teams team-id :organization :id])
 
             initmsg    [{:type :subscribe-file
                          :file-id file-id
@@ -75,7 +78,9 @@
                                                (or (= topic uuid/zero)
                                                    (= topic profile-id)
                                                    (= topic team-id)
-                                                   (= topic file-id))))
+                                                   (= topic file-id)
+                                                   (when (some? organization-id)
+                                                     (= topic organization-id)))))
                                   (rx/map process-message))
 
                              ;; On reconnect, send again the subscription messages
@@ -242,7 +247,8 @@
    [:session-id ::sm/uuid]
    [:revn :int]
    [:vern :int]
-   [:changes cpc/schema:changes]])
+   [:changes cpc/schema:changes]
+   [:repaired {:optional true} :boolean]])
 
 (def ^:private check-file-change-params!
   (sm/check-fn schema:handle-file-change))
@@ -264,13 +270,20 @@
       ;; and update the persistence internal state with the updated
       ;; file-revn
 
-      (rx/of (dch/commit {:file-id file-id
-                          :file-revn revn
-                          :file-vern vern
-                          :save-undo? false
-                          :source :remote
-                          :redo-changes (vec changes)
-                          :undo-changes []})))))
+      (rx/concat
+       (rx/of (dch/commit {:file-id file-id
+                           :file-revn revn
+                           :file-vern vern
+                           :save-undo? false
+                           :source :remote
+                           :redo-changes (vec changes)
+                           :undo-changes []}))
+       (if (:repaired msg)
+         (rx/of (ntf/show {:content (tr "workspace.notifications.file-repaired")
+                           :type :toast
+                           :level :info
+                           :timeout nil}))
+         (rx/empty))))))
 
 (defn handle-file-deleted
   [{:keys [file-id] :as msg}]

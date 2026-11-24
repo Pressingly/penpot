@@ -15,18 +15,18 @@
     "test:watch:e2e": "vitest --browser"
   },
   "devDependencies": {
-    "@playwright/test": "1.62.1",
-    "@types/node": "^26.1.2",
-    "@vitest/browser": "^4.1.10",
-    "@vitest/coverage-v8": "^4.1.10",
-    "@vitest/ui": "^4.1.11",
+    "@playwright/test": "1.63.0",
+    "@types/node": "^26.6.3",
+    "@vitest/browser": "^5.0.2",
+    "@vitest/coverage-v8": "^5.0.2",
+    "@vitest/ui": "^5.0.2",
     "canvas": "^3.2.3",
     "esbuild": "^0.28.0",
     "jsdom": "^30.0.1",
-    "playwright": "1.62.1",
+    "playwright": "1.63.0",
     "prettier": "^3.9.6",
     "vite": "^8.2.0",
-    "vitest": "^4.1.10"
+    "vitest": "^5.0.2"
   },
   "packageManager": "pnpm@12.16.1+sha512.091d1dee7927575661b25dab3c2ae31cafc1c54d6b71ed6a6600cf0c1cb10434a447eae14015f1b23e2e6bedeed79df94a932e2164d2832280dce3fb32f656d1"
 }

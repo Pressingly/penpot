@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 
 (ns app.worker.thumbnails
   (:require
@@ -11,6 +11,7 @@
    [app.common.geom.rect :as grc]
    [app.common.geom.shapes.bounds :as gsb]
    [app.common.logging :as log]
+   [app.common.render-wasm.wasm :as wasm]
    [app.common.types.color :as cc]
    [app.common.uri :as u]
    [app.common.uuid :as uuid]
@@ -18,7 +19,6 @@
    [app.main.fonts :as fonts]
    [app.main.render :as render]
    [app.render-wasm.api :as wasm.api]
-   [app.render-wasm.wasm :as wasm]
    [app.util.http :as http]
    [app.worker.impl :as impl]
    [beicon.v2.core :as rx]
@@ -192,7 +192,7 @@
                                                   :file-id file-id
                                                   :revn revn}))
                                      (rx/end! subs)))))))
-                 (rx/end! subs))
+                 (rx/error! subs (ex-info "unable to init wasm canvas" {:file-id file-id})))
                nil)))))))
 
 (defonce ^:private
@@ -202,7 +202,10 @@
 (defonce ^:private
   thumbnails-stream
   (->> thumbnails-queue
-       (rx/mapcat render-thumbnail-with-wasm)
+       (rx/mapcat (fn [{:keys [id] :as message}]
+                    (->> (render-thumbnail-with-wasm message)
+                         (rx/catch (fn [cause]
+                                     (rx/of {:id id :error cause}))))))
        (rx/share)))
 
 (defmethod impl/handler :thumbnails/generate-for-file-wasm
@@ -213,8 +216,10 @@
            sid (->> thumbnails-stream
                     (rx/filter #(= id (:id %)))
                     (rx/subs!
-                     (fn [result]
-                       (rx/push! subs result)
-                       (rx/end! subs))))]
+                     (fn [{:keys [error] :as result}]
+                       (if error
+                         (rx/error! subs error)
+                         (do (rx/push! subs result)
+                             (rx/end! subs))))))]
        (rx/push! thumbnails-queue (assoc message :id id))
        #(rx/dispose! sid)))))

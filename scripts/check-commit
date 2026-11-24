@@ -4,8 +4,8 @@ Check commit messages against Penpot's commit guidelines.
 
 Validates commit messages using the rules defined in:
   - .github/workflows/commit-checker.yml (regex pattern)
-  - CONTRIBUTING.md (formatting rules, subject length, DCO)
-  - .serena/memories/workflow/creating-commits.md (body wrapped at 76 chars)
+  - CONTRIBUTING.md (formatting rules, subject length)
+  - .serena/memories/workflow/creating-commits.md (body wrapped at 80 chars)
 
 By default, checks HEAD. Use --commit to specify a different commit.
 
@@ -39,19 +39,39 @@ COMMIT_PATTERN = re.compile(
 
 MERGE_PATTERN = re.compile(r"^(Merge|Revert|Reapply).+[^.]$")
 
+# ── Subject line length ──────────────────────────────────────────────────────
+# Subject lines must fit in 80 characters. Merge/Revert/Reapply commits are
+# exempt: git prepends "Merge ..."/"Revert ..." to an existing subject, so
+# enforcing the limit would fail on text the author did not write.
+MAX_SUBJECT_LINE = 80
+
 # ── Body line wrapping ───────────────────────────────────────────────────────
-# Commit bodies must wrap at 76 characters (see
-# .serena/memories/workflow/creating-commits.md). That leaves room for the
-# four-space indent git log adds, fitting an 80-column terminal. Trailers and
+# Commit bodies must wrap at 80 characters (see
+# .serena/memories/workflow/creating-commits.md). Trailers and
 # URLs are exempt: they cannot be wrapped without losing meaning.
-MAX_BODY_LINE = 76
+MAX_BODY_LINE = 80
 
 TRAILER_PATTERN = re.compile(
-    r"^(Signed-off-by|Co-developed-by|Reviewed-by|"
+    r"^(Signed-off-by|Co-authored-by|Co-developed-by|Reviewed-by|"
     r"Acked-by|Tested-by|Reported-by|Suggested-by|AI-assisted-by):"
 )
 
-FORBIDDEN_TRAILER_PATTERN = re.compile(r"^\s*Co-authored-by\s*:", re.IGNORECASE)
+# ── Co-authored-by trailer ───────────────────────────────────────────────────
+# A human co-author may be credited with Co-authored-by. The trailer is
+# forbidden when its value names an AI provider, an AI agent, or a bot: for AI
+# participation the message uses "AI-assisted-by: <model>" instead.
+# Extend this list when a new tool starts adding trailers.
+NON_HUMAN_COAUTHOR_PATTERN = re.compile(
+    r"^\s*co-authored-by\s*:.*("
+    r"\b(?:chatgpt|openai|anthropic|claude|copilot|codex|gemini|bard|"
+    r"deepseek|mistral|qwen|kimi|llama|grok|cursor|"
+    r"windsurf|cline|aider|codeium|tabnine|amazon\s+q|sourcegraph\s+cody|"
+    r"roo\s+code|kilo\s+code|opencode)\b"
+    r"|\bdevin-ai|@devin\.ai"
+    r"|\[bot\]|\bbot@"
+    r")",
+    re.IGNORECASE,
+)
 
 URL_PATTERN = re.compile(r"https?://\S+")
 
@@ -110,11 +130,13 @@ def check_regex(message):
 
 
 def check_subject_length(message):
-    """Subject line must be ≤ 70 characters."""
+    """Subject line must be ≤ 80 characters (Merge/Revert/Reapply exempt)."""
     first_line = message.split("\n")[0]
-    if len(first_line) > 70:
+    if MERGE_PATTERN.match(first_line):
+        return True, None
+    if len(first_line) > MAX_SUBJECT_LINE:
         return False, (
-            f"Subject line exceeds 70 characters ({len(first_line)} chars):\n"
+            f"Subject line exceeds {MAX_SUBJECT_LINE} characters ({len(first_line)} chars):\n"
             f"  {first_line}"
         )
     return True, None
@@ -166,7 +188,7 @@ def check_body_blank_line(message):
 
 
 def check_body_line_length(message):
-    """Body lines must wrap at 76 characters or fewer.
+    """Body lines must wrap at 80 characters or fewer.
 
     The subject (first line) has its own length rule. Trailers (e.g.
     Signed-off-by) and lines carrying a URL are exempt, since wrapping them
@@ -200,23 +222,12 @@ def check_body_line_length(message):
     )
 
 
-def check_signed_off_by(message):
-    """Check for the DCO Signed-off-by line (required for code changes)."""
-    if "Signed-off-by:" not in message:
-        return False, (
-            "Missing 'Signed-off-by:' line in the commit footer.\n"
-            "  Add it with 'git commit -s' or append it manually:\n"
-            "    Signed-off-by: Your Real Name <your.email@example.com>"
-        )
-    return True, None
-
-
-def check_no_co_authored_by(message):
-    """Check that the forbidden Co-authored-by trailer is absent."""
+def check_co_authored_by(message):
+    """Co-authored-by is allowed for humans, not for AI providers or bots."""
     offenders = [
         (line_number, line)
         for line_number, line in enumerate(message.split("\n"), start=1)
-        if FORBIDDEN_TRAILER_PATTERN.match(line)
+        if NON_HUMAN_COAUTHOR_PATTERN.match(line)
     ]
     if not offenders:
         return True, None
@@ -225,8 +236,10 @@ def check_no_co_authored_by(message):
         for line_number, line in offenders
     )
     return False, (
-        "The 'Co-authored-by:' trailer is forbidden and must not appear "
-        "in the commit message. Offending line(s):\n" + details
+        "The 'Co-authored-by:' trailer is only for human co-authors. This one "
+        "names an AI provider, an AI agent, or a bot. Offending line(s):\n"
+        + details
+        + "\n  For AI participation use: AI-assisted-by: <model-name>"
     )
 
 
@@ -250,12 +263,12 @@ def main():
 
     validators = [
         ("Regex pattern", check_regex),
-        ("Subject ≤ 70 chars", check_subject_length),
+        ("Subject ≤ 80 chars", check_subject_length),
         ("No trailing period in subject", check_subject_no_trailing_dot),
         ("Subject capitalized", check_subject_capitalized),
         ("Blank line after subject", check_body_blank_line),
-        ("Body wrapped at 76 chars", check_body_line_length),
-        ("No Co-authored-by trailer", check_no_co_authored_by),
+        ("Body wrapped at 80 chars", check_body_line_length),
+        ("Co-authored-by is human only", check_co_authored_by),
     ]
 
     all_ok = True

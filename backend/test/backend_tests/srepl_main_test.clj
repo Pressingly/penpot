@@ -11,7 +11,8 @@
    [app.system :as sys]
    [app.worker :as wrk]
    [backend-tests.helpers :as th]
-   [clojure.test :as t]))
+   [clojure.test :as t]
+   [mockery.core :refer [with-mocks]]))
 
 (t/use-fixtures :once th/state-init)
 (t/use-fixtures :each th/database-reset)
@@ -150,3 +151,158 @@
                            #(srepl/process-deleted-files-cascade :ids [(:id file)]))]
             (t/is (= [{:object :file :id (:id file)}]
                      (mapv #(select-keys % [:object :id]) (params-of submitted))))))))))
+
+(t/deftest delete-profile-emits-identifiable-audit-event
+  ;; SREPL has no actor, so the event profile stays zero; the subject id in
+  ;; props is what makes the row attributable. Both insert and cascade are
+  ;; mocked, so this has no side effects.
+  (with-mocks [audit-mock {:target 'app.loggers.audit/insert :return nil}
+               wrk-mock {:target 'app.worker/invoke! :return nil}]
+    (let [profile (th/create-profile* 1 {:is-active true})]
+      (srepl/delete-profile! (str (:id profile)))
+      (let [events (->> (:call-args-list @audit-mock)
+                        (map second))]
+        (t/is (= 1 (count events)))
+        (let [event (first events)]
+          (t/is (= "delete-profile" (:name event)))
+          (t/is (= "action" (:type event)))
+          ;; No actor on SREPL calls; insert defaults the missing profile
+          ;; to the zero one.
+          (t/is (nil? (:profile-id event)))
+          (t/is (= (:id profile) (get-in event [:props :id]))))))))
+
+(t/deftest delete-team-emits-identifiable-audit-event
+  (with-mocks [audit-mock {:target 'app.loggers.audit/insert :return nil}
+               wrk-mock {:target 'app.worker/invoke! :return nil}]
+    (let [profile (th/create-profile* 1 {:is-active true})
+          team    (th/create-team* 95 {:profile-id (:id profile)})]
+      (srepl/delete-team! (str (:id team)))
+      (let [events (->> (:call-args-list @audit-mock)
+                        (map second))]
+        (t/is (= 1 (count events)))
+        (let [event (first events)]
+          (t/is (= "delete-team" (:name event)))
+          (t/is (= "action" (:type event)))
+          (t/is (= (:id team) (get-in event [:props :id])))
+          (t/is (= "explicit call to delete-team!"
+                   (get-in event [:context :cause]))))))))
+
+(t/deftest restore-profile-emits-identifiable-audit-event
+  ;; SREPL has no actor, so the event profile stays zero; the subject id in
+  ;; props is what makes the row attributable.
+  (with-mocks [audit-mock {:target 'app.loggers.audit/insert :return nil}
+               wrk-mock {:target 'app.worker/invoke! :return nil}]
+    (with-redefs [sys/system th/*system*]
+      (let [profile (th/create-profile* 1 {:is-active true})]
+        (srepl/restore-profile! (str (:id profile)))
+        (let [events (->> (:call-args-list @audit-mock)
+                          (map second))]
+          (t/is (= 1 (count events)))
+          (let [event (first events)]
+            (t/is (= "restore-profile" (:name event)))
+            (t/is (= "action" (:type event)))
+            ;; No actor on SREPL calls; insert defaults the missing profile
+            ;; to the zero one.
+            (t/is (nil? (:profile-id event)))
+            (t/is (= (:id profile) (get-in event [:props :id])))))))))
+
+(t/deftest update-profile-email-changes-email
+  (with-mocks [audit-mock {:target 'app.loggers.audit/insert :return nil}]
+    (with-redefs [sys/system th/*system*]
+      (let [profile (th/create-profile* 1 {:is-active true})
+            result  (srepl/update-profile-email!
+                     :email (:email profile)
+                     :new-email "corrected@example.com")]
+        (t/is (= :updated result))
+        (t/is (= "corrected@example.com"
+                 (:email (th/db-get :profile {:id (:id profile)}))))
+        (let [event (->> (:call-args-list @audit-mock)
+                         (map second)
+                         first)]
+          (t/is (= "update-profile-email" (:name event)))
+          (t/is (= "action" (:type event)))
+          (t/is (= (:id profile) (get-in event [:props :id])))
+          (t/is (= (:email profile) (get-in event [:props :email])))
+          (t/is (= "corrected@example.com"
+                   (get-in event [:props :new-email]))))))))
+
+(t/deftest update-profile-email-rejects-collision
+  (with-redefs [sys/system th/*system*]
+    (let [profile1 (th/create-profile* 1 {:is-active true})
+          profile2 (th/create-profile* 2 {:is-active true})
+          error    (try
+                     (srepl/update-profile-email!
+                      :email (:email profile1)
+                      :new-email (:email profile2))
+                     (catch Throwable e e))]
+      (t/is (th/ex-of-code? error :email-already-exists))
+      (t/is (= (:email profile1)
+               (:email (th/db-get :profile {:id (:id profile1)})))))))
+
+(t/deftest update-profile-email-unchanged-when-same
+  (with-mocks [audit-mock {:target 'app.loggers.audit/insert :return nil}]
+    (with-redefs [sys/system th/*system*]
+      (let [profile (th/create-profile* 1 {:is-active true})
+            result  (srepl/update-profile-email!
+                     :email (:email profile)
+                     :new-email (:email profile))]
+        (t/is (= :unchanged result))
+        (t/is (empty? (:call-args-list @audit-mock)))))))
+
+(t/deftest update-profile-email-not-found
+  (with-mocks [audit-mock {:target 'app.loggers.audit/insert :return nil}]
+    (with-redefs [sys/system th/*system*]
+      (let [error (try
+                    (srepl/update-profile-email!
+                     :email "missing@example.com"
+                     :new-email "corrected@example.com")
+                    (catch Throwable e e))]
+        (t/is (th/ex-of-code? error :profile-not-found))
+        (t/is (= :not-found (:type (ex-data error))))
+        (t/is (empty? (:call-args-list @audit-mock)))))))
+
+(t/deftest clear-email-complaint-reports-deletes-and-unmutes
+  (with-mocks [audit-mock {:target 'app.loggers.audit/insert :return nil}]
+    (with-redefs [sys/system th/*system*]
+      (let [profile (th/create-profile* 1 {:is-active true :is-muted true
+                                           :email "bounced@example.com"})
+            _       (th/create-complaint-for th/*system*
+                                             {:id (:id profile) :type :bounce})
+            _       (th/create-complaint-for th/*system*
+                                             {:id (:id profile) :type :complaint})
+            _       (th/create-global-complaint-for th/*system*
+                                                    {:email (:email profile)
+                                                     :type :bounce})
+            _       (th/create-global-complaint-for th/*system*
+                                                    {:email (:email profile)
+                                                     :type :complaint})
+            result  (srepl/clear-email-complaint-reports! (:email profile))]
+        (t/is (= :cleared result))
+        (t/is (empty? (th/db-query :global-complaint-report
+                                   {:email (:email profile)})))
+        (t/is (empty? (th/db-query :profile-complaint-report
+                                   {:profile-id (:id profile)})))
+        (t/is (false? (:is-muted (th/db-get :profile {:id (:id profile)}))))
+        (let [event (->> (:call-args-list @audit-mock)
+                         (map second)
+                         first)]
+          (t/is (= "clear-email-complaint-reports" (:name event)))
+          (t/is (= "action" (:type event)))
+          (t/is (= (:id profile) (get-in event [:props :id])))
+          (t/is (= (:email profile) (get-in event [:props :email]))))))))
+
+(t/deftest clear-email-complaint-reports-without-profile
+  (with-mocks [audit-mock {:target 'app.loggers.audit/insert :return nil}]
+    (with-redefs [sys/system th/*system*]
+      (let [email "orphan-bounce@example.com"
+            _     (th/create-global-complaint-for th/*system*
+                                                  {:email email :type :bounce})
+            result (srepl/clear-email-complaint-reports! email)]
+        (t/is (= :cleared result))
+        (t/is (empty? (th/db-query :global-complaint-report {:email email})))
+        (let [event (->> (:call-args-list @audit-mock)
+                         (map second)
+                         first)]
+          (t/is (= "clear-email-complaint-reports" (:name event)))
+          (t/is (= email (get-in event [:props :email])))
+          (t/is (nil? (get-in event [:props :id]))))))))

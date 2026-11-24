@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 
 (ns app.common.geom.shapes.constraints
   (:require
@@ -235,7 +235,7 @@
     (ctm/move-modifiers (displacement center-before center-after before-side-vector after-side-vector))))
 
 (defmethod constraint-modifier :default [_ _ _ _ _ _]
-  [])
+  (ctm/empty))
 
 (def const->type+axis
   {:left :start

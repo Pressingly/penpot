@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 
 (ns backend-tests.rpc-quotes-test
   (:require
@@ -465,7 +465,7 @@
                   :name "testfile"
                   :content mfile}
 
-          out    (th/command! params)]
+          out    (th/multipart-command! params)]
 
       ;; TEMPORARILY DISABLED (2026-10-19): upload path no longer checks
       ;; media-storage-bytes-per-team, so even over quota the upload

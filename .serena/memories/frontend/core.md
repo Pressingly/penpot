@@ -37,6 +37,7 @@ See `mem:scripts/paren-repair`.
 UI and packages:
 - App UI components, SCSS modules, style-system boundaries, accessibility, i18n, and render performance: `mem:frontend/ui-conventions-and-style-system`.
 - JS/TS packages, shared UI package, text editor, Storybook, and package builds: `mem:frontend/ui-packages-text-editor-workflow`.
+- PO translation workflow and per-locale conventions: `mem:frontend/translations`.
 
 Workspace behavior:
 - Workspace state, commits, persistence, undo, repo calls, and refs: `mem:frontend/workspace-state-persistence-subtleties`.
@@ -45,6 +46,7 @@ Workspace behavior:
 
 App shell and product flows:
 - Routing, root app shell, websocket, and global errors: `mem:frontend/routing-app-shell-subtleties`.
+- Authentication events, the session origin vocabulary, and the invitation flow: `mem:frontend/auth-events`.
 - Dashboard and viewer flows: `mem:frontend/dashboard-viewer-subtleties`.
 - Plugin JS API runtime inside the frontend app: `mem:frontend/plugin-api-to-cljs-binding`.
 

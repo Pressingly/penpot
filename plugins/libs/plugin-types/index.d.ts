@@ -1646,19 +1646,24 @@ export interface File extends PluginData {
    * - `'penpot'` will create a *.penpot file with a binary representation of the file
    * - `'zip'` will create a *.zip with the file exported in several SVG files with some JSON metadata
    * @param `libraryExportType` indicates what to do with the linked libraries of the file when
-   * exporting it. Defaults to `all` if not sent.
-   * - `'all'` will include the libraries as external files that will be exported in a single bundle
-   * - `'merge'` will add all the assets into the main file and only one file will be imported
-   * - `'detach'` will unlink all the external assets and no libraries will be imported
+   * exporting it. Defaults to `'include-libraries'` if not sent.
+   * - `'include-libraries'` will include the libraries as external files that will be exported in a single bundle
+   * - `'merge-libraries'` will add all the assets into the main file and only one file will be imported
+   * - `'detach-libraries'` will unlink all the external assets and no libraries will be imported
+   * - `'link-later'` will preserve component metadata so instances can be relinked on import
    *
    * @example
    * ```js
-   * const exportedData = await file.export('penpot', 'all');
+   * const exportedData = await file.export('penpot', 'include-libraries');
    * ```
    */
   export(
     exportType: 'penpot' | 'zip',
-    libraryExportType?: 'all' | 'merge' | 'detach',
+    libraryExportType?:
+      | 'include-libraries'
+      | 'merge-libraries'
+      | 'detach-libraries'
+      | 'link-later',
   ): Promise<Uint8Array>;
 
   /**
@@ -2664,6 +2669,12 @@ export interface Library extends PluginData {
   readonly components: LibraryComponent[];
 
   /**
+   * Deleted components, including individual deleted variants.
+   * Use a component's `restore()` method to restore it.
+   */
+  readonly deletedComponents: LibraryComponent[];
+
+  /**
    * A catalog of Design Tokens in the library.
    *
    * See `TokenCatalog` type to see usage.
@@ -2759,6 +2770,40 @@ export interface LibraryColor extends LibraryElement {
  */
 export interface LibraryComponent extends LibraryElement {
   /**
+   * The component annotation, or null when none is set.
+   * Set null to delete it. Text can contain at most 300 characters.
+   * Writing requires `library:write` permission and a live component in the
+   * current file's library.
+   */
+  annotation: string | null;
+
+  /**
+   * Duplicates this component and its main instance in the current file's library.
+   * Requires `library:write` permission. The component must not be deleted.
+   */
+  duplicate(): LibraryComponent;
+
+  /**
+   * Deletes this component and its main instance from the current file's library.
+   * Requires `library:write` permission. Does nothing if already deleted.
+   * Surviving copies keep their link so the component can be restored later.
+   */
+  remove(): void;
+
+  /**
+   * Restores this component if it has been deleted, including its main instance,
+   * in the current file's library.
+   * Leaves the current page, selection, zoom, and viewport unchanged.
+   * Requires `library:write` permission. Does nothing if already restored.
+   *
+   * @example
+   * ```js
+   * penpot.selection[0].component()?.restore();
+   * ```
+   */
+  restore(): void;
+
+  /**
    * Creates an instance of the component.
    * @return Returns a `Shape` object representing the instance of the component.
    *
@@ -2847,6 +2892,32 @@ export type LibraryContext = {
    * ```
    */
   readonly connected: Library[];
+
+  /**
+   * The library that supplies tokens to the current file.
+   * Defaults to the local library.
+   *
+   * Assign a connected library that has its own tokens to use it as the
+   * source. This copies its active themes and sets to the current file.
+   * Assign `local` to use the file's own tokens again. Themes and sets
+   * that don't exist in the local tokens are deactivated.
+   * Setting the source requires `content:write` permission and supports undo.
+   * Assigning the current source again keeps the active themes and sets.
+   *
+   * The catalog of an external `tokensSource` is read-only and reports the
+   * library's own active themes and sets. To change which ones are active
+   * in the current file, use `penpot.library.local.tokens`, which lists the
+   * tokens of the source.
+   *
+   * @example
+   * ```js
+   * const source = await penpot.library.connectLibrary('library-id');
+   * penpot.library.tokensSource = source;
+   * // Restore local tokens:
+   * penpot.library.tokensSource = penpot.library.local;
+   * ```
+   */
+  tokensSource: Library;
 
   /**
    * Retrieves a summary of available libraries that can be connected to.
@@ -3976,6 +4047,15 @@ export interface ShapeBase extends PluginData {
   resetOverrides(): void;
 
   /**
+   * Applies this copy's overrides to its main component and synchronizes copies.
+   * Similar to the editor's "update main component" action.
+   * Requires `content:write` and `library:write` permissions.
+   * The shape must be a component copy head on the active page of the current file,
+   * outside any other component copy, with a main component that is not deleted.
+   */
+  updateMain(): void;
+
+  /**
    * Switch a VariantComponent copy to the nearest one that has the specified property value
    * @param pos The position of the property to update
    * @param value The new value of the property
@@ -4095,6 +4175,11 @@ export interface ShapeBase extends PluginData {
    * several tokens with the same name in different sets, the actual token applied
    * and the value set to the attributes will depend on which sets are active
    * (and will change if different sets or themes are activated later).
+   *
+   * NOTE that the per-side stroke width properties (`strokeWidthTop`,
+   * `strokeWidthRight`, `strokeWidthBottom`, `strokeWidthLeft`) are only valid on
+   * boards and rectangles. Applying one to any other shape raises a validation
+   * error. The uniform `strokeWidth` property is accepted on every shape.
    */
   applyToken(token: Token, properties?: TokenProperty[]): void;
 
@@ -4159,8 +4244,8 @@ export interface Slide {
 }
 
 /**
- * Represents stroke properties in Penpot. You can add a stroke to any shape except for groups.
- * This interface includes properties for defining the color, style, width, alignment, and caps of a stroke.
+ * Stroke properties for any shape except groups.
+ * Literals apply strokeWidth before top/right/bottom/left widths.
  */
 export interface Stroke {
   /**
@@ -4185,9 +4270,33 @@ export interface Stroke {
    */
   strokeStyle?: 'solid' | 'dotted' | 'dashed' | 'mixed' | 'none' | 'svg';
   /**
-   * The optional width of the stroke.
+   * Reads the top width. Setting it selects simple mode and sets all four sides.
    */
   strokeWidth?: number;
+  /**
+   * Computed width mode: simple when all four effective widths match, multiple otherwise.
+   */
+  readonly strokeWidthType?: 'simple' | 'multiple';
+  /**
+   * Top side width; setting it preserves the other side widths.
+   * Boards and rectangles only; other shape types raise a validation error.
+   */
+  strokeWidthTop?: number;
+  /**
+   * Right side width; setting it preserves the other side widths.
+   * Boards and rectangles only; other shape types raise a validation error.
+   */
+  strokeWidthRight?: number;
+  /**
+   * Bottom side width; setting it preserves the other side widths.
+   * Boards and rectangles only; other shape types raise a validation error.
+   */
+  strokeWidthBottom?: number;
+  /**
+   * Left side width; setting it preserves the other side widths.
+   * Boards and rectangles only; other shape types raise a validation error.
+   */
+  strokeWidthLeft?: number;
   /**
    * The optional alignment of the stroke relative to the shape's boundary.
    */
@@ -4559,6 +4668,10 @@ export interface TokenBase {
    * several tokens with the same name in different sets, the actual token applied
    * and the value set to the attributes will depend on which sets are active
    * (and will change if different sets or themes are activated later).
+   *
+   * NOTE that the per-side stroke width properties are only valid on boards and
+   * rectangles; applying one to any other shape raises a validation error. The
+   * uniform `strokeWidth` property is accepted on every shape.
    */
   applyToShapes(shapes: Shape[], properties?: TokenProperty[]): void;
 
@@ -5216,6 +5329,16 @@ export type Token =
  */
 export interface TokenCatalog {
   /**
+   * Returns true if the tokens in this catalog can be edited. Only the
+   * catalog of the current file (`penpot.library.local.tokens`) can be
+   * edited, and only when the file is its own tokens source.
+   * When the tokens come from an external library, the local catalog
+   * can still change the active themes and sets, and its tokens can
+   * still be applied to shapes.
+   */
+  readonly isEditableTokens: boolean;
+
+  /**
    * The list of themes in this catalog, in creation order.
    */
   readonly themes: TokenTheme[];
@@ -5285,7 +5408,8 @@ export interface TokenSet {
   name: string;
 
   /**
-   * Indicates if the set is currently active.
+   * Indicates if the set is active in the file that owns this catalog.
+   * Only sets from `penpot.library.local.tokens` can be changed.
    */
   active: boolean;
 
@@ -5301,6 +5425,7 @@ export interface TokenSet {
 
   /**
    * Toggles the active status of this set.
+   * Only sets from `penpot.library.local.tokens` can be changed.
    */
   toggleActive(): void;
 
@@ -5385,12 +5510,14 @@ export interface TokenTheme {
   name: string;
 
   /**
-   * Indicates if the theme is currently active.
+   * Indicates if the theme is active in the file that owns this catalog.
+   * Only themes from `penpot.library.local.tokens` can be changed.
    */
   active: boolean;
 
   /**
    * Toggles the active status of this theme.
+   * Only themes from `penpot.library.local.tokens` can be changed.
    */
   toggleActive(): void;
 
@@ -5452,7 +5579,11 @@ type TokenDimensionProps =
   | 'y'
 
   // Stroke width
-  | 'strokeWidth';
+  | 'strokeWidth'
+  | 'strokeWidthTop'
+  | 'strokeWidthRight'
+  | 'strokeWidthBottom'
+  | 'strokeWidthLeft';
 
 /**
  * The properties that a FontFamilies token can be applied to.
@@ -5521,7 +5652,12 @@ type TokenSpacingProps =
 /**
  * The properties that a BorderWidth token can be applied to.
  */
-type TokenBorderWidthProps = 'strokeWidth';
+type TokenBorderWidthProps =
+  | 'strokeWidth'
+  | 'strokeWidthTop'
+  | 'strokeWidthRight'
+  | 'strokeWidthBottom'
+  | 'strokeWidthLeft';
 
 /**
  * The properties that a TextCase token can be applied to.

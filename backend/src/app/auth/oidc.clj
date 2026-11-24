@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 
 (ns app.auth.oidc
   "OIDC client implementation."
@@ -685,10 +685,8 @@
 (defn- redirect-with-error
   ([error] (redirect-with-error error nil))
   ([error hint]
-   (let [params {:error error :hint hint}
-         params (d/without-nils params)
+   (let [params {:screen "auth-login" :error error :hint hint}
          uri    (-> (u/uri (cf/get :public-uri))
-                    (assoc :path "/#/auth/login")
                     (assoc :query (u/map->query-string params)))]
      (redirect-response uri))))
 
@@ -707,21 +705,19 @@
                       :iss :prepared-register
                       :exp (ct/in-future {:hours 48}))
 
-        params {:token (tokens/generate cfg info)
+        params {:screen "auth-register-validate"
+                :token (tokens/generate cfg info)
                 :provider (:provider (:id provider))
-                :fullname (:fullname info)}
-        params (d/without-nils params)]
+                :fullname (:fullname info)}]
 
     (redirect-response
      (-> (u/uri (cf/get :public-uri))
-         (assoc :path "/#/auth/register/validate")
          (assoc :query (u/map->query-string params))))))
 
 (defn- redirect-to-verify-token
   [token]
-  (let [params {:token token}
+  (let [params {:screen "auth-verify-token" :token token}
         uri    (-> (u/uri (cf/get :public-uri))
-                   (assoc :path "/#/auth/verify-token")
                    (assoc :query (u/map->query-string params)))]
 
     (redirect-response uri)))
@@ -1066,6 +1062,32 @@
             :organization-id organization-id
             :organization-name organization-name}))))))
 
+(def oidc-provider-types
+  "Backends authenticating through an OIDC-compatible provider.
+  Only these backends take the SSO registration gate."
+  #{"oidc" "google" "github" "gitlab"})
+
+(defn sso-registration-allowed?
+  "SSO registration is allowed when public registration or explicit
+  OIDC registration is enabled. Shared by the callback gate and the
+  `register-profile` token gate — keep one definition."
+  []
+  (or (contains? cf/flags :registration)
+      (contains? cf/flags :oidc-registration)))
+
+(defn- valid-invitation-for?
+  "Returns true when `invitation-token` is a verifiable
+  `:team-invitation` JWT issued for `email`. Never throws: a garbage
+  token means there is no valid invitation."
+  [cfg invitation-token email]
+  (try
+    (boolean
+     (when (and (some? invitation-token) (some? email))
+       (let [invitation (tokens/verify cfg {:token invitation-token :iss :team-invitation})]
+         (= (profile/clean-email (:member-email invitation))
+            (profile/clean-email email)))))
+    (catch Throwable _ false)))
+
 (defn- callback-handler
   [cfg {:keys [params] :as request}]
   (if-let [error (get params :error)]
@@ -1098,8 +1120,8 @@
                 (redirect-with-error "email-domain-not-allowed")
 
                 :else
-                (if (or (contains? cf/flags :registration)
-                        (contains? cf/flags :oidc-registration))
+                (if (or (sso-registration-allowed?)
+                        (valid-invitation-for? cfg (:invitation-token info) (:email info)))
                   (redirect-to-register cfg info provider)
                   (redirect-with-error "registration-disabled")))
 
@@ -1117,11 +1139,15 @@
 
               :else
               (let [sxf     (session/create-fn cfg profile info)
-                    token   (or (:invitation-token info)
-                                (tokens/generate cfg
-                                                 {:iss :auth
-                                                  :exp (ct/in-future "15m")
-                                                  :profile-id (:id profile)}))
+                    ;; The session token is always an :auth one; the
+                    ;; invitation token, when present, travels inside its
+                    ;; claims so the frontend goes through the regular
+                    ;; token verification path and then `logged-in`.
+                    token   (tokens/generate cfg
+                                             {:iss :auth
+                                              :exp (ct/in-future "15m")
+                                              :profile-id (:id profile)
+                                              :invitation-token (:invitation-token info)})
 
                     ;; If proceed, update profile on the database
                     profile (update-profile-with-info cfg profile info)

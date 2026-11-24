@@ -18,7 +18,7 @@ push — the user pushes from their own shell.
 
 - The user asks to open or create a NEW PR for the current task branch, in
   any phrasing ("open a PR", "create the pull request", "put this up for
-  review") — or runs `/create-pr`. → **Open mode**.
+  review") — or invokes `@create-pr`. → **Open mode**.
 - The user asks to fix or update an EXISTING PR's title or description to
   match conventions. → **Update mode**.
 
@@ -59,7 +59,7 @@ Run all checks before reporting, then report every failure together:
 5. **Branch not pushed.** The remote-tracking ref `origin/<branch>` is
    missing, or `git rev-parse origin/<branch>` differs from HEAD — the
    branch was never pushed, or has commits the remote does not have. Never
-   push yourself; ask the user to push and to run `/create-pr` again
+   push yourself; ask the user to push and to invoke `@create-pr` again
    afterwards, then stop.
 
 ### 3. Already-open PR
@@ -93,8 +93,8 @@ gh pr create --repo penpot/penpot --base "<BASE>" --title "<TITLE>" \
 repository default, which is wrong for a branch cut from `staging`. `--project
 "Main"` is required by `mem:workflow/creating-prs`.
 
-If an issue is present, run the explicit assignment and verification command
-from `mem:workflow/creating-prs` before reporting success:
+If an issue is present, run the explicit assignment command from
+`mem:workflow/creating-prs` before reporting success:
 
 ```bash
 python3 scripts/gh.py link-issue <ISSUE_NUMBER> <PR_NUMBER>
@@ -117,8 +117,7 @@ gh pr view <NUMBER> --repo penpot/penpot --json title,body
 ```
 
 If the updated body contains `Closes #NNNN`, run the explicit assignment
-command from `mem:workflow/creating-prs` and require its verification to
-succeed:
+command from `mem:workflow/creating-prs`:
 
 ```bash
 python3 scripts/gh.py link-issue <ISSUE_NUMBER> <PR_NUMBER>

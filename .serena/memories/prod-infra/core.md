@@ -46,4 +46,5 @@ Production runs the deployed toolbox, not the devenv one:
 - Devenv composition and the ws0-only worker placement: `mem:devenv/core`.
 - Storage backend resolution, dedup, bucket behavior, object lifecycle, and file-data lifecycle: `mem:backend/storage`.
 - Storage operation metrics (S3 API calls, logical ops, dedup, asset requests) and the logical-bucket vs physical-target distinction: `mem:backend/storage` (Metrics section).
+- Storage operation metrics (S3 API calls, logical ops, dedup, asset requests) and the logical-bucket vs physical-target distinction: `mem:backend/storage` (Metrics section).
 - Grafana (datasource ids and how to use them, main dashboard, panel conventions and gotchas): `mem:prod-infra/grafana`.

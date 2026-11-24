@@ -1,35 +1,73 @@
 use crate::error::{Error, Result};
 use crate::get_resources;
 use crate::mem;
-use crate::shapes::Fill;
+use crate::shapes::{Fill, Shape, TextContent, Type};
 use crate::state::State;
 use crate::uuid::Uuid;
 use crate::with_state;
 use crate::{shapes::ImageFill, utils::uuid_from_u32_quartet};
 use macros::wasm_error;
 
+fn text_content_uses_image(content: &TextContent, image_id: Uuid) -> bool {
+    content.paragraphs().iter().any(|paragraph| {
+        paragraph.children().iter().any(|span| {
+            span.fills
+                .iter()
+                .any(|f| matches!(f, Fill::Image(i) if i.id() == image_id))
+        })
+    })
+}
+
+fn shape_uses_image(shape: &Shape, image_id: Uuid) -> bool {
+    if shape
+        .fills()
+        .any(|f| matches!(f, Fill::Image(i) if i.id() == image_id))
+        || shape
+            .strokes
+            .iter()
+            .any(|s| matches!(&s.fill, Fill::Image(i) if i.id() == image_id))
+    {
+        return true;
+    }
+    match &shape.shape_type {
+        Type::Text(content) => text_content_uses_image(content, image_id),
+        _ => false,
+    }
+}
+
+fn rebuild_text_layout_for_image(shape: &mut Shape) {
+    let Type::Text(text_content) = &mut shape.shape_type else {
+        return;
+    };
+    // Image shaders are baked into Skia paragraphs at layout time. When the
+    // media arrives after the first layout, force a rebuild so text fills
+    // pick up `get_image` (rect fills look up the image every paint).
+    text_content.force_next_layout_update();
+    text_content.update_layout(shape.selrect);
+    shape.apply_deferred_batch_paint();
+    shape.invalidate_extrect();
+}
+
 fn touch_shapes_with_image(state: &mut State, image_id: Uuid) {
-    let ids: Vec<Uuid> = state
+    let ids: Vec<(Uuid, bool)> = state
         .shapes
         .iter()
-        .filter(|shape| {
-            shape
-                .fills()
-                .any(|f| matches!(f, Fill::Image(i) if i.id() == image_id))
-                || shape
-                    .strokes
-                    .iter()
-                    .any(|s| matches!(&s.fill, Fill::Image(i) if i.id() == image_id))
-        })
-        .map(|shape| shape.id)
+        .filter(|shape| shape_uses_image(shape, image_id))
+        .map(|shape| (shape.id, matches!(shape.shape_type, Type::Text(_))))
         .collect();
 
-    for id in ids {
+    for (id, is_text) in ids {
+        if is_text {
+            if let Some(shape) = state.shapes.get_mut(&id) {
+                rebuild_text_layout_for_image(shape);
+            }
+        }
         state.touch_shape(id);
     }
 }
 
 const FLAG_KEEP_ASPECT_RATIO: u8 = 1 << 0;
+const FLAG_HAS_TRANSFORM: u8 = 1 << 1;
 const IMAGE_IDS_SIZE: usize = 32;
 const IMAGE_HEADER_SIZE: usize = 36; // 32 bytes for IDs + 4 bytes for is_thumbnail flag
 
@@ -43,19 +81,29 @@ pub struct RawImageFillData {
     d: u32,
     opacity: u8,
     flags: u8,
-    // 16-bit padding here, reserved for future use
+    _pad: u16,
     width: i32,
     height: i32,
+    transform_x: f32,
+    transform_y: f32,
+    transform_w: f32,
+    transform_h: f32,
 }
 
 impl From<&ImageFill> for RawImageFillData {
     fn from(image_fill: &ImageFill) -> Self {
         let id = image_fill.id();
         let (a, b, c, d) = crate::utils::uuid_to_u32_quartet(&id);
-        let flags = if image_fill.keep_aspect_ratio() {
+        let mut flags = if image_fill.keep_aspect_ratio() {
             FLAG_KEEP_ASPECT_RATIO
         } else {
             0
+        };
+        let (tx, ty, tw, th) = if let Some(tf) = image_fill.transform() {
+            flags |= FLAG_HAS_TRANSFORM;
+            (tf.x, tf.y, tf.width, tf.height)
+        } else {
+            (0.0, 0.0, 1.0, 1.0)
         };
 
         Self {
@@ -65,8 +113,13 @@ impl From<&ImageFill> for RawImageFillData {
             d,
             opacity: image_fill.opacity(),
             flags,
+            _pad: 0,
             width: image_fill.width(),
             height: image_fill.height(),
+            transform_x: tx,
+            transform_y: ty,
+            transform_w: tw,
+            transform_h: th,
         }
     }
 }
@@ -75,13 +128,24 @@ impl From<RawImageFillData> for ImageFill {
     fn from(value: RawImageFillData) -> Self {
         let id = uuid_from_u32_quartet(value.a, value.b, value.c, value.d);
         let keep_aspect_ratio = value.flags & FLAG_KEEP_ASPECT_RATIO != 0;
+        let transform = if value.flags & FLAG_HAS_TRANSFORM != 0 {
+            Some(crate::shapes::ImageFillTransform {
+                x: value.transform_x,
+                y: value.transform_y,
+                width: value.transform_w,
+                height: value.transform_h,
+            })
+        } else {
+            None
+        };
 
-        Self::new(
+        Self::new_with_transform(
             id,
             value.opacity,
             value.width,
             value.height,
             keep_aspect_ratio,
+            transform,
         )
     }
 }
@@ -137,6 +201,22 @@ pub extern "C" fn store_image() -> Result<()> {
     });
 
     mem::free_bytes()?;
+    Ok(())
+}
+
+/// Registers the public URL an image was loaded from for SVG export.
+///
+/// Layout: UTF-8 URL bytes in the alloc buffer. The image UUID is passed as
+/// the four u32 arguments (same quartet as `store_image` / `is_image_cached`).
+#[no_mangle]
+#[wasm_error]
+pub extern "C" fn store_image_url(a: u32, b: u32, c: u32, d: u32) -> Result<()> {
+    let id = uuid_from_u32_quartet(a, b, c, d);
+    let url_bytes = mem::bytes();
+    let url = String::from_utf8(url_bytes)
+        .map_err(|_| Error::CriticalError("Invalid UTF-8 in image source URL".to_string()))?;
+    mem::free_bytes()?;
+    get_resources().images.set_source_url(id, url);
     Ok(())
 }
 

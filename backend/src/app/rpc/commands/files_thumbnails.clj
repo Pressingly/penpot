@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 
 (ns app.rpc.commands.files-thumbnails
   (:require
@@ -21,6 +21,7 @@
    [app.db.sql :as-alias sql]
    [app.loggers.audit :as-alias audit]
    [app.loggers.webhooks :as-alias webhooks]
+   [app.media.svg :as svg]
    [app.media.validation :as media.v]
    [app.rpc :as-alias rpc]
    [app.rpc.climit :as-alias climit]
@@ -235,8 +236,7 @@
 
 (defn- persist-thumbnail!
   [storage media created-at]
-  (let [path  (:path media)
-        mtype (:mtype media)
+  (let [{:keys [path mtype]} (svg/sanitize-svg-upload media)
         hash  (sto/calculate-hash path)
         data  (-> (sto/content path)
                   (sto/wrap-with-hash hash))]
@@ -286,7 +286,8 @@
    ::rtry/enabled true
    ::rtry/when rtry/conflict-exception?
    ::audit/skip true
-   ::sm/params schema:create-file-object-thumbnail}
+   ::sm/params schema:create-file-object-thumbnail
+   ::rpc/multipart-only-params [:media]}
 
   [cfg {:keys [::rpc/profile-id file-id object-id media tag]}]
   (media.v/check-media-type media)
@@ -300,30 +301,32 @@
 ;; --- MUTATION COMMAND: delete-file-object-thumbnail
 
 (defn- delete-file-object-thumbnail!
-  [{:keys [::db/conn ::sto/storage]} file-id object-id]
+  [{:keys [::db/conn] :as cfg} file-id object-id]
   (when-let [{:keys [media-id tag]} (db/get* conn :file-tagged-object-thumbnail
                                              {:file-id file-id
                                               :object-id object-id}
                                              {::sql/for-update true})]
-    (sto/touch-object! storage media-id)
-    (db/update! conn :file-tagged-object-thumbnail
-                {:deleted-at (ct/now)}
-                {:file-id file-id
-                 :object-id object-id
-                 :tag tag})))
+    (let [storage (sto/resolve cfg ::db/reuse-conn true)]
+      (sto/touch-object! storage media-id)
+      (db/update! conn :file-tagged-object-thumbnail
+                  {:deleted-at (ct/now)}
+                  {:file-id file-id
+                   :object-id object-id
+                   :tag tag}))))
 
 (defn- delete-file-object-thumbnails!
   "Soft-deletes multiple object thumbnails in a single UPDATE statement
    with RETURNING, then touches all returned media objects."
-  [{:keys [::db/conn ::sto/storage]} object-ids]
-  (let [ids  (db/create-array conn "text" (seq object-ids))
-        sql  (str/concat
-              "UPDATE file_tagged_object_thumbnail"
-              " SET deleted_at = now()"
-              " WHERE object_id = ANY(?)"
-              "   AND deleted_at IS NULL"
-              " RETURNING media_id")
-        rows (db/exec! conn [sql ids])]
+  [{:keys [::db/conn] :as cfg} object-ids]
+  (let [storage (sto/resolve cfg ::db/reuse-conn true)
+        ids     (db/create-array conn "text" (seq object-ids))
+        sql      (str/concat
+                  "UPDATE file_tagged_object_thumbnail"
+                  " SET deleted_at = now()"
+                  " WHERE object_id = ANY(?)"
+                  "   AND deleted_at IS NULL"
+                  " RETURNING media_id")
+        rows    (db/exec! conn [sql ids])]
     (doseq [{:keys [media-id]} rows]
       (sto/touch-object! storage media-id))))
 
@@ -343,10 +346,8 @@
    ::audit/skip true}
   [cfg {:keys [::rpc/profile-id file-id object-id]}]
   (files/check-edition-permissions! cfg profile-id file-id)
-  (db/tx-run! cfg (fn [{:keys [::db/conn] :as cfg}]
-                    (-> cfg
-                        (update ::sto/storage sto/configure conn)
-                        (delete-file-object-thumbnail! file-id object-id))
+  (db/tx-run! cfg (fn [cfg]
+                    (delete-file-object-thumbnail! cfg file-id object-id)
                     nil)))
 
 (sv/defmethod ::delete-file-object-thumbnails
@@ -367,11 +368,7 @@
                      (doseq [file-id file-ids]
                        (files/check-edition-permissions! conn profile-id file-id))))
       ;; Delete all matching thumbnails in one transaction
-      (db/tx-run! cfg (fn [{:keys [::db/conn] :as cfg}]
-                        (-> cfg
-                            (update ::sto/storage sto/configure conn)
-                            (delete-file-object-thumbnails! object-ids))
-                        nil)))))
+      (db/tx-run! cfg delete-file-object-thumbnails! object-ids))))
 
 ;; --- MUTATION COMMAND: create-file-thumbnail
 
@@ -392,7 +389,8 @@
                 [:file-thumbnail-ops/global]]
    ::rtry/enabled true
    ::rtry/when rtry/conflict-exception?
-   ::sm/params schema:create-file-thumbnail}
+   ::sm/params schema:create-file-thumbnail
+   ::rpc/multipart-only-params [:media]}
 
   [cfg {:keys [::rpc/profile-id file-id] :as params}]
   (media.v/check-media-type (:media params))
@@ -405,7 +403,7 @@
     (let [storage (::sto/storage cfg)
           file    (bfc/get-file cfg file-id :include-deleted? true :load-data? false)
           props   (db/tjson (or (:props params) {}))
-          {:keys [path mtype]} (:media params)
+          {:keys [path mtype]} (svg/sanitize-svg-upload (:media params))
           hash    (sto/calculate-hash path)
           data    (-> (sto/content path)
                       (sto/wrap-with-hash hash))

@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 
 (ns frontend-tests.plugins.shape-bugfixes-test
   (:require
@@ -18,6 +18,8 @@
    [app.main.data.workspace.variants :as dwv]
    [app.main.store :as st]
    [app.plugins.api :as api]
+   [app.plugins.flex :as flex]
+   [app.plugins.grid :as grid]
    [app.plugins.public-utils :as public-utils]
    [app.plugins.register :as r]
    [app.plugins.shape :as shape]
@@ -176,6 +178,7 @@
     (with-redefs [u/locate-shape (fn [_file _page id] {:id id :component-id id})
                   u/locate-library-component (constantly {:id (uuid/next)})
                   ctk/is-variant? (constantly false)
+                  dwv/valid-components-for-variants? (constantly true)
                   dwv/combine-as-variants
                   (fn [ids opts]
                     (reset! captured {:ids ids :opts opts})
@@ -381,6 +384,7 @@
         errors    (atom [])]
     (with-redefs [u/locate-shape (constantly {:id shape-id :component-id shape-id})
                   u/locate-library-component (constantly {:id (uuid/next)})
+                  u/page-active? (constantly true)
                   u/not-valid    (mock/stub (fn [pid prop msg] (swap! errors conj [pid prop msg])))
                   r/check-permission (constantly false)
                   st/emit!       mock/noop]
@@ -408,3 +412,125 @@
         (t/is (= 1 (count @errors)))
         (t/is (= [plugin-id :combineAsVariants "Plugin doesn't have 'content:write' permission"]
                  (first @errors)))))))
+
+;; ---------------------------------------------------------------------------
+;; Variant container append / insert
+;; ---------------------------------------------------------------------------
+
+(def ^:private variant-append-msg
+  "Only main instances can be added to a variant container")
+
+(defn- variant-append-objects
+  [child-attrs]
+  (let [container-id (uuid/next)
+        child-id     (uuid/next)]
+    {:container-id container-id
+     :child-id     child-id
+     :objects      {container-id {:id container-id
+                                  :type :frame
+                                  :is-variant-container true
+                                  :shapes []}
+                    child-id (merge {:id child-id
+                                     :type :rect
+                                     :parent-id uuid/zero}
+                                    child-attrs)}}))
+
+(defn- with-append-stubs
+  [objects f]
+  (let [errors  (atom [])
+        emitted (atom [])]
+    (with-redefs [u/locate-shape     (fn [_file _page id] (get objects id))
+                  ;; Multi-arity: CLJS callers hit IFn$_invoke$arity$2; `constantly`
+                  ;; only installs arity-variadic and breaks those calls.
+                  u/locate-objects   (fn
+                                       ([] objects)
+                                       ([_file _page] objects))
+                  u/page-active?     (constantly true)
+                  u/natural-child-ordering? (constantly false)
+                  r/check-permission (constantly true)
+                  u/not-valid        (mock/stub (fn [pid prop msg]
+                                                  (swap! errors conj [pid prop msg])))
+                  st/emit!           (fn [& args]
+                                       (swap! emitted conj args)
+                                       nil)]
+      (f errors emitted))))
+
+(t/deftest append-child-rejects-plain-shape-into-variant-container
+  (let [{:keys [container-id child-id objects]} (variant-append-objects {})]
+    (with-append-stubs
+      objects
+      (fn [errors emitted]
+        (let [container (shape/shape-proxy plugin-id (uuid/next) (uuid/next) container-id)
+              child     (shape/shape-proxy plugin-id (uuid/next) (uuid/next) child-id)]
+          (.appendChild container child)
+          (t/is (= 1 (count @errors)))
+          (t/is (= variant-append-msg (last (first @errors))))
+          (t/is (empty? @emitted)))))))
+
+(t/deftest append-child-rejects-copy-into-variant-container
+  (let [{:keys [container-id child-id objects]}
+        (variant-append-objects {:type :frame
+                                 :component-id (uuid/next)
+                                 :component-root true})]
+    (with-append-stubs
+      objects
+      (fn [errors emitted]
+        (let [container (shape/shape-proxy plugin-id (uuid/next) (uuid/next) container-id)
+              child     (shape/shape-proxy plugin-id (uuid/next) (uuid/next) child-id)]
+          (.appendChild container child)
+          (t/is (= 1 (count @errors)))
+          (t/is (= variant-append-msg (last (first @errors))))
+          (t/is (empty? @emitted)))))))
+
+(t/deftest append-child-allows-main-into-variant-container
+  (let [{:keys [container-id child-id objects]}
+        (variant-append-objects {:type :frame
+                                 :main-instance true
+                                 :component-id (uuid/next)
+                                 :component-root true})]
+    (with-append-stubs
+      objects
+      (fn [errors emitted]
+        (let [container (shape/shape-proxy plugin-id (uuid/next) (uuid/next) container-id)
+              child     (shape/shape-proxy plugin-id (uuid/next) (uuid/next) child-id)]
+          (.appendChild container child)
+          (t/is (empty? @errors))
+          (t/is (pos? (count @emitted))))))))
+
+(t/deftest insert-child-rejects-plain-shape-into-variant-container
+  (let [{:keys [container-id child-id objects]} (variant-append-objects {})]
+    (with-append-stubs
+      objects
+      (fn [errors emitted]
+        (let [container (shape/shape-proxy plugin-id (uuid/next) (uuid/next) container-id)
+              child     (shape/shape-proxy plugin-id (uuid/next) (uuid/next) child-id)]
+          (.insertChild container 0 child)
+          (t/is (= 1 (count @errors)))
+          (t/is (= [plugin-id :insertChild variant-append-msg] (first @errors)))
+          (t/is (empty? @emitted)))))))
+
+(t/deftest flex-append-child-rejects-plain-shape-into-variant-container
+  (let [{:keys [container-id child-id objects]} (variant-append-objects {})]
+    (with-append-stubs
+      objects
+      (fn [errors emitted]
+        (with-redefs [flex/shape-proxy? (constantly true)]
+          (let [layout (flex/flex-layout-proxy plugin-id (uuid/next) (uuid/next) container-id)
+                child  (shape/shape-proxy plugin-id (uuid/next) (uuid/next) child-id)]
+            (.appendChild layout child)
+            (t/is (= 1 (count @errors)))
+            (t/is (= variant-append-msg (last (first @errors))))
+            (t/is (empty? @emitted))))))))
+
+(t/deftest grid-append-child-rejects-plain-shape-into-variant-container
+  (let [{:keys [container-id child-id objects]} (variant-append-objects {})]
+    (with-append-stubs
+      objects
+      (fn [errors emitted]
+        (with-redefs [grid/shape-proxy? (constantly true)]
+          (let [layout (grid/grid-layout-proxy plugin-id (uuid/next) (uuid/next) container-id)
+                child  (shape/shape-proxy plugin-id (uuid/next) (uuid/next) child-id)]
+            (.appendChild layout child 0 0)
+            (t/is (= 1 (count @errors)))
+            (t/is (= variant-append-msg (last (first @errors))))
+            (t/is (empty? @emitted))))))))

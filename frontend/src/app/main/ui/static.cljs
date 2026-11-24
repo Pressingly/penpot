@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 
 (ns app.main.ui.static
   (:require-macros [app.main.style :as stl])
@@ -11,7 +11,7 @@
    [app.common.data :as d]
    [app.common.exceptions :as ex]
    [app.common.uuid :as uuid]
-   [app.main.data.auth :refer [is-authenticated?]]
+   [app.main.data.auth :as da :refer [is-authenticated?]]
    [app.main.data.common :as dcm]
    [app.main.data.nitrate :as dnt]
    [app.main.errors :as errors]
@@ -127,7 +127,8 @@
          (fn [data]
            (cond
              (:invitation-token data)
-             (st/emit! (rt/nav :auth-verify-token {:token (:invitation-token data)}))
+             (st/emit! (da/login-from-register
+                        {:invitation-token (:invitation-token data)}))
 
              (:is-active data)
              (st/emit! (rt/reload true))
@@ -609,16 +610,37 @@
 
       [:> internal-error* props])))
 
+(defn screen-kind
+  "Classify the `screen` query param for the exception page.
+
+  The param carries the route name (`?screen=<name>&params`), so the
+  viewer is \"viewer\" and every team dashboard is \"dashboard-*\". Returns
+  `:workspace`, `:dashboard`, `:viewer`, or nil when the screen is not a
+  request-access candidate. Reads the param with `rt/get-query-param`
+  because a repeated param arrives as a vector."
+  [query-params]
+  (let [screen (rt/get-query-param query-params :screen)]
+    (cond
+      (= screen "workspace")
+      :workspace
+
+      (and (string? screen)
+           (str/starts-with? screen "dashboard"))
+      :dashboard
+
+      (= screen "viewer")
+      :viewer)))
+
 (mf/defc exception-page*
   [{:keys [data route] :as props}]
 
   (let [type        (:type data)
-        path        (:path route)
         params      (:query-params route)
 
-        workspace?  (str/includes? path "workspace")
-        dashboard?  (str/includes? path "dashboard")
-        view?       (str/includes? path "view")
+        kind        (screen-kind params)
+        workspace?  (= kind :workspace)
+        dashboard?  (= kind :dashboard)
+        view?       (= kind :viewer)
 
         ;; We store the request access info int this state
         info*       (mf/use-state nil)

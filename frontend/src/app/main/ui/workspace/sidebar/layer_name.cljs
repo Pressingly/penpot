@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 
 (ns app.main.ui.workspace.sidebar.layer-name
   (:require-macros [app.main.style :as stl])
@@ -93,7 +93,7 @@
                      name       (str/trim (dom/get-value name-input))]
                  (on-stop-edit)
                  (reset! edition* false)
-                 (st/emit! (dw/end-rename-shape shape-id name))
+                 (st/emit! (dw/rename-shape-or-variant shape-id name))
                  (when (fn? on-tab-press)
                    (on-tab-press event)))))))
 

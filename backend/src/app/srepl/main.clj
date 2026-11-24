@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 
 (ns app.srepl.main
   #_:clj-kondo/ignore
@@ -150,7 +150,7 @@
                                          {:columns [:id :email]})]
                (when-not (:is-blocked profile)
                  (db/update! conn :profile {:is-blocked true} {:id (:id profile)})
-                 (db/delete! conn :http-session {:profile-id (:id profile)})
+                 (session/invalidate-all system (:id profile))
                  :blocked))))))
 
 (defn reset-password!
@@ -168,6 +168,89 @@
                (-> (db/exec-one! conn ["update profile set password=? where email=?" password email])
                    (db/get-update-count)
                    (pos?)))))))
+
+(defn update-profile-email!
+  "Support helper: change a profile's email address.
+
+  Looks up the profile by its current email. Rejects with
+  `:email-already-exists` when the new address is already used by
+  another non-deleted profile. Does not clear bounce/complaint
+  reports; call `clear-email-complaint-reports!` for that."
+  [& {:keys [email new-email]}]
+  (assert (string? email) "expected email")
+  (assert (string? new-email) "expected new-email")
+
+  (let [email     (profile/clean-email email)
+        new-email (profile/clean-email new-email)]
+    (db/tx-run! sys/system
+                (fn [{:keys [::db/conn] :as system}]
+                  (let [profile (profile/get-profile-by-email conn email)]
+                    (when-not profile
+                      (ex/raise :type :not-found
+                                :code :profile-not-found
+                                :hint "profile not found for email"
+                                :email email))
+
+                    (if (= email new-email)
+                      :unchanged
+                      (do
+                        (when (profile/get-profile-by-email conn new-email)
+                          (ex/raise :type :validation
+                                    :code :email-already-exists))
+
+                        (db/update! conn :profile
+                                    {:email new-email}
+                                    {:id (:id profile)}
+                                    {::db/return-keys false})
+
+                        (audit/insert system
+                                      {:name "update-profile-email"
+                                       :type "action"
+                                       :props {:id (:id profile)
+                                               :email email
+                                               :new-email new-email}
+                                       :context {:triggered-by "srepl"
+                                                 :cause "explicit call to update-profile-email!"}})
+                        :updated)))))))
+
+(defn clear-email-complaint-reports!
+  "Support helper: delete bounce and complaint reports for an email
+  from `global_complaint_report` and, when a profile owns that email,
+  from `profile_complaint_report`. Also unmutes that profile so mail
+  can be sent again after a false-positive bounce or complaint."
+  [email]
+  (assert (string? email) "expected email")
+
+  (let [email (profile/clean-email email)]
+    (db/tx-run! sys/system
+                (fn [{:keys [::db/conn] :as system}]
+                  (let [profile (db/get* conn :profile {:email email})
+                        global-deleted
+                        (-> (db/delete! conn :global-complaint-report {:email email})
+                            (db/get-update-count))
+                        profile-deleted
+                        (if profile
+                          (-> (db/delete! conn :profile-complaint-report
+                                          {:profile-id (:id profile)})
+                              (db/get-update-count))
+                          0)]
+                    (when profile
+                      (db/update! conn :profile
+                                  {:is-muted false}
+                                  {:id (:id profile)}
+                                  {::db/return-keys false}))
+
+                    (when (or profile (pos? global-deleted))
+                      (audit/insert system
+                                    {:name "clear-email-complaint-reports"
+                                     :type "action"
+                                     :props (cond-> {:email email
+                                                     :global-deleted global-deleted
+                                                     :profile-deleted profile-deleted}
+                                              profile (assoc :id (:id profile)))
+                                     :context {:triggered-by "srepl"
+                                               :cause "explicit call to clear-email-complaint-reports!"}})
+                      :cleared))))))
 
 (defn parse-emails
   "Parse the emails into a seq of cleaned emails. Accepts a single
@@ -483,6 +566,53 @@
                         (println (sm/humanize-explain explain))
                         (ex/print-throwable cause))))))))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; GRAPH / LADYBUG
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; The graph namespaces resolve at call time, never at the top of this
+;; namespace. `app.graph.ladybug` imports `com.ladybugdb.*`, and this namespace
+;; loads with the REPL server on every boot, so a top-level require would link
+;; the Ladybug native library into every backend, graph or not. Calling one of
+;; the functions below loads the library at that point: the operator has asked
+;; for it explicitly. The `:graph` flag gates the request path
+;; (`app.http.debug`), not the REPL.
+
+(defn graph-smoke-test!
+  "Execute a basic Ladybug smoke test (CREATE + count).
+
+  Uses the embedded Ladybug Java API. Use :db-path \":memory:\" (default)
+  or a filesystem path such as /tmp/test.lbug."
+  [& {:keys [db-path] :or {db-path ":memory:"}}]
+  ((requiring-resolve 'app.graph.ladybug/smoke-test!) :db-path db-path))
+
+(defn graph-query-test!
+  "Query Document count for a file's graph db (REPL diagnostic)."
+  [file-id & {:keys [db-path]}]
+  (let [file-id       (h/parse-uuid file-id)
+        db-path       (or db-path ((requiring-resolve 'app.graph.ladybug/db-path-for-file) file-id))
+        query-scalar! (requiring-resolve 'app.graph.ladybug/query-scalar!)
+        stmt          "MATCH (n:Document) RETURN count(n) AS Document_c;"]
+    (query-scalar! db-path stmt)))
+
+(defn ingest-file-to-graph!
+  "Project a Penpot file into a per-file Ladybug database.
+
+  Loads and realizes the file from the database, ensures the slice schema,
+  projects Document/Page/shape nodes, and returns graph stats.
+
+  Options:
+  - `:db-path` path or `:memory:`
+  - `:reset-db?` delete any existing db first (default true)
+  - `:skip-stats?` skip post-ingest MATCH count queries (default false)"
+  [file-id & opts]
+  (let [ingest-file!  (requiring-resolve 'app.graph.ingest/ingest-file!)
+        print-ingest! (requiring-resolve 'app.graph.report/print-ingest!)
+        result        (apply ingest-file! sys/system file-id opts)]
+    (print-ingest! result)
+    result))
+
+
 (defn repair-file!
   "Repair the list of errors detected by validation."
   [file-id & {:keys [rollback?] :or {rollback? true} :as options}]
@@ -735,7 +865,7 @@
                    :type "action"
                    :props {:id team-id}
                    :context {:triggered-by "srepl"
-                             :cause "explicit call to delete-profile!"}
+                             :cause "explicit call to delete-team!"}
                    :tracked-at tnow})
 
     (wrk/invoke! (-> sys/system
@@ -804,6 +934,7 @@
     (audit/insert sys/system
                   {:name "delete-profile"
                    :type "action"
+                   :props {:id profile-id}
                    :context {:triggered-by "srepl"
                              :cause "explicit call to delete-profile!"}
                    :tracked-at tnow})
@@ -992,4 +1123,4 @@
                       (let [params (-> rel
                                        (assoc :id (uuid/next))
                                        (assoc :team-id (:id team)))]
-                        (teams/add-profile-to-team! cfg params {::db/return-keys false}))))))))
+                        (teams/add-profile-to-team! cfg params))))))))

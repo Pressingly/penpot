@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 
 (ns app.common.types.variant
   (:require
@@ -16,10 +16,12 @@
 ;; SCHEMA
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(def property-max-length 60)
+
 (def schema:variant-property
   [:map
-   [:name :string]
-   [:value :string]])
+   [:name [:string {:max property-max-length}]]
+   [:value [:string {:max property-max-length}]]])
 
 (def schema:variant-component
   "A component that is part of a variant set"
@@ -47,8 +49,56 @@
 
 (def property-prefix "Property ")
 (def property-regex (re-pattern (str property-prefix "(\\d+)")))
-(def property-max-length 60)
 (def value-prefix "Value ")
+
+(defn normalize-property-text
+  [value]
+  (some-> value str/trim))
+
+(def ^:private forbidden-property-chars-re #"[,=]")
+
+(defn sanitize-property-text
+  "Remove `,` and `=` from property name/value text, then trim.
+   Non-strings (including nil) return nil — never call str/replace on them."
+  [value]
+  (when (string? value)
+    (-> value
+        (str/replace forbidden-property-chars-re "")
+        normalize-property-text)))
+
+(defn valid-property-name?
+  [value]
+  (let [value (normalize-property-text value)]
+    (and (string? value)
+         (not (str/blank? value))
+         (nil? (re-find forbidden-property-chars-re value))
+         (<= (count value) property-max-length))))
+
+(defn valid-property-value?
+  [value]
+  (let [value (normalize-property-text value)]
+    (and (string? value)
+         (nil? (re-find forbidden-property-chars-re value))
+         (<= (count value) property-max-length))))
+
+(defn prepare-property-name
+  "Sanitize then validate a property name. Returns the cleaned string or nil."
+  [value]
+  (let [value (sanitize-property-text value)]
+    (when (valid-property-name? value)
+      value)))
+
+(defn prepare-property-value
+  "Sanitize then validate a property value. nil becomes \"\".
+   Other non-strings yield nil. Empty string remains valid."
+  [value]
+  (let [value (sanitize-property-text (if (nil? value) "" value))]
+    (when (valid-property-value? value)
+      value)))
+
+(defn can-remove-property?
+  [properties]
+  (> (count properties) 1))
 
 (defn properties-to-name
   "Transform the properties into a name, with the values separated by comma"
@@ -90,7 +140,8 @@
   ([path properties]
    (path-to-properties path properties 0))
   ([path properties min-props]
-   (let [cpath          (cpn/split-path path)
+   (let [cpath          (->> (cpn/split-path path)
+                             (mapv #(or (sanitize-property-text %) "")))
          total-props    (max (count cpath) min-props)
          assigned       (mapv #(assoc % :value (nth cpath %2 "")) properties (range))
          ;; Add empty strings to the end of cpath to reach the minimum number of properties
@@ -124,8 +175,8 @@
        (mapv #(str/split % "=" 2))
        (every? #(and (= 2 (count %))
                      (not (str/blank? (first %)))
-                     (< (count (first %)) property-max-length)
-                     (< (count (second %)) property-max-length)))))
+                     (<= (count (first %)) property-max-length)
+                     (<= (count (second %)) property-max-length)))))
 
 (defn find-properties-to-remove
   "Compares two property maps to find which properties should be removed"

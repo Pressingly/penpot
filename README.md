@@ -13,9 +13,6 @@
   <a href="https://tree.taiga.io/project/penpot/" rel="nofollow">
     <img alt="Managed with Taiga.io" src="https://img.shields.io/badge/managed%20with-TAIGA.io-709f14.svg">
   </a>
-  <a href="https://gitpod.io/#https://github.com/penpot/penpot" rel="nofollow">
-    <img alt="Gitpod ready-to-code" src="https://img.shields.io/badge/Gitpod-ready--to--code-blue?logo=gitpod">
-  </a>
 </p>
 
 <p align="center">
@@ -167,6 +164,6 @@ This Source Code Form is subject to the terms of the Mozilla Public
 License, v. 2.0. If a copy of the MPL was not distributed with this
 file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-Copyright (c) KALEIDOS INC Sucursal en España SL
+Copyright (c) KALEIDOS SUBSIDIARY SL
 ```
 Penpot is a Kaleidos’ [open source project](https://kaleidos.net/)

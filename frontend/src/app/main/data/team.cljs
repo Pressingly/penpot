@@ -2,7 +2,7 @@
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ;;
-;; Copyright (c) KALEIDOS INC Sucursal en España SL
+;; Copyright (c) KALEIDOS SUBSIDIARY SL
 
 (ns app.main.data.team
   (:require
@@ -261,7 +261,20 @@
     (watch [_ state _]
       (let [team-id (:current-team-id state)]
         (->> (rp/cmd! :get-team-invitations {:team-id team-id})
-             (rx/map (partial invitations-fetched team-id)))))))
+             (rx/map (partial invitations-fetched team-id))
+             (rx/catch (fn [cause]
+                         (let [{:keys [type code]} (ex-data cause)]
+                           (if (and (= :validation type)
+                                    (= :insufficient-permissions code))
+                             ;; The pending invitations are an admin only
+                             ;; list, so a denied refetch means the cached
+                             ;; copy is no longer valid: drop it instead of
+                             ;; leaving stale emails around.
+                             (do
+                               (log/warn :hint "fetch-invitations: no permission, clearing"
+                                         :team-id (str team-id))
+                               (rx/of (invitations-fetched team-id [])))
+                             (rx/throw cause))))))))))
 
 (defn- team-initialized
   [team-id]
@@ -683,11 +696,9 @@
 
         (->> (rp/cmd! :get-team-invitation-token params)
              (rx/map (fn [params]
-                       (rt/resolve router :auth-verify-token params)))
-             (rx/map (fn [fragment]
-                       (assoc cf/public-uri :fragment fragment)))
+                       (rt/resolve-uri router :auth-verify-token params)))
              (rx/tap (fn [uri]
-                       (clipboard/to-clipboard (str uri))))
+                       (clipboard/to-clipboard uri)))
              (rx/tap on-success)
              (rx/ignore)
              (rx/catch on-error))))))
