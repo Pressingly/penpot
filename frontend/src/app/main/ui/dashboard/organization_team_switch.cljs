@@ -167,6 +167,13 @@
   [flags]
   (contains? flags :admin-console))
 
+(defn show-create-team?
+  "Forward-auth (SSO) installs provision teams in the backend via
+  auto-join, so the dropdown hides its \"Create new team\" action
+  when the `:x-auth-request-headers` flag is enabled."
+  [flags]
+  (not (contains? flags :x-auth-request-headers)))
+
 (defn resolve-admin-console-href
   "The admin-console link for the pinned action at the bottom of the
   organizations column: the organization-specific page when `profile`
@@ -383,23 +390,25 @@
                         :on-select on-select
                         :on-context-menu on-context-menu}]])
 
-     [:ul {:class (stl/css :column-actions)}
-      [:li {:role "separator" :class (stl/css :column-separator)}]
+     (when (or on-create-team on-create-organization)
+       [:ul {:class (stl/css :column-actions)}
+        [:li {:role "separator" :class (stl/css :column-separator)}]
 
-      [:> dropdown-menu-item* {:on-click on-create-team
-                               :class (stl/css :team-item :action)}
-       [:span {:class (stl/css :icon-wrapper)}
-        [:> icon* {:icon-id i/add :class (stl/css :action-icon)}]]
-       [:span {:class (stl/css :team-text)} (tr "dashboard.create-new-team")]]
+        (when on-create-team
+          [:> dropdown-menu-item* {:on-click on-create-team
+                                   :class (stl/css :team-item :action)}
+           [:span {:class (stl/css :icon-wrapper)}
+            [:> icon* {:icon-id i/add :class (stl/css :action-icon)}]]
+           [:span {:class (stl/css :team-text)} (tr "dashboard.create-new-team")]])
 
-      ;; Only present when there is no separate organizations column to
-      ;; host it (no valid license and no organization membership).
-      (when on-create-organization
-        [:> dropdown-menu-item* {:on-click on-create-organization
-                                 :class (stl/css :team-item :action)}
-         [:span {:class (stl/css :icon-wrapper)}
-          [:> icon* {:icon-id i/add :class (stl/css :action-icon)}]]
-         [:span {:class (stl/css :team-text)} (tr "dashboard.create-new-organization")]])]]))
+        ;; Only present when there is no separate organizations column to
+        ;; host it (no valid license and no organization membership).
+        (when on-create-organization
+          [:> dropdown-menu-item* {:on-click on-create-organization
+                                   :class (stl/css :team-item :action)}
+           [:span {:class (stl/css :icon-wrapper)}
+            [:> icon* {:icon-id i/add :class (stl/css :action-icon)}]]
+           [:span {:class (stl/css :team-text)} (tr "dashboard.create-new-organization")]])])]))
 
 (mf/defc organization-team-switch*
   [{:keys [team profile]}]
@@ -667,7 +676,7 @@
                             :selected-team-id (:id team)
                             :on-select on-team-select
                             :on-context-menu on-dismiss-context-menu
-                            :on-create-team on-create-team
+                            :on-create-team (when (show-create-team? cf/flags) on-create-team)
                             :on-create-organization (when (show-create-organization-in-teams-column? cf/flags)
                                                       on-create-organization)}]]
         [:> dropdown-menu* {:show show-menu?
@@ -688,7 +697,7 @@
                             :selected-team-id (:id team)
                             :on-select on-team-select
                             :on-context-menu on-dismiss-context-menu
-                            :on-create-team on-create-team}]])]
+                            :on-create-team (when (show-create-team? cf/flags) on-create-team)}]])]
 
      [:> options-dropdown* {:show show-options-menu?
                             :on-close on-close-options

@@ -137,6 +137,13 @@
   (t/testing "flag absent: fallback action hidden"
     (t/is (false? (dts/show-create-organization-in-teams-column? #{})))))
 
+(t/deftest create-team-hidden-behind-forward-auth
+  (t/testing "forward-auth flag present: create team hidden"
+    (t/is (false? (dts/show-create-team? #{:x-auth-request-headers}))))
+
+  (t/testing "forward-auth flag absent: create team offered"
+    (t/is (true? (dts/show-create-team? #{})))))
+
 (t/deftest show-subscription-badge-matrix
   (t/testing "default team: never, regardless of its own subscription"
     (t/is (false? (dts/show-subscription-badge? {:is-default true
