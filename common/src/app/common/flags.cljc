@@ -174,7 +174,7 @@
     ;; redis for caching data
     :redis-cache
 
-    ;; enabled by default. Activates the admin-console module
+    ;; disabled by default. Activates the admin-console module
     :admin-console
 
     ;; disabled by default. When enabled, allows the admin-console
@@ -235,8 +235,7 @@
    :enable-stroke-per-side
    :enable-token-combobox
    :enable-custom-shortcuts
-   :enable-token-lib-sync
-   :enable-admin-console])
+   :enable-token-lib-sync])
 
 (defn parse
   [& flags]
